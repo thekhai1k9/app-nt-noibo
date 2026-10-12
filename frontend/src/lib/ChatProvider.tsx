@@ -4,7 +4,7 @@ import { useAuth } from './auth'
 import { chatApi } from './chatApi'
 import { ChatController } from './chatController'
 import { ChatStore, EMPTY_THREAD, type ChatState, type Thread } from './chatStore'
-import type { Room } from './types'
+import type { Room, RoomMember } from './types'
 import { ChatSocket, type SocketStatus } from './ws'
 
 interface ChatContextValue {
@@ -40,6 +40,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!instance || mustChange) return
     const { socket, controller } = instance
+    controller.activate()
     socket.start()
     void controller.loadRooms()
     const onOnline = () => socket.reconnectNow()
@@ -91,4 +92,31 @@ export function useThread(roomId: number): Thread {
 
 export function useSocketStatus(): SocketStatus {
   return useChatState((s) => s.status)
+}
+
+const NO_MEMBERS: RoomMember[] = []
+
+export function useMembers(roomId: number): RoomMember[] {
+  return useChatState((s) => s.members[roomId] ?? NO_MEMBERS)
+}
+
+const NO_NAMES: string[] = []
+
+/** Tên những người khác đang soạn tin trong phòng (còn hạn, loại chính mình). */
+export function useTyping(roomId: number): string[] {
+  const { store, controller } = useChatContext()
+  const entries = useChatState((s) => s.typing[roomId])
+  return useMemo(() => {
+    void store
+    if (!entries) return NO_NAMES
+    const now = Date.now()
+    const names = Object.entries(entries)
+      .filter(([id, v]) => Number(id) !== controller.meId && v.until > now)
+      .map(([, v]) => v.name)
+    return names.length === 0 ? NO_NAMES : names
+  }, [entries, store, controller])
+}
+
+export function useOnline(userId: number | null | undefined): boolean {
+  return useChatState((s) => (userId != null ? s.online[userId] === true : false))
 }

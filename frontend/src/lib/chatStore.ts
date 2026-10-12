@@ -1,4 +1,4 @@
-import type { Message, MessagePage, Room } from './types'
+import type { Message, MessagePage, Room, RoomMember } from './types'
 import type { SocketStatus } from './ws'
 
 export interface ChatMessage extends Message {
@@ -22,6 +22,12 @@ export interface ChatState {
   roomsLoaded: boolean
   roomsError: boolean
   threads: Record<number, Thread>
+  /** Thành viên theo phòng (kèm mốc đã đọc). */
+  members: Record<number, RoomMember[]>
+  /** Tập user_id đang online. */
+  online: Record<number, true>
+  /** Phòng -> người đang soạn tin -> hạn (ms epoch). */
+  typing: Record<number, Record<number, { name: string; until: number }>>
 }
 
 export const EMPTY_THREAD: Thread = { items: [], hasMoreBefore: false, loaded: false, loadingOlder: false, error: false }
@@ -45,7 +51,7 @@ function sortRooms(rooms: Room[]): Room[] {
 }
 
 export class ChatStore {
-  private state: ChatState = { status: 'offline', hasConnected: false, rooms: [], roomsLoaded: false, roomsError: false, threads: {} }
+  private state: ChatState = { status: 'offline', hasConnected: false, rooms: [], roomsLoaded: false, roomsError: false, threads: {}, members: {}, online: {}, typing: {} }
   private readonly listeners = new Set<() => void>()
 
   subscribe = (listener: () => void): (() => void) => {
@@ -215,7 +221,81 @@ export class ChatStore {
 
   removeThreads(roomIds: number[]): void {
     const threads = { ...this.state.threads }
-    for (const id of roomIds) delete threads[id]
-    this.set({ threads })
+    const members = { ...this.state.members }
+    const typing = { ...this.state.typing }
+    for (const id of roomIds) {
+      delete threads[id]
+      delete members[id]
+      delete typing[id]
+    }
+    this.set({ threads, members, typing })
+  }
+
+  /** Thay danh sách thành viên; mốc đã đọc chỉ tăng nên bản REST cũ không làm lùi mốc đã nhận qua WebSocket. */
+  setMembers(roomId: number, incoming: RoomMember[]): void {
+    const existing = new Map((this.state.members[roomId] ?? []).map((m) => [m.user_id, m.last_read_message_id]))
+    const merged = incoming.map((m) => {
+      const cur = existing.get(m.user_id)
+      const next = cur != null && (m.last_read_message_id == null || cur > m.last_read_message_id) ? cur : m.last_read_message_id
+      return { ...m, last_read_message_id: next }
+    })
+    this.set({ members: { ...this.state.members, [roomId]: merged } })
+  }
+
+  /** Chỉ tăng mốc của thành viên đã biết; bỏ qua khi danh sách chưa tải. Trả true nếu có thay đổi. */
+  applyRead(roomId: number, userId: number, messageId: number): boolean {
+    const list = this.state.members[roomId]
+    if (!list) return false
+    const idx = list.findIndex((m) => m.user_id === userId)
+    if (idx < 0) return false
+    const cur = list[idx].last_read_message_id
+    if (cur != null && cur >= messageId) return false
+    const next = list.map((m, i) => (i === idx ? { ...m, last_read_message_id: messageId } : m))
+    this.set({ members: { ...this.state.members, [roomId]: next } })
+    return true
+  }
+
+  /** Thay tập online bằng bản chụp; `keep` là các user có cập nhật trực tiếp mới hơn bản chụp nên giữ nguyên trạng thái hiện tại. */
+  setOnline(ids: number[], keep: number[] = []): void {
+    const online: Record<number, true> = {}
+    for (const id of ids) online[id] = true
+    for (const id of keep) {
+      if (this.state.online[id]) online[id] = true
+      else delete online[id]
+    }
+    this.set({ online })
+  }
+
+  setPresence(userId: number, isOnline: boolean): void {
+    if (!!this.state.online[userId] === isOnline) return
+    const online = { ...this.state.online }
+    if (isOnline) online[userId] = true
+    else delete online[userId]
+    this.set({ online })
+  }
+
+  setTyping(roomId: number, userId: number, name: string, until: number): void {
+    this.set({ typing: { ...this.state.typing, [roomId]: { ...this.state.typing[roomId], [userId]: { name, until } } } })
+  }
+
+  clearTyping(roomId: number, userId: number): void {
+    const room = this.state.typing[roomId]
+    if (!room || !(userId in room)) return
+    const { [userId]: _drop, ...rest } = room
+    const typing = { ...this.state.typing }
+    if (Object.keys(rest).length === 0) delete typing[roomId]
+    else typing[roomId] = rest
+    this.set({ typing })
+  }
+
+  pruneTyping(now: number): void {
+    let changed = false
+    const typing: ChatState['typing'] = {}
+    for (const [roomKey, users] of Object.entries(this.state.typing)) {
+      const kept = Object.fromEntries(Object.entries(users).filter(([, v]) => v.until > now))
+      if (Object.keys(kept).length !== Object.keys(users).length) changed = true
+      if (Object.keys(kept).length > 0) typing[Number(roomKey)] = kept as Record<number, { name: string; until: number }>
+    }
+    if (changed) this.set({ typing })
   }
 }

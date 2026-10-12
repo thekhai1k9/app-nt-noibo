@@ -216,3 +216,67 @@ describe('ChatStore rooms', () => {
     expect(store.getState().rooms[0].name).toBe('B')
   })
 })
+
+describe('ChatStore members, presence and typing', () => {
+  const mem = (user_id: number, last: number | null) => ({ user_id, full_name: `U${user_id}`, last_read_message_id: last })
+
+  it('applyRead only increases and is ignored before members load or for unknown users', () => {
+    const store = new ChatStore()
+    store.applyRead(1, 2, 5)
+    expect(store.getState().members[1]).toBeUndefined()
+    store.setMembers(1, [mem(2, 3), mem(3, null)])
+    const before = store.getState()
+    store.applyRead(1, 2, 2)
+    store.applyRead(1, 99, 9)
+    expect(store.getState()).toBe(before)
+    store.applyRead(1, 2, 7)
+    store.applyRead(1, 3, 1)
+    expect(store.getState()).not.toBe(before)
+    expect(store.getState().members[1].map((m) => m.last_read_message_id)).toEqual([7, 1])
+  })
+
+  it('setMembers keeps the higher read marker so a stale snapshot never regresses', () => {
+    const store = new ChatStore()
+    store.setMembers(1, [mem(2, 3)])
+    store.applyRead(1, 2, 8)
+    store.setMembers(1, [mem(2, 5), mem(4, null)])
+    expect(store.getState().members[1].map((m) => [m.user_id, m.last_read_message_id])).toEqual([[2, 8], [4, null]])
+    store.setMembers(1, [mem(2, 9)])
+    expect(store.getState().members[1][0].last_read_message_id).toBe(9)
+  })
+
+  it('setTyping, clearTyping and pruneTyping remove exactly the expired entries', () => {
+    const store = new ChatStore()
+    store.setTyping(1, 2, 'B', 100)
+    store.setTyping(1, 3, 'C', 200)
+    store.setTyping(2, 4, 'D', 50)
+    store.pruneTyping(100)
+    expect(store.getState().typing).toEqual({ 1: { 3: { name: 'C', until: 200 } } })
+    store.clearTyping(1, 3)
+    expect(store.getState().typing).toEqual({})
+  })
+
+  it('setPresence and setOnline produce new snapshots; setOnline honours keep', () => {
+    const store = new ChatStore()
+    store.setOnline([1, 2])
+    store.setPresence(3, true)
+    const s = store.getState()
+    store.setPresence(3, true)
+    expect(store.getState()).toBe(s)
+    store.setOnline([1], [2, 3])
+    expect(Object.keys(store.getState().online).sort()).toEqual(['1', '2', '3'])
+    store.setPresence(2, false)
+    expect(store.getState().online[2]).toBeUndefined()
+  })
+
+  it('removeThreads also drops members and typing of those rooms', () => {
+    const store = new ChatStore()
+    store.setMembers(1, [mem(2, null)])
+    store.setMembers(2, [mem(2, null)])
+    store.setTyping(1, 2, 'B', 10)
+    store.setTyping(2, 2, 'B', 10)
+    store.removeThreads([1])
+    expect(Object.keys(store.getState().members)).toEqual(['2'])
+    expect(Object.keys(store.getState().typing)).toEqual(['2'])
+  })
+})

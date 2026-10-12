@@ -37,6 +37,19 @@ describe('chatApi', () => {
     ])
   })
 
+  it('calls the members and presence endpoints', async () => {
+    const { calls } = mockFetch({
+      'GET /api/rooms/4/members': { json: [{ user_id: 1, full_name: 'A', last_read_message_id: null }] },
+      'GET /api/presence': { json: { online_user_ids: [1, 2] } },
+    })
+    expect(await chatApi.members(4)).toEqual([{ user_id: 1, full_name: 'A', last_read_message_id: null }])
+    expect(await chatApi.presence()).toEqual({ online_user_ids: [1, 2] })
+    expect(calls.map((c) => [c.method, c.path])).toEqual([
+      ['GET', '/api/rooms/4/members'],
+      ['GET', '/api/presence'],
+    ])
+  })
+
   it('encodes the directory search term', async () => {
     const { calls } = mockFetch({ 'GET /api/users/directory': { json: [] } })
     await chatApi.directory('ha le & co')

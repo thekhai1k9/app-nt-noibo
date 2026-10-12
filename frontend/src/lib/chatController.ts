@@ -11,11 +11,14 @@ export interface ChatControllerDeps {
   newClientId?: () => string
   isVisible?: () => boolean
   sendTimeoutMs?: number
+  now?: () => number
 }
 
 const PAGE_SIZE = 50
 const CATCH_UP_PAGE = 100
 const CATCH_UP_MAX_PAGES = 20
+const TYPING_TTL_MS = 5000
+const TYPING_SEND_INTERVAL_MS = 3000
 
 interface PendingMeta {
   roomId: number
@@ -35,7 +38,30 @@ export class ChatController {
   private readonly catchUpRuns = new Map<number, Promise<void>>()
   private readonly catchUpAgain = new Set<number>()
 
+  private disposed = false
+  private readonly typingTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly lastTypingSent = new Map<number, number>()
+  private readonly membersInFlight = new Map<number, { token: object; run: Promise<void> }>()
+  /** Sự kiện read đến khi danh sách thành viên chưa tải: áp lại sau khi tải để bản REST cũ không làm lùi mốc. */
+  private readonly pendingReads = new Map<number, Map<number, number>>()
+  private presenceSeq = 0
+  private presenceRequestSeq = 0
+  private readonly presenceLiveAt = new Map<number, number>()
+
   constructor(private readonly deps: ChatControllerDeps) {}
+
+  get meId(): number {
+    return this.deps.meId
+  }
+
+  private now(): number {
+    return (this.deps.now ?? Date.now)()
+  }
+
+  /** Bật lại sau dispose() (effect React chạy lại trong StrictMode dùng cùng một controller). */
+  activate(): void {
+    this.disposed = false
+  }
 
   // ---- tải dữ liệu ----
 
@@ -60,24 +86,42 @@ export class ChatController {
 
   async openRoom(roomId: number): Promise<void> {
     const thread = this.deps.store.getState().threads[roomId]
+    const members = this.loadMembers(roomId)
     if (thread?.loaded) await this.catchUp(roomId)
     else await this.loadLatest(roomId)
     this.markReadIfViewing(roomId)
+    await members
   }
 
   /** Phòng đã bị lưu trữ/xoá khỏi danh sách: bỏ thread, tin đang chờ, hẹn giờ để khỏi gọi API vô ích. */
   private pruneRemovedRooms(alive: Set<number>): void {
-    const threads = this.deps.store.getState().threads
+    const state = this.deps.store.getState()
+    const threads = state.threads
     // Không bỏ phòng đang xem hay thread còn tin chờ gửi; bản chụp sau sẽ dọn nếu phòng thật sự đã mất.
-    const gone = Object.keys(threads)
-      .map(Number)
-      .filter((id) => !alive.has(id) && id !== this.activeRoom && !threads[id].items.some((m) => m.pending))
+    const known = new Set([...Object.keys(threads), ...Object.keys(state.members), ...Object.keys(state.typing)].map(Number))
+    const gone = [...known].filter((id) => !alive.has(id) && id !== this.activeRoom && !threads[id]?.items.some((m) => m.pending))
     if (gone.length === 0) return
     for (const id of gone) {
       this.lastMarked.delete(id)
       this.syncedThrough.delete(id)
     }
+    this.forgetRooms(gone)
     this.deps.store.removeThreads(gone)
+  }
+
+  /** Phòng bị bỏ: huỷ hẹn giờ soạn tin, tải thành viên đang bay và dữ liệu đệm của phòng. */
+  private forgetRooms(roomIds: number[]): void {
+    for (const id of roomIds) {
+      for (const [key, timer] of this.typingTimers) {
+        if (key.startsWith(`${id}:`)) {
+          clearTimeout(timer)
+          this.typingTimers.delete(key)
+        }
+      }
+      this.membersInFlight.delete(id)
+      this.pendingReads.delete(id)
+      this.lastTypingSent.delete(id)
+    }
   }
 
   private loadLatest(roomId: number): Promise<void> {
@@ -252,6 +296,18 @@ export class ChatController {
         break
       case 'rooms_changed':
         void this.loadRooms()
+        void this.refreshPresence() // phòng chung mới có thể làm lộ thêm người online
+        if (this.activeRoom !== null) void this.loadMembers(this.activeRoom)
+        break
+      case 'typing':
+        this.onTyping(event.room_id, event.user_id, event.user_name)
+        break
+      case 'read':
+        this.onRead(event.room_id, event.user_id, event.message_id)
+        break
+      case 'presence':
+        this.presenceLiveAt.set(event.user_id, ++this.presenceSeq)
+        this.deps.store.setPresence(event.user_id, event.online)
         break
       case 'message':
         this.onMessage(event.message)
@@ -282,7 +338,8 @@ export class ChatController {
     // Lần tải đầu có thể chưa tạo thread nào trong store, nên duyệt theo các lần tải đang chạy.
     for (const roomId of this.latestInFlight.keys()) if (!loadedRooms.includes(roomId)) loading.push(roomId)
     this.resendPending()
-    const work: Promise<void>[] = [this.loadRooms()]
+    const work: Promise<void>[] = [this.loadRooms(), this.refreshPresence()]
+    if (this.activeRoom !== null) work.push(this.loadMembers(this.activeRoom))
     for (const roomId of loadedRooms) {
       work.push(this.catchUp(roomId).then(() => this.markReadIfViewing(roomId)))
     }
@@ -301,10 +358,105 @@ export class ChatController {
     const mine = message.sender_id === this.deps.meId
     if (mine && message.client_id) this.confirm(message.client_id)
     const viewing = this.isViewing(message.room_id)
+    this.clearTypingEntry(message.room_id, message.sender_id)
     this.deps.store.upsertMessage(message)
     const known = this.deps.store.bumpRoom(message, !mine && !viewing)
     if (!known) void this.loadRooms()
     if (!mine && viewing) this.markReadIfViewing(message.room_id)
+  }
+
+  // ---- đã xem, đang soạn, online ----
+
+  private isKnownRoom(roomId: number): boolean {
+    return this.deps.store.getState().rooms.some((r) => r.id === roomId)
+  }
+
+  private onTyping(roomId: number, userId: number, name: string): void {
+    if (this.disposed || userId === this.deps.meId || !this.isKnownRoom(roomId)) return
+    this.deps.store.setTyping(roomId, userId, name, this.now() + TYPING_TTL_MS)
+    const key = `${roomId}:${userId}`
+    const old = this.typingTimers.get(key)
+    if (old) clearTimeout(old)
+    this.typingTimers.set(
+      key,
+      setTimeout(() => {
+        this.typingTimers.delete(key)
+        this.deps.store.clearTyping(roomId, userId)
+      }, TYPING_TTL_MS),
+    )
+  }
+
+  private clearTypingEntry(roomId: number, userId: number): void {
+    const key = `${roomId}:${userId}`
+    const timer = this.typingTimers.get(key)
+    if (timer) clearTimeout(timer)
+    this.typingTimers.delete(key)
+    this.deps.store.clearTyping(roomId, userId)
+  }
+
+  private onRead(roomId: number, userId: number, messageId: number): void {
+    if (this.deps.store.getState().members[roomId]) {
+      this.deps.store.applyRead(roomId, userId, messageId)
+    } else if (this.isKnownRoom(roomId)) {
+      const pending = this.pendingReads.get(roomId) ?? new Map<number, number>()
+      pending.set(userId, Math.max(pending.get(userId) ?? 0, messageId))
+      this.pendingReads.set(roomId, pending)
+    }
+    if (userId === this.deps.meId) {
+      // Đồng bộ đa tab; không xoá nếu đã có tin mới hơn mốc đã đọc (tin đến trước sự kiện này).
+      const r = this.deps.store.getState().rooms.find((x) => x.id === roomId)
+      if (r && (!r.last_message || r.last_message.id <= messageId)) this.deps.store.clearUnread(roomId)
+    }
+  }
+
+  /** Tải lại danh sách online; sự kiện presence trực tiếp đến trong lúc chờ được ưu tiên hơn bản chụp. */
+  async refreshPresence(): Promise<void> {
+    const startSeq = this.presenceSeq
+    const requestSeq = ++this.presenceRequestSeq
+    try {
+      const res = await this.deps.api.presence()
+      if (this.disposed || requestSeq !== this.presenceRequestSeq) return
+      const keep = [...this.presenceLiveAt].filter(([, seq]) => seq > startSeq).map(([id]) => id)
+      this.deps.store.setOnline(res.online_user_ids, keep)
+    } catch {
+      // giữ nguyên; lần ready/resync/rooms_changed sau sẽ tải lại
+    }
+  }
+
+  /** Tải thành viên của phòng; chỉ một lần cùng lúc cho mỗi phòng. Lỗi giữ nguyên danh sách cũ. */
+  loadMembers(roomId: number): Promise<void> {
+    const existing = this.membersInFlight.get(roomId)
+    if (existing) return existing.run
+    const token = {}
+    const run = (async () => {
+      try {
+        const list = await this.deps.api.members(roomId)
+        if (this.disposed || this.membersInFlight.get(roomId)?.token !== token) return
+        this.deps.store.setMembers(roomId, list)
+        const pending = this.pendingReads.get(roomId)
+        this.pendingReads.delete(roomId)
+        if (pending) for (const [uid, mid] of pending) this.deps.store.applyRead(roomId, uid, mid)
+      } catch {
+        // danh sách cũ giữ nguyên
+      } finally {
+        if (this.membersInFlight.get(roomId)?.token === token) this.membersInFlight.delete(roomId)
+      }
+    })()
+    this.membersInFlight.set(roomId, { token, run })
+    return run
+  }
+
+  /** Báo "đang soạn" tối đa 1 lần/3 giây mỗi phòng, chỉ khi socket mở; không bao giờ ném lỗi. */
+  sendTyping(roomId: number): void {
+    if (this.disposed) return
+    try {
+      const now = this.now()
+      const last = this.lastTypingSent.get(roomId)
+      if (last !== undefined && now - last < TYPING_SEND_INTERVAL_MS) return
+      if (this.deps.socket.send({ type: 'typing', room_id: roomId })) this.lastTypingSent.set(roomId, now)
+    } catch {
+      // bỏ qua
+    }
   }
 
   // ---- đã đọc ----
@@ -360,5 +512,10 @@ export class ChatController {
   dispose(): void {
     this.timers.forEach((timer) => clearTimeout(timer))
     this.timers.clear()
+    this.typingTimers.forEach((timer) => clearTimeout(timer))
+    this.typingTimers.clear()
+    this.membersInFlight.clear()
+    this.pendingReads.clear()
+    this.disposed = true
   }
 }

@@ -58,6 +58,12 @@ export interface Room {
   last_activity: string
 }
 
+export interface RoomMember {
+  user_id: number
+  full_name: string
+  last_read_message_id: number | null
+}
+
 export interface MessagePage {
   items: Message[]
   has_more_before: boolean
@@ -100,4 +106,7 @@ export type ServerEvent =
   | { type: 'rooms_changed' }
   | { type: 'resync' }
   | { type: 'pong' }
+  | { type: 'typing'; room_id: number; user_id: number; user_name: string }
+  | { type: 'read'; room_id: number; user_id: number; message_id: number }
+  | { type: 'presence'; user_id: number; online: boolean }
   | { type: 'error'; code: string; client_id: string | null }

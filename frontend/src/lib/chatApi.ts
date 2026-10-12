@@ -1,5 +1,5 @@
 import { api } from './api'
-import type { DirectoryUser, Message, MessagePage, Room } from './types'
+import type { DirectoryUser, Message, MessagePage, Room, RoomMember } from './types'
 
 export interface MessageQuery {
   before?: number
@@ -23,6 +23,8 @@ export const chatApi = {
   messages: (roomId: number, params: MessageQuery) => api<MessagePage>(`/rooms/${roomId}/messages${query(params)}`),
   markRead: (roomId: number, messageId: number) =>
     api(`/rooms/${roomId}/read`, { method: 'POST', json: { message_id: messageId } }),
+  members: (roomId: number) => api<RoomMember[]>(`/rooms/${roomId}/members`),
+  presence: () => api<{ online_user_ids: number[] }>('/presence'),
   openDirect: (userId: number) => api<Room>('/rooms/direct', { method: 'POST', json: { user_id: userId } }),
   editMessage: (messageId: number, body: string) =>
     api<Message>(`/messages/${messageId}`, { method: 'PATCH', json: { body } }),

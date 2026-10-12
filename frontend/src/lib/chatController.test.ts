@@ -32,7 +32,16 @@ function setup(opts: { visible?: boolean; open?: boolean } = {}) {
     editMessage: vi.fn(),
     deleteMessage: vi.fn().mockResolvedValue(undefined),
     directory: vi.fn(),
+    members: vi.fn((roomId: number) => {
+      if (!(roomId >= 1)) return Promise.reject(new Error('bad room id'))
+      return Promise.resolve([
+        { user_id: 1, full_name: 'Tôi', last_read_message_id: null as number | null },
+        { user_id: 2, full_name: 'Bob', last_read_message_id: null as number | null },
+      ])
+    }),
+    presence: vi.fn().mockResolvedValue({ online_user_ids: [] as number[] }),
   }
+  let nowMs = 1_000_000
   let isOpen = opts.open ?? true
   const socket = { send: vi.fn((_payload: Record<string, unknown>) => isOpen) }
   let counter = 0
@@ -45,8 +54,9 @@ function setup(opts: { visible?: boolean; open?: boolean } = {}) {
     newClientId: () => `cid-${++counter}`,
     isVisible: () => opts.visible ?? true,
     sendTimeoutMs: 15_000,
+    now: () => nowMs,
   })
-  return { store, api, socket, controller, setOpen: (v: boolean) => { isOpen = v } }
+  return { store, api, socket, controller, setOpen: (v: boolean) => { isOpen = v }, advance: (ms: number) => { nowMs += ms } }
 }
 
 // setTimeout is faked in this file, so flush with microtasks instead
@@ -245,7 +255,7 @@ describe('ChatController: unread counts and read markers', () => {
   it('counts as unread when the room is open but the tab is hidden, then marks read when it becomes visible', async () => {
     let visible = false
     const store = new ChatStore()
-    const api = { rooms: vi.fn().mockResolvedValue([room(1)]), messages: vi.fn().mockResolvedValue(page([1])), markRead: vi.fn().mockResolvedValue(undefined), openDirect: vi.fn(), editMessage: vi.fn(), deleteMessage: vi.fn(), directory: vi.fn() }
+    const api = { rooms: vi.fn().mockResolvedValue([room(1)]), messages: vi.fn().mockResolvedValue(page([1])), markRead: vi.fn().mockResolvedValue(undefined), openDirect: vi.fn(), editMessage: vi.fn(), deleteMessage: vi.fn(), directory: vi.fn(), members: vi.fn().mockResolvedValue([]), presence: vi.fn().mockResolvedValue({ online_user_ids: [] }) }
     const controller = new ChatController({ store, api, socket: { send: vi.fn(() => true) }, meId: 1, meName: 'Tôi', isVisible: () => visible })
     await controller.loadRooms()
     controller.setActiveRoom(1)
@@ -672,5 +682,162 @@ describe('ChatController: resync cursor and room pruning', () => {
     await loading
     await flush()
     expect(store.getState().rooms.some((r) => r.id === 9)).toBe(true)
+  })
+})
+
+describe('ChatController: read receipts, typing, presence', () => {
+  const typing = (room_id: number, user_id: number, user_name = 'Bob') => ({ type: 'typing' as const, room_id, user_id, user_name })
+
+  it('typing from others expires after 5s; own typing and unknown rooms are ignored', async () => {
+    const { controller, store } = setup()
+    await controller.loadRooms()
+    controller.handleSocketEvent(typing(1, 1, 'Tôi'))
+    controller.handleSocketEvent(typing(99, 2))
+    expect(store.getState().typing).toEqual({})
+    controller.handleSocketEvent(typing(1, 2))
+    expect(store.getState().typing[1][2].name).toBe('Bob')
+    vi.advanceTimersByTime(4999)
+    expect(store.getState().typing[1]?.[2]).toBeDefined()
+    vi.advanceTimersByTime(1)
+    expect(store.getState().typing).toEqual({})
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a message from the typist clears their typing immediately', async () => {
+    const { controller, store } = setup()
+    await controller.loadRooms()
+    controller.handleSocketEvent(typing(1, 2))
+    controller.handleSocketEvent({ type: 'message', message: msg(10) })
+    expect(store.getState().typing).toEqual({})
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('read events update member markers; own read clears unread; unknown rooms do not throw', async () => {
+    const { controller, store, api } = setup()
+    api.rooms.mockResolvedValue([room(1, { unread_count: 3 }), room(2)])
+    await controller.loadRooms()
+    await controller.loadMembers(1)
+    controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 2, message_id: 5 })
+    expect(store.getState().members[1].find((m) => m.user_id === 2)?.last_read_message_id).toBe(5)
+    expect(store.getState().rooms.find((r) => r.id === 1)?.unread_count).toBe(3)
+    controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 1, message_id: 5 })
+    expect(store.getState().rooms.find((r) => r.id === 1)?.unread_count).toBe(0)
+    expect(() => controller.handleSocketEvent({ type: 'read', room_id: 77, user_id: 1, message_id: 5 })).not.toThrow()
+  })
+
+  it('own read from another tab does not clear unread when a newer message already arrived', async () => {
+    const { controller, store, api } = setup()
+    api.rooms.mockResolvedValue([room(1, { unread_count: 1, last_message: msg(9) })])
+    await controller.loadRooms()
+    controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 1, message_id: 5 })
+    expect(store.getState().rooms[0].unread_count).toBe(1)
+  })
+
+  it('a read event that lands while members are loading is applied on top of the stale snapshot', async () => {
+    const { controller, store, api } = setup()
+    await controller.loadRooms()
+    let resolve: (m: { user_id: number; full_name: string; last_read_message_id: number | null }[]) => void = () => {}
+    api.members.mockImplementationOnce(() => new Promise((r) => { resolve = r }))
+    const p = controller.loadMembers(1)
+    controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 2, message_id: 8 })
+    resolve([{ user_id: 2, full_name: 'Bob', last_read_message_id: 3 }])
+    await p
+    expect(store.getState().members[1][0].last_read_message_id).toBe(8)
+  })
+
+  it('presence events toggle online, and live events win over an older in-flight snapshot', async () => {
+    const { controller, store, api } = setup()
+    controller.handleSocketEvent({ type: 'presence', user_id: 2, online: true })
+    expect(store.getState().online[2]).toBe(true)
+    controller.handleSocketEvent({ type: 'presence', user_id: 2, online: false })
+    expect(store.getState().online[2]).toBeUndefined()
+    let resolve: (v: { online_user_ids: number[] }) => void = () => {}
+    api.presence.mockImplementationOnce(() => new Promise((r) => { resolve = r }))
+    const p = controller.refreshPresence()
+    controller.handleSocketEvent({ type: 'presence', user_id: 2, online: true })
+    controller.handleSocketEvent({ type: 'presence', user_id: 3, online: false })
+    resolve({ online_user_ids: [3, 4] })
+    await p
+    expect(Object.keys(store.getState().online).map(Number).sort()).toEqual([2, 4])
+  })
+
+  it('ready and rooms_changed refresh presence; ready loads members only for the open room', async () => {
+    const { controller, api } = setup()
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    await flush()
+    expect(api.presence).toHaveBeenCalledTimes(1)
+    expect(api.members).not.toHaveBeenCalled()
+    controller.setActiveRoom(1)
+    await controller.openRoom(1)
+    expect(api.members).toHaveBeenCalledTimes(1)
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    await flush()
+    expect(api.presence).toHaveBeenCalledTimes(2)
+    expect(api.members).toHaveBeenCalledTimes(2)
+    expect(api.members).toHaveBeenLastCalledWith(1)
+    controller.handleSocketEvent({ type: 'rooms_changed' })
+    await flush()
+    expect(api.presence).toHaveBeenCalledTimes(3)
+  })
+
+  it('sendTyping is throttled to once per 3s, needs an open socket and never throws', () => {
+    const { controller, socket, advance, setOpen } = setup()
+    for (let i = 0; i < 10; i++) controller.sendTyping(1)
+    expect(socket.send).toHaveBeenCalledTimes(1)
+    expect(socket.send).toHaveBeenCalledWith({ type: 'typing', room_id: 1 })
+    advance(2999)
+    controller.sendTyping(1)
+    expect(socket.send).toHaveBeenCalledTimes(1)
+    advance(1)
+    controller.sendTyping(1)
+    expect(socket.send).toHaveBeenCalledTimes(2)
+    setOpen(false)
+    advance(5000)
+    controller.sendTyping(1)
+    controller.sendTyping(1)
+    expect(socket.send).toHaveBeenCalledTimes(4) // a closed socket does not start the throttle window
+    socket.send.mockImplementation(() => { throw new Error('boom') })
+    expect(() => controller.sendTyping(2)).not.toThrow()
+    controller.dispose()
+    socket.send.mockClear()
+    controller.sendTyping(3)
+    expect(socket.send).not.toHaveBeenCalled()
+  })
+
+  it('concurrent loadMembers share one request; a failure keeps the old list', async () => {
+    const { controller, store, api } = setup()
+    await Promise.all([controller.loadMembers(1), controller.loadMembers(1)])
+    expect(api.members).toHaveBeenCalledTimes(1)
+    const old = store.getState().members[1]
+    api.members.mockRejectedValueOnce(new Error('x'))
+    await controller.loadMembers(1)
+    expect(store.getState().members[1]).toBe(old)
+  })
+
+  it('dispose clears typing timers', async () => {
+    const { controller } = setup()
+    await controller.loadRooms()
+    controller.handleSocketEvent(typing(1, 2))
+    expect(vi.getTimerCount()).toBe(1)
+    controller.dispose()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('pruning removed rooms drops their typing timers, members and in-flight member loads', async () => {
+    const { controller, store, api } = setup()
+    await controller.loadRooms()
+    await controller.loadMembers(2)
+    controller.handleSocketEvent(typing(2, 2))
+    expect(vi.getTimerCount()).toBe(1)
+    let resolve: (m: never[]) => void = () => {}
+    api.members.mockImplementationOnce(() => new Promise((r) => { resolve = r }))
+    const inflight = controller.loadMembers(2)
+    api.rooms.mockResolvedValue([room(1)])
+    await controller.loadRooms()
+    resolve([])
+    await inflight
+    expect(store.getState().typing[2]).toBeUndefined()
+    expect(store.getState().members[2]).toBeUndefined()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
