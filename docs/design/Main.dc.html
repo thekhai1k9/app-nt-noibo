@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Chat chính</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:'Be Vietnam Pro',system-ui,sans-serif}
+a{color:#0B6E7F}a:hover{color:#08515e}
+</style>
+</helmet>
+<div style="display: flex; flex-wrap: wrap; align-items: flex-start; background: #F2F4F7; color: #101828; font-family: 'Be Vietnam Pro', system-ui, sans-serif; font-size: 14px; line-height: 1.45">
+
+  <!-- Cột 1: danh sách phòng -->
+  <aside style="flex: 1 1 320px; max-width: 340px; height: 860px; box-sizing: border-box; background: #FFFFFF; border-right: 1px solid #E4E7EC; display: flex; flex-direction: column">
+    <div style="padding: 20px 20px 12px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; align-items: center; justify-content: space-between">
+        <div style="display: flex; align-items: center; gap: 10px">
+          <div style="width: 34px; height: 34px; border-radius: 10px; background: #0B6E7F; display: flex; align-items: center; justify-content: center">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>
+          </div>
+          <span style="font-size: 18px; font-weight: 700; letter-spacing: -0.01em">Kết Nối</span>
+        </div>
+        <button type="button" aria-label="Tạo cuộc trò chuyện mới" style="width: 44px; height: 44px; border: 1px solid #E4E7EC; background: #FFFFFF; border-radius: 12px; display: flex; align-items: center; justify-content: center; cursor: pointer">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#101828" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <label style="display: flex; align-items: center; gap: 8px; height: 44px; box-sizing: border-box; padding: 0 12px; background: #F2F4F7; border-radius: 12px; color: #596579">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#596579" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input type="text" placeholder="Tìm người, nhóm, tin nhắn" aria-label="Tìm kiếm" style="flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font: inherit; color: #101828">
+      </label>
+      <div style="display: flex; gap: 6px">
+        <button type="button" style="height: 36px; padding: 0 14px; border: 0; border-radius: 18px; background: #0B6E7F; color: #FFFFFF; font: inherit; font-weight: 600; cursor: pointer">Tất cả</button>
+        <button type="button" style="height: 36px; padding: 0 14px; border: 0; border-radius: 18px; background: #F2F4F7; color: #344054; font: inherit; font-weight: 500; cursor: pointer">Chưa đọc <span style="font-weight: 700; color: #D92D20">4</span></button>
+        <button type="button" style="height: 36px; padding: 0 14px; border: 0; border-radius: 18px; background: #F2F4F7; color: #344054; font: inherit; font-weight: 500; cursor: pointer">Nhóm</button>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 4px 10px 8px; display: flex; flex-direction: column; gap: 2px">
+      <sc-for list="{{rooms}}" as="r" hint-placeholder-count="7">
+        <div style="display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 12px; background: {{r.bg}}">
+          <div style="position: relative; flex: none">
+            <div style="width: 46px; height: 46px; border-radius: {{r.radius}}; background: {{r.color}}; color: {{r.ink}}; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px">{{r.initials}}</div>
+            <sc-if value="{{r.showDot}}" hint-placeholder-val="{{ true }}">
+              <span style="position: absolute; right: -1px; bottom: -1px; width: 13px; height: 13px; border-radius: 50%; background: {{r.dot}}; border: 2px solid #FFFFFF"></span>
+            </sc-if>
+          </div>
+          <div style="flex: 1; min-width: 0">
+            <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px">
+              <span style="font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.name}}</span>
+              <span style="flex: none; font-size: 12px; color: #596579">{{r.time}}</span>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px">
+              <span style="font-size: 13px; color: #596579; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.preview}}</span>
+              <sc-if value="{{r.hasUnread}}" hint-placeholder-val="{{ true }}">
+                <span style="flex: none; min-width: 20px; height: 20px; box-sizing: border-box; padding: 0 6px; border-radius: 10px; background: #D92D20; color: #FFFFFF; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center">{{r.unread}}</span>
+              </sc-if>
+            </div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="border-top: 1px solid #E4E7EC; padding: 12px 16px; display: flex; align-items: center; gap: 12px">
+      <div style="position: relative; flex: none">
+        <div style="width: 40px; height: 40px; border-radius: 50%; background: #D5D9EB; color: #2D3470; display: flex; align-items: center; justify-content: center; font-weight: 700">PL</div>
+        <span style="position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px; border-radius: 50%; background: #12B76A; border: 2px solid #FFFFFF"></span>
+      </div>
+      <div style="flex: 1; min-width: 0">
+        <div style="font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Phạm Đức Long</div>
+        <div style="font-size: 12px; color: #596579">Hà Nội · Quản trị viên</div>
+      </div>
+      <a href="Admin-Users.dc.html" aria-label="Mở trang quản trị" style="width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; background: #E0F2F4">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0B6E7F" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+      </a>
+    </div>
+  </aside>
+
+  <!-- Cột 2: hội thoại -->
+  <main style="flex: 999 1 520px; min-width: 0; height: 860px; display: flex; flex-direction: column; background: #FAFBFC">
+    <header style="height: 72px; box-sizing: border-box; padding: 0 24px; background: #FFFFFF; border-bottom: 1px solid #E4E7EC; display: flex; align-items: center; justify-content: space-between; gap: 16px">
+      <div style="min-width: 0">
+        <div style="font-size: 17px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Dự án kho Đà Nẵng</div>
+        <div style="display: flex; align-items: center; gap: 8px; margin-top: 3px; flex-wrap: wrap">
+          <span style="font-size: 12px; color: #596579">12 thành viên · 7 đang online</span>
+          <span style="padding: 1px 8px; border-radius: 10px; background: #E0F2F4; color: #08515e; font-size: 12px; font-weight: 600">Hà Nội</span>
+          <span style="padding: 1px 8px; border-radius: 10px; background: #FEF0C7; color: #7A4A06; font-size: 12px; font-weight: 600">Đà Nẵng</span>
+          <span style="padding: 1px 8px; border-radius: 10px; background: #E4E7F7; color: #2D3470; font-size: 12px; font-weight: 600">TP.HCM</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 6px">
+        <button type="button" aria-label="Tìm trong cuộc trò chuyện" style="width: 44px; height: 44px; border: 0; background: transparent; border-radius: 12px; display: flex; align-items: center; justify-content: center; cursor: pointer">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#344054" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        </button>
+        <button type="button" aria-label="Thành viên" style="width: 44px; height: 44px; border: 0; background: #E0F2F4; border-radius: 12px; display: flex; align-items: center; justify-content: center; cursor: pointer">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0B6E7F" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.4 3.2-5.5 6.5-5.5s5.9 2.1 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.8c1.8.7 3 2.3 3.3 5.2"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 20px 24px 12px; display: flex; flex-direction: column; gap: 14px">
+      <div style="align-self: center; padding: 4px 12px; border-radius: 12px; background: #EAECF0; color: #475467; font-size: 12px; font-weight: 600">Hôm nay</div>
+
+      <sc-for list="{{messages}}" as="m" hint-placeholder-count="5">
+        <div style="display: flex; gap: 10px; align-items: flex-end; flex-direction: {{m.dir}}; max-width: 100%">
+          <div style="flex: none; width: 34px; height: 34px; border-radius: 50%; background: {{m.color}}; color: {{m.ink}}; display: {{m.avatarDisplay}}; align-items: center; justify-content: center; font-size: 12px; font-weight: 700">{{m.initials}}</div>
+          <div style="max-width: 68%; display: flex; flex-direction: column; gap: 4px; align-items: {{m.align}}">
+            <div style="display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: #596579">
+              <span style="font-weight: 600; color: #344054">{{m.name}}</span>
+              <span>{{m.branch}}</span>
+              <span>{{m.time}}</span>
+            </div>
+            <div style="padding: 10px 14px; border-radius: 16px; background: {{m.bg}}; color: {{m.fg}}; border: 1px solid {{m.border}}; display: flex; flex-direction: column; gap: 8px">
+              <sc-if value="{{m.hasReply}}" hint-placeholder-val="{{ false }}">
+                <div style="padding: 6px 10px; border-radius: 8px; background: rgba(16,24,40,0.07); font-size: 13px">
+                  <div style="font-weight: 600">{{m.replyName}}</div>
+                  <div style="opacity: 0.85">{{m.replyText}}</div>
+                </div>
+              </sc-if>
+              <div>
+                <sc-if value="{{m.hasMention}}" hint-placeholder-val="{{ false }}">
+                  <span style="padding: 0 4px; border-radius: 4px; background: #FEF0C7; color: #7A4A06; font-weight: 600">{{m.mention}}</span>
+                </sc-if>
+                {{m.text}}
+              </div>
+              <sc-if value="{{m.hasFile}}" hint-placeholder-val="{{ false }}">
+                <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: #F2F4F7; color: #101828">
+                  <div style="width: 36px; height: 36px; border-radius: 8px; background: #FDE7E4; display: flex; align-items: center; justify-content: center">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B42318" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
+                  </div>
+                  <div style="min-width: 0">
+                    <div style="font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{m.fileName}}</div>
+                    <div style="font-size: 12px; color: #596579">{{m.fileSize}}</div>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+            <sc-if value="{{m.hasSeen}}" hint-placeholder-val="{{ false }}">
+              <span style="font-size: 12px; color: #596579">Đã xem bởi 4 người</span>
+            </sc-if>
+          </div>
+        </div>
+      </sc-for>
+
+      <div style="display: flex; align-items: center; gap: 8px; color: #596579; font-size: 13px">
+        <span style="display: inline-flex; gap: 3px" aria-hidden="true">
+          <span style="width: 6px; height: 6px; border-radius: 50%; background: #98A2B3"></span>
+          <span style="width: 6px; height: 6px; border-radius: 50%; background: #667085"></span>
+          <span style="width: 6px; height: 6px; border-radius: 50%; background: #98A2B3"></span>
+        </span>
+        Nguyễn Minh Anh đang soạn tin…
+      </div>
+    </div>
+
+    <div style="position: relative; padding: 0 24px 20px">
+      <button type="button" style="position: absolute; right: 36px; top: -52px; height: 40px; padding: 0 16px; border: 0; border-radius: 20px; background: #101828; color: #FFFFFF; font: inherit; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer; box-shadow: 0 4px 14px rgba(16,24,40,0.25)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+        3 tin mới
+      </button>
+      <div style="display: flex; align-items: flex-end; gap: 8px; padding: 8px; background: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 16px">
+        <button type="button" aria-label="Đính kèm tệp" style="flex: none; width: 44px; height: 44px; border: 0; background: transparent; border-radius: 12px; display: flex; align-items: center; justify-content: center; cursor: pointer">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#475467" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.9-8.9a3.7 3.7 0 0 1 5.2 5.2l-8.9 8.9a1.8 1.8 0 0 1-2.6-2.6l8.2-8.2"/></svg>
+        </button>
+        <textarea rows="1" aria-label="Nhập tin nhắn" placeholder="Nhập tin nhắn, dùng @ để nhắc tên" style="flex: 1; min-width: 0; height: 44px; box-sizing: border-box; padding: 11px 4px; border: 0; outline: 0; resize: none; background: transparent; font: inherit; color: #101828"></textarea>
+        <button type="button" aria-label="Gửi tin nhắn" style="flex: none; width: 44px; height: 44px; border: 0; background: #0B6E7F; border-radius: 12px; display: flex; align-items: center; justify-content: center; cursor: pointer">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <!-- Cột 3: thành viên -->
+  <aside style="flex: 1 1 280px; max-width: 300px; height: 860px; box-sizing: border-box; background: #FFFFFF; border-left: 1px solid #E4E7EC; padding: 20px; display: flex; flex-direction: column; gap: 18px; overflow-y: auto">
+    <div>
+      <div style="font-size: 15px; font-weight: 700">Thành viên</div>
+      <div style="font-size: 12px; color: #596579; margin-top: 2px">7 đang online trong 12 người</div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 4px">
+      <sc-for list="{{members}}" as="p" hint-placeholder-count="6">
+        <div style="display: flex; align-items: center; gap: 12px; padding: 6px 0">
+          <div style="position: relative; flex: none">
+            <div style="width: 38px; height: 38px; border-radius: 50%; background: {{p.color}}; color: {{p.ink}}; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700">{{p.initials}}</div>
+            <span style="position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px; border-radius: 50%; background: {{p.dot}}; border: 2px solid #FFFFFF"></span>
+          </div>
+          <div style="flex: 1; min-width: 0">
+            <div style="font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.name}}</div>
+            <div style="font-size: 12px; color: #596579">{{p.branch}}</div>
+          </div>
+        </div>
+      </sc-for>
+      <a href="#" style="margin-top: 4px; font-weight: 600; font-size: 13px">Xem tất cả 12 người</a>
+    </div>
+    <div style="border-top: 1px solid #E4E7EC; padding-top: 16px">
+      <div style="font-size: 15px; font-weight: 700; margin-bottom: 10px">Tệp gần đây</div>
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: #F2F4F7">
+          <div style="width: 34px; height: 34px; border-radius: 8px; background: #FDE7E4; display: flex; align-items: center; justify-content: center">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#B42318" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
+          </div>
+          <div style="min-width: 0">
+            <div style="font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">BanVe_Kho-DaNang_rev3.pdf</div>
+            <div style="font-size: 12px; color: #596579">2,4 MB · 09:20</div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: #F2F4F7">
+          <div style="width: 34px; height: 34px; border-radius: 8px; background: #DCFAE6; display: flex; align-items: center; justify-content: center">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#067647" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg>
+          </div>
+          <div style="min-width: 0">
+            <div style="font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">TienDo_Thang10.xlsx</div>
+            <div style="font-size: 12px; color: #596579">186 KB · Hôm qua</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1360,"height":860}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const C = {
+      teal: ['#CFEAEE', '#08515e'], amber: ['#FCE7B2', '#7A4A06'], indigo: ['#D5D9EB', '#2D3470'],
+      rose: ['#F8D7DA', '#8A1F2C'], green: ['#D3F0DE', '#0B5B32'], slate: ['#E2E6EC', '#344054']
+    };
+    const room = (o) => ({
+      initials: o.i, color: C[o.c][0], ink: C[o.c][1], name: o.n, preview: o.p, time: o.t,
+      unread: o.u, hasUnread: o.u > 0, radius: o.d ? '50%' : '14px', showDot: !!o.d,
+      dot: o.on ? '#12B76A' : '#98A2B3', bg: o.a ? '#E0F2F4' : 'transparent'
+    });
+    const msg = (o) => {
+      const mine = !!o.mine;
+      return {
+        mine, dir: mine ? 'row-reverse' : 'row', align: mine ? 'flex-end' : 'flex-start',
+        initials: o.i, color: C[o.c][0], ink: C[o.c][1], avatarDisplay: mine ? 'none' : 'flex',
+        name: mine ? 'Bạn' : o.n, branch: o.b, time: o.t,
+        bg: mine ? '#0B6E7F' : '#FFFFFF', fg: mine ? '#FFFFFF' : '#101828', border: mine ? '#0B6E7F' : '#E4E7EC',
+        hasReply: !!o.rn, replyName: o.rn || '', replyText: o.rt || '',
+        hasMention: !!o.mn, mention: o.mn || '', text: o.x,
+        hasFile: !!o.fn, fileName: o.fn || '', fileSize: o.fs || '', hasSeen: !!o.seen
+      };
+    };
+    return {
+      rooms: [
+        room({ i: 'DN', c: 'amber', n: 'Dự án kho Đà Nẵng', p: 'Hà: Em gửi bản vẽ rev3 ạ', t: '10:05', u: 3, a: true }),
+        room({ i: 'MA', c: 'teal', n: 'Nguyễn Minh Anh', p: 'Ok anh, chiều em gửi', t: '09:58', u: 1, d: true, on: true }),
+        room({ i: 'TC', c: 'indigo', n: 'Toàn công ty', p: 'Phòng HC: Lịch nghỉ lễ đã cập nhật', t: '09:42', u: 0 }),
+        room({ i: 'KD', c: 'rose', n: 'Kinh doanh miền Nam', p: 'Huy: Báo giá đã gửi khách rồi nhé', t: '09:31', u: 0 }),
+        room({ i: 'KT', c: 'green', n: 'Kế toán Hà Nội', p: 'Chị Lan: Chốt công nợ trước thứ Sáu', t: '08:50', u: 0 }),
+        room({ i: 'TH', c: 'amber', n: 'Lê Thu Hà', p: 'Em nhận được rồi ạ', t: 'Hôm qua', u: 0, d: true, on: false }),
+        room({ i: 'IT', c: 'slate', n: 'IT hỗ trợ', p: 'Đã cấp lại mật khẩu cho anh', t: 'Hôm qua', u: 0 })
+      ],
+      messages: [
+        msg({ i: 'MA', c: 'teal', n: 'Nguyễn Minh Anh', b: 'Hà Nội', t: '09:12', x: 'Các anh chị cập nhật giúp em tiến độ phần móng kho Đà Nẵng trước 11h nhé.' }),
+        msg({ i: 'TH', c: 'amber', n: 'Lê Thu Hà', b: 'Đà Nẵng', t: '09:20', rn: 'Nguyễn Minh Anh', rt: 'Các anh chị cập nhật giúp em tiến độ phần móng…', x: 'Bên em đã đổ xong móng trục A–D, còn E–F dự kiến thứ Năm. Em gửi bản vẽ rev3 ngay đây ạ.', fn: 'BanVe_Kho-DaNang_rev3.pdf', fs: '2,4 MB' }),
+        msg({ mine: true, i: 'PL', c: 'indigo', b: 'Hà Nội', t: '09:41', mn: '@Trần Quốc Huy', x: 'anh xem giúp phần vận chuyển thép từ TP.HCM ra, kịp thứ Tư không?' }),
+        msg({ i: 'QH', c: 'rose', n: 'Trần Quốc Huy', b: 'TP.HCM', t: '09:48', x: 'Kịp anh. Xe chạy tối thứ Ba, sáng thứ Tư tới nơi. Em chốt với nhà vận tải rồi báo lại.' }),
+        msg({ mine: true, i: 'PL', c: 'indigo', b: 'Hà Nội', t: '10:02', x: 'Ok, chốt vậy nhé. Cảm ơn cả nhà.', seen: true })
+      ],
+      members: [
+        { initials: 'MA', color: C.teal[0], ink: C.teal[1], name: 'Nguyễn Minh Anh', branch: 'Hà Nội · Chủ nhóm', dot: '#12B76A' },
+        { initials: 'PL', color: C.indigo[0], ink: C.indigo[1], name: 'Phạm Đức Long', branch: 'Hà Nội', dot: '#12B76A' },
+        { initials: 'TH', color: C.amber[0], ink: C.amber[1], name: 'Lê Thu Hà', branch: 'Đà Nẵng', dot: '#12B76A' },
+        { initials: 'QH', color: C.rose[0], ink: C.rose[1], name: 'Trần Quốc Huy', branch: 'TP.HCM', dot: '#12B76A' },
+        { initials: 'BN', color: C.green[0], ink: C.green[1], name: 'Võ Bảo Ngọc', branch: 'Đà Nẵng', dot: '#98A2B3' },
+        { initials: 'KP', color: C.slate[0], ink: C.slate[1], name: 'Đặng Khánh Phúc', branch: 'TP.HCM', dot: '#98A2B3' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>
