@@ -4,7 +4,7 @@ from fastapi import FastAPI
 
 from app.config import get_settings
 from app.logging_conf import setup_logging
-from app.routers import auth, health
+from app.routers import admin_branches, auth, health
 
 DEFAULT_SECRET = "dev-secret-change-me"
 
@@ -27,6 +27,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(health.router, prefix="/api")
     app.include_router(auth.router, prefix="/api")
+    app.include_router(admin_branches.router, prefix="/api")
     return app
 
 

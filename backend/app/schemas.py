@@ -31,3 +31,27 @@ class UserOut(BaseModel):
     is_active: bool
     must_change_password: bool
     last_login_at: datetime | None
+
+
+class BranchIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=100)
+    code: str = Field(min_length=1, max_length=10)
+    address: str = Field(default="", max_length=200)
+
+
+class BranchUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    code: str | None = Field(default=None, min_length=1, max_length=10)
+    address: str | None = Field(default=None, max_length=200)
+
+
+class BranchOut(BaseModel):
+    id: int
+    name: str
+    code: str
+    address: str
+    user_count: int
