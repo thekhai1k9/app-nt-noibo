@@ -32,6 +32,7 @@ function setup(opts: { visible?: boolean; open?: boolean } = {}) {
     editMessage: vi.fn(),
     deleteMessage: vi.fn().mockResolvedValue(undefined),
     directory: vi.fn(),
+    // Rejects invalid ids (the real endpoint 404s on room ids < 1), so callers passing bad ids fail loudly.
     members: vi.fn((roomId: number) => {
       if (!(roomId >= 1)) return Promise.reject(new Error('bad room id'))
       return Promise.resolve([
@@ -804,10 +805,10 @@ describe('ChatController: read receipts, typing, presence', () => {
     expect(socket.send).not.toHaveBeenCalled()
   })
 
-  it('concurrent loadMembers share one request; a failure keeps the old list', async () => {
+  it('concurrent loadMembers coalesce into one in-flight request plus one re-run; a failure keeps the old list', async () => {
     const { controller, store, api } = setup()
     await Promise.all([controller.loadMembers(1), controller.loadMembers(1)])
-    expect(api.members).toHaveBeenCalledTimes(1)
+    expect(api.members).toHaveBeenCalledTimes(2)
     const old = store.getState().members[1]
     api.members.mockRejectedValueOnce(new Error('x'))
     await controller.loadMembers(1)
@@ -839,5 +840,105 @@ describe('ChatController: read receipts, typing, presence', () => {
     expect(store.getState().typing[2]).toBeUndefined()
     expect(store.getState().members[2]).toBeUndefined()
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('ChatController: review follow-ups', () => {
+  type Mem = { user_id: number; full_name: string; last_read_message_id: number | null }
+  const deferred = () => {
+    let resolve: (m: Mem[]) => void = () => {}
+    const promise = new Promise<Mem[]>((r) => { resolve = r })
+    return { promise, resolve }
+  }
+  const m = (user_id: number, last: number | null = null): Mem => ({ user_id, full_name: `U${user_id}`, last_read_message_id: last })
+
+  it('a loadMembers call during an in-flight load re-runs exactly once, so a member added meanwhile is not lost', async () => {
+    const { controller, store, api } = setup()
+    await controller.loadRooms()
+    const first = deferred()
+    api.members.mockImplementationOnce(() => first.promise)
+    const open = controller.loadMembers(1)
+    const again1 = controller.loadMembers(1)
+    const again2 = controller.loadMembers(1)
+    api.members.mockResolvedValueOnce([m(1), m(2), m(3)])
+    first.resolve([m(1), m(2)])
+    await Promise.all([open, again1, again2])
+    expect(api.members).toHaveBeenCalledTimes(2)
+    expect(store.getState().members[1].map((x) => x.user_id)).toEqual([1, 2, 3])
+  })
+
+  it('a read from a user missing from the loaded list reloads members and applies the buffered marker', async () => {
+    const { controller, store, api } = setup()
+    await controller.loadRooms()
+    await controller.loadMembers(1)
+    api.members.mockResolvedValueOnce([m(1), m(2), m(3)])
+    controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 3, message_id: 6 })
+    await flush()
+    expect(api.members).toHaveBeenCalledTimes(2)
+    expect(store.getState().members[1].find((x) => x.user_id === 3)?.last_read_message_id).toBe(6)
+  })
+
+  it('own read clears unread when the newer last message is my own reply, but not another person\'s', async () => {
+    const { controller, store, api } = setup()
+    api.rooms.mockResolvedValue([room(1, { unread_count: 1, last_message: msg(11, { sender_id: 1 }) }), room(2, { unread_count: 1, last_message: msg(11, { room_id: 2 }) })])
+    await controller.loadRooms()
+    controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 1, message_id: 10 })
+    controller.handleSocketEvent({ type: 'read', room_id: 2, user_id: 1, message_id: 10 })
+    expect(store.getState().rooms.find((r) => r.id === 1)?.unread_count).toBe(0)
+    expect(store.getState().rooms.find((r) => r.id === 2)?.unread_count).toBe(1)
+  })
+
+  it('a burst of rooms_changed makes at most two presence and rooms requests', async () => {
+    const { controller, api } = setup()
+    for (let i = 0; i < 5; i++) controller.handleSocketEvent({ type: 'rooms_changed' })
+    await flush()
+    expect(api.presence.mock.calls.length).toBeLessThanOrEqual(2)
+    expect(api.rooms.mock.calls.length).toBeLessThanOrEqual(2)
+  })
+
+  it('a failed trailing presence refresh keeps the snapshot that already arrived', async () => {
+    const { controller, store, api } = setup()
+    api.presence.mockResolvedValueOnce({ online_user_ids: [5] }).mockRejectedValueOnce(new Error('x'))
+    const a = controller.refreshPresence()
+    const b = controller.refreshPresence()
+    await Promise.all([a, b])
+    expect(Object.keys(store.getState().online)).toEqual(['5'])
+  })
+
+  it('resync reloads presence and the open room members', async () => {
+    const { controller, api } = setup()
+    controller.setActiveRoom(1)
+    controller.handleSocketEvent({ type: 'resync' })
+    await flush()
+    expect(api.presence).toHaveBeenCalledTimes(2)
+    expect(api.members).toHaveBeenCalledWith(1)
+  })
+
+  it('dispose clears typing entries from the store; activate makes typing work again', async () => {
+    const { controller, store } = setup()
+    await controller.loadRooms()
+    const ev = { type: 'typing' as const, room_id: 1, user_id: 2, user_name: 'Bob' }
+    controller.handleSocketEvent(ev)
+    controller.dispose()
+    expect(store.getState().typing).toEqual({})
+    controller.handleSocketEvent(ev)
+    expect(store.getState().typing).toEqual({})
+    controller.activate()
+    controller.handleSocketEvent(ev)
+    expect(store.getState().typing[1][2].name).toBe('Bob')
+    expect(vi.getTimerCount()).toBe(1)
+    controller.dispose()
+  })
+
+  it('stale buffered reads expire on the next members load', async () => {
+    const { controller, store, advance } = setup()
+    await controller.loadRooms()
+    await controller.loadMembers(1)
+    controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 9, message_id: 4 })
+    await flush()
+    advance(6 * 60_000)
+    await controller.loadMembers(1)
+    await controller.loadMembers(1)
+    expect(store.getState().members[1].some((x) => x.user_id === 9)).toBe(false)
   })
 })

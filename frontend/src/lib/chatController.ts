@@ -17,6 +17,7 @@ export interface ChatControllerDeps {
 const PAGE_SIZE = 50
 const CATCH_UP_PAGE = 100
 const CATCH_UP_MAX_PAGES = 20
+const PENDING_READ_TTL_MS = 5 * 60_000
 const TYPING_TTL_MS = 5000
 const TYPING_SEND_INTERVAL_MS = 3000
 
@@ -43,9 +44,13 @@ export class ChatController {
   private readonly lastTypingSent = new Map<number, number>()
   private readonly membersInFlight = new Map<number, { token: object; run: Promise<void> }>()
   /** Sự kiện read đến khi danh sách thành viên chưa tải: áp lại sau khi tải để bản REST cũ không làm lùi mốc. */
-  private readonly pendingReads = new Map<number, Map<number, number>>()
+  private readonly pendingReads = new Map<number, Map<number, { id: number; at: number }>>()
+  private readonly membersAgain = new Set<number>()
+  private presenceRun: Promise<void> | null = null
+  private presenceAgain = false
+  private roomsRun: Promise<void> | null = null
+  private roomsAgain = false
   private presenceSeq = 0
-  private presenceRequestSeq = 0
   private readonly presenceLiveAt = new Map<number, number>()
 
   constructor(private readonly deps: ChatControllerDeps) {}
@@ -120,6 +125,7 @@ export class ChatController {
       }
       this.membersInFlight.delete(id)
       this.pendingReads.delete(id)
+      this.membersAgain.delete(id)
       this.lastTypingSent.delete(id)
     }
   }
@@ -295,7 +301,7 @@ export class ChatController {
         void this.resync()
         break
       case 'rooms_changed':
-        void this.loadRooms()
+        void this.reloadRoomsCoalesced()
         void this.refreshPresence() // phòng chung mới có thể làm lộ thêm người online
         if (this.activeRoom !== null) void this.loadMembers(this.activeRoom)
         break
@@ -329,6 +335,24 @@ export class ChatController {
       default:
         break
     }
+  }
+
+  /** Chuỗi rooms_changed dồn dập: tối đa một lần tải đang chạy + một lần chờ. */
+  private reloadRoomsCoalesced(): Promise<void> {
+    if (this.roomsRun) {
+      this.roomsAgain = true
+      return this.roomsRun
+    }
+    const run = (async () => {
+      do {
+        this.roomsAgain = false
+        await this.loadRooms()
+      } while (this.roomsAgain && !this.disposed)
+    })().finally(() => {
+      if (this.roomsRun === run) this.roomsRun = null
+    })
+    this.roomsRun = run
+    return run
   }
 
   private async resync(): Promise<void> {
@@ -395,55 +419,103 @@ export class ChatController {
   }
 
   private onRead(roomId: number, userId: number, messageId: number): void {
-    if (this.deps.store.getState().members[roomId]) {
+    const list = this.deps.store.getState().members[roomId]
+    if (list?.some((m) => m.user_id === userId)) {
       this.deps.store.applyRead(roomId, userId, messageId)
     } else if (this.isKnownRoom(roomId)) {
-      const pending = this.pendingReads.get(roomId) ?? new Map<number, number>()
-      pending.set(userId, Math.max(pending.get(userId) ?? 0, messageId))
+      // Danh sách chưa tải, hoặc người này chưa có trong đó (mới vào phòng): đệm mốc và tải lại danh sách.
+      const pending = this.pendingReads.get(roomId) ?? new Map<number, { id: number; at: number }>()
+      pending.set(userId, { id: Math.max(pending.get(userId)?.id ?? 0, messageId), at: this.now() })
       this.pendingReads.set(roomId, pending)
+      if (list) void this.loadMembers(roomId)
     }
     if (userId === this.deps.meId) {
-      // Đồng bộ đa tab; không xoá nếu đã có tin mới hơn mốc đã đọc (tin đến trước sự kiện này).
+      // Đồng bộ đa tab; không xoá nếu có tin của người khác mới hơn mốc (tin đến trước sự kiện này).
       const r = this.deps.store.getState().rooms.find((x) => x.id === roomId)
-      if (r && (!r.last_message || r.last_message.id <= messageId)) this.deps.store.clearUnread(roomId)
+      const lm = r?.last_message
+      if (r && (!lm || lm.id <= messageId || lm.sender_id === this.deps.meId)) this.deps.store.clearUnread(roomId)
     }
   }
 
-  /** Tải lại danh sách online; sự kiện presence trực tiếp đến trong lúc chờ được ưu tiên hơn bản chụp. */
-  async refreshPresence(): Promise<void> {
+  /** Tải lại danh sách online (gộp: tối đa một lần đang chạy + một lần chờ). Sự kiện presence trực tiếp đến trong lúc chờ được ưu tiên hơn bản chụp. */
+  refreshPresence(): Promise<void> {
+    if (this.presenceRun) {
+      this.presenceAgain = true
+      return this.presenceRun
+    }
+    const run = (async () => {
+      do {
+        this.presenceAgain = false
+        await this.presenceOnce()
+      } while (this.presenceAgain && !this.disposed)
+    })().finally(() => {
+      if (this.presenceRun === run) this.presenceRun = null
+    })
+    this.presenceRun = run
+    return run
+  }
+
+  private async presenceOnce(): Promise<void> {
     const startSeq = this.presenceSeq
-    const requestSeq = ++this.presenceRequestSeq
     try {
       const res = await this.deps.api.presence()
-      if (this.disposed || requestSeq !== this.presenceRequestSeq) return
-      const keep = [...this.presenceLiveAt].filter(([, seq]) => seq > startSeq).map(([id]) => id)
+      if (this.disposed) return
+      const keep: number[] = []
+      for (const [id, seq] of this.presenceLiveAt) {
+        if (seq > startSeq) keep.push(id)
+        else this.presenceLiveAt.delete(id) // bản chụp này đã phản ánh sự kiện đó
+      }
       this.deps.store.setOnline(res.online_user_ids, keep)
     } catch {
       // giữ nguyên; lần ready/resync/rooms_changed sau sẽ tải lại
     }
   }
 
-  /** Tải thành viên của phòng; chỉ một lần cùng lúc cho mỗi phòng. Lỗi giữ nguyên danh sách cũ. */
+  /** Tải thành viên của phòng; một lần cùng lúc cho mỗi phòng, gọi thêm trong lúc đang tải thì chạy lại đúng một lần sau đó. */
   loadMembers(roomId: number): Promise<void> {
     const existing = this.membersInFlight.get(roomId)
-    if (existing) return existing.run
+    if (existing) {
+      this.membersAgain.add(roomId)
+      return existing.run
+    }
     const token = {}
+    const alive = () => !this.disposed && this.membersInFlight.get(roomId)?.token === token
     const run = (async () => {
       try {
-        const list = await this.deps.api.members(roomId)
-        if (this.disposed || this.membersInFlight.get(roomId)?.token !== token) return
-        this.deps.store.setMembers(roomId, list)
-        const pending = this.pendingReads.get(roomId)
-        this.pendingReads.delete(roomId)
-        if (pending) for (const [uid, mid] of pending) this.deps.store.applyRead(roomId, uid, mid)
-      } catch {
-        // danh sách cũ giữ nguyên
+        do {
+          this.membersAgain.delete(roomId)
+          await this.membersOnce(roomId, alive)
+        } while (this.membersAgain.has(roomId) && alive())
       } finally {
-        if (this.membersInFlight.get(roomId)?.token === token) this.membersInFlight.delete(roomId)
+        if (this.membersInFlight.get(roomId)?.token === token) {
+          this.membersInFlight.delete(roomId)
+          this.membersAgain.delete(roomId)
+        }
       }
     })()
     this.membersInFlight.set(roomId, { token, run })
     return run
+  }
+
+  private async membersOnce(roomId: number, alive: () => boolean): Promise<void> {
+    try {
+      const list = await this.deps.api.members(roomId)
+      if (!alive()) return
+      this.deps.store.setMembers(roomId, list)
+      const pending = this.pendingReads.get(roomId)
+      if (pending) {
+        const cutoff = this.now() - PENDING_READ_TTL_MS
+        for (const [uid, { id, at }] of pending) {
+          if (list.some((m) => m.user_id === uid)) {
+            this.deps.store.applyRead(roomId, uid, id)
+            pending.delete(uid)
+          } else if (at < cutoff) pending.delete(uid)
+        }
+        if (pending.size === 0) this.pendingReads.delete(roomId)
+      }
+    } catch {
+      // danh sách cũ giữ nguyên
+    }
   }
 
   /** Báo "đang soạn" tối đa 1 lần/3 giây mỗi phòng, chỉ khi socket mở; không bao giờ ném lỗi. */
@@ -516,6 +588,10 @@ export class ChatController {
     this.typingTimers.clear()
     this.membersInFlight.clear()
     this.pendingReads.clear()
+    this.membersAgain.clear()
+    this.presenceAgain = false
+    this.roomsAgain = false
+    this.deps.store.pruneTyping(Infinity) // store có thể sống lâu hơn controller
     this.disposed = true
   }
 }

@@ -7,12 +7,12 @@ import { ChatStore, EMPTY_THREAD, type ChatState, type Thread } from './chatStor
 import type { Room, RoomMember } from './types'
 import { ChatSocket, type SocketStatus } from './ws'
 
-interface ChatContextValue {
+export interface ChatContextValue {
   store: ChatStore
   controller: ChatController
 }
 
-const ChatContext = createContext<ChatContextValue | null>(null)
+export const ChatContext = createContext<ChatContextValue | null>(null)
 
 function build(userId: number, userName: string): { socket: ChatSocket } & ChatContextValue {
   const store = new ChatStore()
@@ -102,19 +102,17 @@ export function useMembers(roomId: number): RoomMember[] {
 
 const NO_NAMES: string[] = []
 
-/** Tên những người khác đang soạn tin trong phòng (còn hạn, loại chính mình). */
+/** Tên những người khác đang soạn tin trong phòng; hết hạn do hẹn giờ của controller xoá khỏi store. */
 export function useTyping(roomId: number): string[] {
-  const { store, controller } = useChatContext()
+  const { controller } = useChatContext()
   const entries = useChatState((s) => s.typing[roomId])
   return useMemo(() => {
-    void store
     if (!entries) return NO_NAMES
-    const now = Date.now()
     const names = Object.entries(entries)
-      .filter(([id, v]) => Number(id) !== controller.meId && v.until > now)
+      .filter(([id]) => Number(id) !== controller.meId)
       .map(([, v]) => v.name)
     return names.length === 0 ? NO_NAMES : names
-  }, [entries, store, controller])
+  }, [entries, controller])
 }
 
 export function useOnline(userId: number | null | undefined): boolean {
