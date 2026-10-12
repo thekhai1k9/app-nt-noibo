@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 
+from app.config import get_settings
 from app.security import (
     create_access_token,
     decode_access_token,
@@ -44,16 +45,21 @@ def test_decode_rejects_wrong_signature():
 def test_decode_rejects_expired():
     token = jwt.encode(
         {"sub": "1", "typ": "access", "exp": datetime.now(timezone.utc) - timedelta(seconds=1)},
-        "test-secret",
+        get_settings().jwt_secret,
         algorithm="HS256",
     )
+    assert decode_access_token(token) is None
+
+
+def test_decode_rejects_token_without_exp():
+    token = jwt.encode({"sub": "1", "typ": "access"}, get_settings().jwt_secret, algorithm="HS256")
     assert decode_access_token(token) is None
 
 
 def test_decode_rejects_other_token_type():
     token = jwt.encode(
         {"sub": "1", "typ": "refresh", "exp": datetime.now(timezone.utc) + timedelta(minutes=5)},
-        "test-secret",
+        get_settings().jwt_secret,
         algorithm="HS256",
     )
     assert decode_access_token(token) is None

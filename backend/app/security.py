@@ -37,7 +37,7 @@ def create_access_token(user_id: int) -> str:
 
 def decode_access_token(token: str) -> int | None:
     try:
-        data = jwt.decode(token, get_settings().jwt_secret, algorithms=["HS256"])
+        data = jwt.decode(token, get_settings().jwt_secret, algorithms=["HS256"], options={"require": ["exp", "sub"]})
     except jwt.PyJWTError:
         return None
     if data.get("typ") != "access":

@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://messaging:messaging@localhost:5432/messaging"
     redis_url: str = "redis://localhost:6379/0"
     jwt_secret: str = "dev-secret-change-me"
-    app_env: str = "dev"
+    app_env: Literal["dev", "test", "prod"] = "dev"
     access_token_minutes: int = 15
     refresh_token_days: int = 14
     cookie_secure: bool = True
