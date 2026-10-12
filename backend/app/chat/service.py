@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.chat.schemas import MessageOut, MessagePage, RoomOut, to_message_out
+from app.chat.schemas import MemberReceipt, MessageOut, MessagePage, RoomOut, to_message_out
 from app.config import get_settings
 from app.models import Message, Room, RoomMember, User
 
@@ -251,17 +251,39 @@ async def list_rooms(session: AsyncSession, user_id: int) -> list[RoomOut]:
     return result
 
 
-async def mark_read(session: AsyncSession, room_id: int, user_id: int, message_id: int) -> None:
+async def mark_read(session: AsyncSession, room_id: int, user_id: int, message_id: int) -> int | None:
+    """Đặt mốc đã đọc; trả mốc mới chỉ khi mốc thực sự tăng, ngược lại None."""
     await require_member(session, room_id, user_id)
     message = await session.get(Message, message_id)
     if message is None or message.room_id != room_id:
         raise ChatError(404, "message_not_found")
-    await session.execute(
-        update(RoomMember)
-        .where(RoomMember.room_id == room_id, RoomMember.user_id == user_id)
-        .values(last_read_message_id=func.greatest(func.coalesce(RoomMember.last_read_message_id, 0), message_id))
-    )
+    # Một câu UPDATE có điều kiện: khoá hàng + so sánh nguyên tử nên hai request song song
+    # không thể cùng tuyên bố "tăng" và mốc không bao giờ giảm.
+    advanced = (
+        await session.execute(
+            update(RoomMember)
+            .where(
+                RoomMember.room_id == room_id,
+                RoomMember.user_id == user_id,
+                or_(RoomMember.last_read_message_id.is_(None), RoomMember.last_read_message_id < message_id),
+            )
+            .values(last_read_message_id=message_id)
+            .returning(RoomMember.last_read_message_id)
+        )
+    ).scalar_one_or_none()
     await session.commit()
+    return advanced
+
+
+async def list_members(session: AsyncSession, room_id: int, user_id: int) -> list[MemberReceipt]:
+    await require_member(session, room_id, user_id)
+    rows = await session.execute(
+        select(RoomMember.user_id, User.full_name, RoomMember.last_read_message_id)
+        .join(User, User.id == RoomMember.user_id)
+        .where(RoomMember.room_id == room_id)
+        .order_by(User.full_name, User.id)
+    )
+    return [MemberReceipt(user_id=uid, full_name=name, last_read_message_id=last) for uid, name, last in rows]
 
 
 async def _own_message(session: AsyncSession, user_id: int, message_id: int) -> Message:

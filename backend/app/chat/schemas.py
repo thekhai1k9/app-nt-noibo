@@ -30,6 +30,12 @@ class RoomOut(BaseModel):
     last_activity: datetime
 
 
+class MemberReceipt(BaseModel):
+    user_id: int
+    full_name: str
+    last_read_message_id: int | None
+
+
 class MessagePage(BaseModel):
     items: list[MessageOut]
     has_more_before: bool

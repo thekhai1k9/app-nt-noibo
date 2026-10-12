@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat import service
 from app.chat.bus import MessageBus, RedisMessageBus, publish_room_safely, publish_user_safely
-from app.chat.schemas import MessageOut, MessagePage, RoomOut, to_message_out
+from app.chat.schemas import MemberReceipt, MessageOut, MessagePage, RoomOut, to_message_out
 from app.db import get_session
 from app.deps import get_ready_user
 from app.ids import MessageId, MessageIdPath, MessageIdQuery, RoomIdPath, UserId
@@ -110,8 +110,22 @@ async def mark_read(
     body: ReadIn,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(get_ready_user),
+    bus: MessageBus = Depends(get_bus),
 ) -> None:
-    await service.mark_read(session, room_id, user.id, body.message_id)
+    advanced = await service.mark_read(session, room_id, user.id, body.message_id)
+    if advanced is not None:
+        await publish_room_safely(
+            bus, room_id, {"type": "read", "room_id": room_id, "user_id": user.id, "message_id": advanced}
+        )
+
+
+@router.get("/rooms/{room_id}/members", response_model=list[MemberReceipt])
+async def room_members(
+    room_id: RoomIdPath,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_ready_user),
+) -> list[MemberReceipt]:
+    return await service.list_members(session, room_id, user.id)
 
 
 @router.patch("/messages/{message_id}", response_model=MessageOut)
