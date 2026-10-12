@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     ws_reconcile_seconds: float = Field(30.0, gt=0)
     presence_ttl_seconds: float = Field(45.0, gt=0)
     presence_sweep_seconds: float = Field(15.0, gt=0)
+    presence_announce_timeout_seconds: float = Field(10.0, gt=0)
     room_archive_retention_days: int = Field(3, gt=0)
     room_purge_interval_seconds: float = Field(3600, gt=0)
     bus_channel_prefix: str = "kn"

@@ -3,6 +3,7 @@ import json
 
 from httpx import AsyncClient
 
+from app.config import get_settings
 from tests.conftest import auth_headers, create_room, create_user, login
 from tests.helpers import expect_silence, recv_json, ws_open
 
@@ -53,10 +54,10 @@ async def test_typing_is_throttled_per_room(live_server):
     for _ in range(5):
         await _typing(wa, r1)
     assert (await recv_json(wb))["room_id"] == r1
-    await expect_silence(wb, 0.15)
+    await expect_silence(wb, 0.3)
     await _typing(wa, r2)  # phòng khác không bị chặn bởi r1
     assert (await recv_json(wb))["room_id"] == r2
-    await asyncio.sleep(0.4)
+    await asyncio.sleep(get_settings().ws_typing_interval_seconds + 0.5)
     await _typing(wa, r1)
     assert (await recv_json(wb))["room_id"] == r1
     await wa.close()
@@ -109,5 +110,24 @@ async def test_typing_after_archive_or_removal(live_server):
         assert (await recv_json(wb)) == {"type": "rooms_changed"}  # lưu trữ báo cho mọi thành viên
         await _typing(wa, other)
         await expect_silence(wb)
+    await wa.close()
+    await wb.close()
+
+
+async def test_typing_last_pruned_for_rooms_no_longer_joined(live_server):
+    a, b = await create_user("alice"), await create_user("bob")
+    r1 = await create_room(member_ids=[a, b])
+    r2 = await create_room(member_ids=[a, b])
+    wa, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
+    wb, _ = await ws_open(live_server.ws, await _token(live_server, "bob"))
+    hub = live_server.app.state.hub
+    conn = next(iter(hub._conns[a]))
+    await _typing(wa, r1)
+    assert (await recv_json(wb))["room_id"] == r1
+    assert set(conn.typing_last) == {r1}
+    conn.room_ids.discard(r1)  # roi phong r1
+    await _typing(wa, r2)
+    assert (await recv_json(wb))["room_id"] == r2
+    assert set(conn.typing_last) == {r2}
     await wa.close()
     await wb.close()

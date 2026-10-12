@@ -168,6 +168,7 @@ def auth_headers(token: str) -> dict:
 class LiveServer:
     http: str
     ws: str
+    app: object = None
 
 
 @pytest_asyncio.fixture
@@ -177,7 +178,8 @@ async def live_server():
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
-    config = uvicorn.Config(create_app(), host="127.0.0.1", port=port, log_level="warning", lifespan="on", ws_max_size=65536)
+    app = create_app()
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="on", ws_max_size=65536)
     server = uvicorn.Server(config)
     task = asyncio.create_task(server.serve())
     for _ in range(200):
@@ -187,7 +189,7 @@ async def live_server():
     else:
         raise RuntimeError("uvicorn không khởi động được")
     try:
-        yield LiveServer(http=f"http://127.0.0.1:{port}", ws=f"ws://127.0.0.1:{port}")
+        yield LiveServer(http=f"http://127.0.0.1:{port}", ws=f"ws://127.0.0.1:{port}", app=app)
     finally:
         server.should_exit = True
         await task

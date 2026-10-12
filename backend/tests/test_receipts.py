@@ -1,3 +1,5 @@
+import asyncio
+
 from httpx import AsyncClient
 from redis.exceptions import RedisError
 from sqlalchemy import delete, func, select
@@ -94,7 +96,10 @@ async def test_read_survives_bus_failure(client, bus):
     room = await create_room(member_ids=[a, b])
     msg = await add_message(room, b)
 
+    calls = {"n": 0}
+
     async def boom(*args, **kwargs):
+        calls["n"] += 1
         raise RedisError("down")
 
     bus.publish_room = boom
@@ -102,3 +107,25 @@ async def test_read_survives_bus_failure(client, bus):
     assert (await client.post(f"/api/rooms/{room}/read", json={"message_id": msg}, headers=ha)).status_code == 204
     r = await client.get(f"/api/rooms/{room}/members", headers=ha)
     assert {m["user_id"]: m["last_read_message_id"] for m in r.json()}[a] == msg
+    assert calls["n"] == 1  # publish that su duoc goi (va loi) ma request van thanh cong
+
+
+async def test_concurrent_reads_publish_exactly_one_event(live_server):
+    a, b = await create_user("alice"), await create_user("bob")
+    room = await create_room(member_ids=[a, b])
+    msg = await add_message(room, b)
+    wb, _ = await ws_open(live_server.ws, await _token(live_server, "bob"))
+    ta = await _token(live_server, "alice")
+    async with AsyncClient(base_url=live_server.http) as http:
+        rs = await asyncio.gather(_read(http, ta, room, msg), _read(http, ta, room, msg))
+    assert [r.status_code for r in rs] == [204, 204]
+    assert (await recv_json(wb))["message_id"] == msg
+    await expect_silence(wb, 0.5)
+    async with SessionLocal() as s:
+        last = (
+            await s.execute(
+                select(RoomMember.last_read_message_id).where(RoomMember.room_id == room, RoomMember.user_id == a)
+            )
+        ).scalar_one()
+    assert last == msg
+    await wb.close()

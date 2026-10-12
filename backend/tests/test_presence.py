@@ -292,8 +292,7 @@ async def test_out_of_order_announcements_end_in_real_state():
     await _until(lambda: bus.attempts == 1)
     hub.unregister(conn)
     await hub.on_disconnected(conn)  # trong luc online dang duoc phat
-    await _until(lambda: hub._announced.get(a) is False)
-    assert _events(bus)[-1]["online"] is False
+    await _until(lambda: _events(bus) and _events(bus)[-1]["online"] is False)
     # chuoi nhanh ket thuc la online
     for _ in range(3):
         c = Connection(a)
@@ -313,7 +312,7 @@ async def test_out_of_order_announcements_end_in_real_state():
 async def test_failed_publish_is_retried_by_next_sweep():
     a, _, room = await _setup_pair()
     bus = DelayBus(fail_first=1)
-    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100))
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), failure_cooldown=0.05)
     conn = Connection(a)
     hub.register(conn)
     await hub.on_connected(conn)
@@ -338,7 +337,7 @@ async def test_db_error_during_announce_is_retried():
         return SessionLocal()
 
     bus = InMemoryBus()
-    hub = Hub(bus, flaky_session, presence=_presence(FakeClock(), 100))
+    hub = Hub(bus, flaky_session, presence=_presence(FakeClock(), 100), failure_cooldown=0.05)
     conn = Connection(a)
     hub.register(conn)
     await hub.on_connected(conn)
@@ -507,3 +506,62 @@ async def test_slow_presence_does_not_stall_frame_processing(live_server, monkey
     assert loop.time() - start < 3  # moi lan cho toi da 0.2s, khong phai 10s
     await wsa.close()
     await wsb.close()
+
+
+async def test_announce_timeout_counts_as_failure_and_is_retried():
+    a, _, room = await _setup_pair()
+    bus = DelayBus(delays=[30])  # lan phat dau treo
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), announce_timeout=0.2, failure_cooldown=0.05)
+    conn = Connection(a)
+    hub.register(conn)
+    await hub.on_connected(conn)
+    await _until(lambda: bus.attempts == 1)
+    await _until(lambda: a in hub._dirty and hub._announcing is None)
+    assert bus.published == []
+    await hub.sweep_presence()
+    await _until(lambda: bus.published)
+    assert bus.published == [("room", room, {"type": "presence", "user_id": a, "online": True})]
+    await hub.close_all()
+    await get_redis().delete(_key())
+
+
+async def test_outage_bounds_announce_attempts_across_connect_events():
+    ids = [await create_user(f"user{i}") for i in range(5)]
+    await create_room(member_ids=ids)
+    bus = DelayBus(fail_first=10_000)
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), failure_cooldown=1.5)
+    for _ in range(4):
+        for uid in ids:
+            c = Connection(uid)
+            hub.register(c)
+            await hub.on_connected(c)
+            await asyncio.sleep(0.01)
+    await asyncio.sleep(0.3)
+    # khong co cooldown: moi su kien chay lai moi user dirty (hang chuc lan); co cooldown: toi da mot luot ~ 5 user
+    assert 1 <= bus.attempts <= 5
+    assert hub._dirty == set(ids) or hub._dirty <= set(ids)
+    await hub.close_all()
+    await get_redis().delete(_key())
+
+
+async def test_offline_entries_are_pruned_and_transitions_still_announced():
+    a, _, room = await _setup_pair()
+    bus = InMemoryBus()
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100))
+    for expected in (True, False, True, False):
+        if expected:
+            conn = Connection(a)
+            hub.register(conn)
+            await hub.on_connected(conn)
+        else:
+            hub.unregister(conn)
+            await hub.on_disconnected(conn)
+        await _until(lambda: len(_events(bus)) and _events(bus)[-1]["online"] is expected and not hub._dirty)
+        await _until(lambda: hub._announcer is not None and hub._announcing is None)
+    assert [e["online"] for e in _events(bus)] == [True, False, True, False]
+    assert a not in hub._announced  # offline va khong dirty: da don
+    await hub.sweep_presence()  # khong phat lai offline
+    await asyncio.sleep(0.1)
+    assert len(_events(bus)) == 4
+    await hub.close_all()
+    await get_redis().delete(_key())

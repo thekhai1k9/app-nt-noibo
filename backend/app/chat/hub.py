@@ -19,6 +19,8 @@ CLOSE_ACCOUNT_LOCKED = 4403
 CLOSE_SLOW_CONSUMER = 4408
 DISCONNECT_CODES = {CLOSE_UNAUTHENTICATED, CLOSE_ACCOUNT_LOCKED}
 RECONCILE_TIMEOUT_SECONDS = 10.0
+PRESENCE_ANNOUNCE_TIMEOUT_SECONDS = 10.0  # mac dinh; cau hinh qua presence_announce_timeout_seconds
+PRESENCE_FAILURE_COOLDOWN_SECONDS = 5.0  # nghi sau luot announcer co loi, truoc khi thu lai
 PRESENCE_OP_TIMEOUT_SECONDS = 1.0  # gioi han cho thao tac presence tren duong xu ly frame/ket noi
 
 
@@ -69,13 +71,18 @@ class Hub:
         session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
         reconnect_delay: float = 1.0,
         presence: Presence | None = None,
+        announce_timeout: float = PRESENCE_ANNOUNCE_TIMEOUT_SECONDS,
+        failure_cooldown: float = PRESENCE_FAILURE_COOLDOWN_SECONDS,
     ):
+        self._announce_timeout = announce_timeout
+        self._failure_cooldown = failure_cooldown
         self.bus = bus
         self._session_factory = session_factory
         self._reconnect_delay = reconnect_delay
         self._conns: dict[int, set[Connection]] = {}
         self.presence = presence
         self._announced: dict[int, bool] = {}  # trang thai presence da phat thanh cong gan nhat
+        self._partial: set[int] = set()  # user co lan phat online that bai (co the mot so phong da nhan)
         self._dirty: set[int] = set()  # user can (phat lai) trang thai
         self._wake = asyncio.Event()
         self._announcing: int | None = None
@@ -251,25 +258,43 @@ class Hub:
 
     async def _announce_user(self, user_id: int) -> None:
         online = await self._current_state(user_id)
-        if self._announced.get(user_id) == online:
-            return
-        await self._publish(user_id, online)
+        # khong co muc nghia la "da bao offline" (muc offline duoc don de khong phinh bo nho)
+        known = self._announced.get(user_id, False)
+        if known == online and not (online is False and user_id in self._partial):
+            return self._prune_offline(user_id)
+        try:
+            await self._publish(user_id, online)
+        except BaseException:
+            if online:
+                self._partial.add(user_id)
+            raise
+        self._partial.discard(user_id)
         self._announced[user_id] = online
+        self._prune_offline(user_id)
+
+    def _prune_offline(self, user_id: int) -> None:
+        if self._announced.get(user_id) is False and user_id not in self._dirty:
+            del self._announced[user_id]
 
     async def _announcer_loop(self) -> None:
         while True:
             await self._wake.wait()
             self._wake.clear()
+            failed = False
             for user_id in sorted(self._dirty):
                 self._dirty.discard(user_id)  # thay doi moi trong luc phat se danh dau lai
                 self._announcing = user_id
                 try:
-                    await self._announce_user(user_id)
-                except Exception:
+                    await asyncio.wait_for(self._announce_user(user_id), self._announce_timeout)
+                except Exception:  # ke ca TimeoutError
                     log.warning("presence announce failed; will retry on next sweep", exc_info=True)
                     self._dirty.add(user_id)
+                    failed = True
                 finally:
                     self._announcing = None
+            if failed:
+                # su kien ket noi/ngat trong luc su co khong duoc kich hoat thu lai tung user moi lan
+                await asyncio.sleep(self._failure_cooldown)
 
     async def _remove_quietly(self, conn: Connection) -> None:
         try:

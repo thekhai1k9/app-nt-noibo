@@ -34,7 +34,12 @@ async def lifespan(app: FastAPI):
         )
     listen_redis = build_listen_redis()
     presence = Presence(get_redis(), settings.bus_channel_prefix, settings.presence_ttl_seconds)
-    hub = Hub(RedisMessageBus(get_redis(), listen_redis), SessionLocal, presence=presence)
+    hub = Hub(
+        RedisMessageBus(get_redis(), listen_redis),
+        SessionLocal,
+        presence=presence,
+        announce_timeout=settings.presence_announce_timeout_seconds,
+    )
     app.state.hub = hub
     runner = asyncio.create_task(hub.run())
     reconciler = asyncio.create_task(hub.run_reconciler(settings.ws_reconcile_seconds))
