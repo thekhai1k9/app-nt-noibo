@@ -1,3 +1,4 @@
+import { QueryClient } from '@tanstack/react-query'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
@@ -117,6 +118,7 @@ describe('UsersPage', () => {
       'PATCH /api/admin/users/2': (req) => ({
         json: { ...users[1], is_active: (req.body as { is_active: boolean }).is_active },
       }),
+      'PATCH /api/admin/users/3': { json: { ...users[2], is_active: true } },
     })
     await openPage()
     await userEvent.click(screen.getByRole('button', { name: 'Khoá ha.le' }))
@@ -129,6 +131,10 @@ describe('UsersPage', () => {
       const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/api/admin/users/3')
       expect(patch?.body).toEqual({ is_active: true })
     })
+    // Sau mỗi lần đổi trạng thái danh sách được tải lại (1 lần đầu + 2 lần sau PATCH).
+    await waitFor(() =>
+      expect(calls.filter((c) => c.method === 'GET' && c.path === '/api/admin/users').length).toBeGreaterThanOrEqual(3),
+    )
   })
 
   it('shows the cannot_modify_self error', async () => {
@@ -159,5 +165,77 @@ describe('UsersPage', () => {
     await openPage()
     await userEvent.click(screen.getByRole('button', { name: 'Đặt lại mật khẩu của ha.le' }))
     expect(calls.some((c) => c.path.endsWith('/reset-password'))).toBe(false)
+  })
+
+  it('removes the temporary password from the page when a reset notice is dismissed', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mockFetch({
+      ...base(),
+      'POST /api/admin/users/2/reset-password': { json: { temp_password: 'Zz9Yy8Xx7Ww6' } },
+    })
+    await openPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Đặt lại mật khẩu của ha.le' }))
+    await screen.findByText('Zz9Yy8Xx7Ww6')
+    await userEvent.click(screen.getByRole('button', { name: 'Đã ghi lại' }))
+    expect(screen.queryByText('Zz9Yy8Xx7Ww6')).not.toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('copies the temporary password to the clipboard', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    mockFetch({
+      ...base(),
+      'POST /api/admin/users/2/reset-password': { json: { temp_password: 'Zz9Yy8Xx7Ww6' } },
+    })
+    await openPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Đặt lại mật khẩu của ha.le' }))
+    await screen.findByText('Zz9Yy8Xx7Ww6')
+    await userEvent.click(screen.getByRole('button', { name: 'Sao chép' }))
+    expect(writeText).toHaveBeenCalledWith('Zz9Yy8Xx7Ww6')
+  })
+
+  it('blocks creating and resetting while a temporary password is showing', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mockFetch({
+      ...base(),
+      'POST /api/admin/users/2/reset-password': { json: { temp_password: 'Zz9Yy8Xx7Ww6' } },
+    })
+    await openPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Đặt lại mật khẩu của ha.le' }))
+    await screen.findByText('Zz9Yy8Xx7Ww6')
+    expect(screen.getByRole('button', { name: 'Tạo tài khoản' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Đặt lại mật khẩu của ha.le' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Đặt lại mật khẩu của tuan.bui' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Khoá ha.le' })).toBeEnabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Đã ghi lại' }))
+    expect(screen.getByRole('button', { name: 'Tạo tài khoản' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Đặt lại mật khẩu của ha.le' })).toBeEnabled()
+  })
+
+  it('never keeps the temporary password in the TanStack caches', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const secret = 'Zz9Yy8Xx7Ww6'
+    mockFetch({
+      ...base(),
+      'POST /api/admin/users/2/reset-password': { json: { temp_password: secret } },
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const cacheHolds = () =>
+      JSON.stringify([
+        ...client.getMutationCache().getAll().map((m) => ({ data: m.state.data, variables: m.state.variables })),
+        ...client.getQueryCache().getAll().map((q) => q.state.data),
+      ]).includes(secret)
+    const { unmount } = renderApp('/admin/users', client)
+    await screen.findByText('Lê Thu Hà')
+    await waitFor(() => expect(screen.getByLabelText('Chi nhánh')).toHaveValue('1'))
+    await userEvent.click(screen.getByRole('button', { name: 'Đặt lại mật khẩu của ha.le' }))
+    await screen.findByText(secret)
+    expect(cacheHolds()).toBe(false)
+    await userEvent.click(screen.getByRole('button', { name: 'Đã ghi lại' }))
+    expect(cacheHolds()).toBe(false)
+    unmount()
+    expect(cacheHolds()).toBe(false)
   })
 })

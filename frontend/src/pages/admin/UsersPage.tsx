@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, type FormEvent } from 'react'
 import { ErrorAlert } from '../../components/ErrorAlert'
 import { Field } from '../../components/Field'
@@ -48,7 +48,15 @@ function TempPasswordNotice({ notice, onDismiss }: { notice: TempPassword; onDis
   )
 }
 
-function CreateUserForm({ branches, onCreated }: { branches: Branch[]; onCreated: (u: UserCreated) => void }) {
+function CreateUserForm({
+  branches,
+  locked,
+  onCreated,
+}: {
+  branches: Branch[]
+  locked: boolean
+  onCreated: (u: UserCreated) => void
+}) {
   const [fullName, setFullName] = useState('')
   const [username, setUsername] = useState('')
   const [branchId, setBranchId] = useState('')
@@ -113,7 +121,12 @@ function CreateUserForm({ branches, onCreated }: { branches: Branch[]; onCreated
         </select>
       </div>
       <ErrorAlert error={error} />
-      <button type="submit" className="btn btn-primary" disabled={busy || branches.length === 0}>
+      {locked && (
+        <p className="muted" style={{ margin: 0 }}>
+          Hãy bấm 'Đã ghi lại' trước khi tạo hoặc đặt lại tiếp.
+        </p>
+      )}
+      <button type="submit" className="btn btn-primary" disabled={busy || locked || branches.length === 0}>
         Tạo tài khoản
       </button>
     </form>
@@ -137,6 +150,7 @@ export function UsersPage() {
   const users = useQuery({
     queryKey: ['admin', 'users', queryString],
     queryFn: () => api<User[]>(`/admin/users${queryString ? `?${queryString}` : ''}`),
+    placeholderData: keepPreviousData,
   })
   const branches = useQuery({ queryKey: ['admin', 'branches'], queryFn: () => api<Branch[]>('/admin/branches') })
 
@@ -145,26 +159,30 @@ export function UsersPage() {
   const toggleActive = useMutation({
     mutationFn: (user: User) =>
       api<User>(`/admin/users/${user.id}`, { method: 'PATCH', json: { is_active: !user.is_active } }),
+    onMutate: () => setActionError(null),
     onSuccess: () => {
-      setActionError(null)
       void refreshUsers()
     },
     onError: setActionError,
   })
 
   const resetPassword = useMutation({
-    mutationFn: async (user: User) => {
+    mutationFn: async (user: User): Promise<void> => {
       const result = await api<ResetPasswordOut>(`/admin/users/${user.id}/reset-password`, { method: 'POST' })
-      return { user, password: result.temp_password }
+      // Mật khẩu tạm chỉ đi vào state của trang, không để lọt vào dữ liệu mutation (MutationCache).
+      setNotice({ title: `Mật khẩu tạm mới của ${user.username}`, password: result.temp_password })
     },
-    onSuccess: ({ user, password }) => {
-      setActionError(null)
-      setNotice({ title: `Mật khẩu tạm mới của ${user.username}`, password })
+    onMutate: () => setActionError(null),
+    onSuccess: () => {
       void refreshUsers()
     },
     onError: setActionError,
   })
 
+  const pendingId = (m: { isPending: boolean; variables: User | undefined }) =>
+    m.isPending ? m.variables?.id : undefined
+  const togglingId = pendingId(toggleActive)
+  const resettingId = pendingId(resetPassword)
   const branchName = (id: number) => branches.data?.find((b) => b.id === id)?.name ?? '—'
   const list = users.data ?? []
   const activeCount = list.filter((u) => u.is_active).length
@@ -187,8 +205,16 @@ export function UsersPage() {
           </div>
         </div>
 
-        {notice && <TempPasswordNotice notice={notice} onDismiss={() => setNotice(null)} />}
+        {notice && (
+          <>
+            <TempPasswordNotice notice={notice} onDismiss={() => setNotice(null)} />
+            <p className="muted" style={{ margin: 0 }}>
+              Hãy bấm 'Đã ghi lại' trước khi tạo hoặc đặt lại tiếp.
+            </p>
+          </>
+        )}
         <ErrorAlert error={actionError} />
+        {branches.isError && <ErrorAlert error={branches.error} />}
         {users.isError && <ErrorAlert error={users.error} />}
 
         <div className="row">
@@ -251,15 +277,17 @@ export function UsersPage() {
                     className="btn btn-ghost"
                     style={{ padding: '0 10px' }}
                     aria-label={`Đặt lại mật khẩu của ${user.username}`}
+                    disabled={notice !== null || resettingId === user.id}
                     onClick={() => confirmReset(user)}
                   >
-                    Đặt lại MK
+                    Đặt lại mật khẩu
                   </button>
                   <button
                     type="button"
                     className="btn btn-ghost"
                     style={{ padding: '0 10px' }}
                     aria-label={`${user.is_active ? 'Khoá' : 'Mở khoá'} ${user.username}`}
+                    disabled={togglingId === user.id}
                     onClick={() => toggleActive.mutate(user)}
                   >
                     {user.is_active ? 'Khoá' : 'Mở khoá'}
@@ -274,7 +302,9 @@ export function UsersPage() {
       <aside className="admin-aside" aria-label="Tạo tài khoản">
         <CreateUserForm
           branches={branches.data ?? []}
+          locked={notice !== null}
           onCreated={(created) => {
+            setActionError(null)
             setNotice({ title: `Đã tạo tài khoản ${created.username}`, password: created.temp_password })
             void refreshUsers()
             void queryClient.invalidateQueries({ queryKey: ['admin', 'branches'] })
