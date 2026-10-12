@@ -1,0 +1,163 @@
+import { screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { vi } from 'vitest'
+import type { Branch, User } from '../../lib/types'
+import { mockFetch } from '../../test/mockFetch'
+import { makeUser, renderApp, sessionRoutes } from '../../test/utils'
+
+const branches: Branch[] = [
+  { id: 1, name: 'Hà Nội', code: 'HN', address: '', user_count: 2 },
+  { id: 2, name: 'Đà Nẵng', code: 'ĐN', address: '', user_count: 1 },
+]
+const users: User[] = [
+  makeUser({ id: 1, username: 'long.pham', full_name: 'Phạm Đức Long', role: 'admin', branch_id: 1 }),
+  makeUser({ id: 2, username: 'ha.le', full_name: 'Lê Thu Hà', branch_id: 2 }),
+  makeUser({ id: 3, username: 'tuan.bui', full_name: 'Bùi Tuấn', branch_id: 1, is_active: false }),
+  makeUser({ id: 4, username: 'nhi.hoang', full_name: 'Hoàng Lan Nhi', branch_id: 2, must_change_password: true }),
+]
+
+const base = () => ({
+  ...sessionRoutes(makeUser({ id: 1, role: 'admin' })),
+  'GET /api/admin/users': { json: users },
+  'GET /api/admin/branches': { json: branches },
+})
+
+async function openPage() {
+  renderApp('/admin/users')
+  await screen.findByText('Lê Thu Hà')
+  // Chờ danh sách chi nhánh tải xong: ô "Chi nhánh" của form tạo mặc định chọn chi nhánh đầu tiên.
+  await waitFor(() => expect(screen.getByLabelText('Chi nhánh')).toHaveValue('1'))
+}
+
+const rowOf = (name: string) => screen.getByText(name).closest('.table-row') as HTMLElement
+
+describe('UsersPage', () => {
+  it('lists users with branch names, roles and statuses', async () => {
+    mockFetch(base())
+    await openPage()
+    // Các chuỗi như "Đã khoá" cũng là <option> trong ô lọc, nên luôn tìm trong từng dòng.
+    const row = rowOf('Lê Thu Hà')
+    expect(within(row).getByText('Đà Nẵng')).toBeInTheDocument()
+    expect(within(row).getByText('Thành viên')).toBeInTheDocument()
+    expect(within(row).getByText('Hoạt động')).toBeInTheDocument()
+    expect(within(rowOf('Bùi Tuấn')).getByText('Đã khoá')).toBeInTheDocument()
+    expect(within(rowOf('Hoàng Lan Nhi')).getByText('Chờ đổi mật khẩu')).toBeInTheDocument()
+    expect(within(rowOf('Phạm Đức Long')).getByText('Quản trị viên')).toBeInTheDocument()
+    expect(screen.getByText('4 tài khoản · 3 đang hoạt động')).toBeInTheDocument()
+  })
+
+  it('sends the filters to the server', async () => {
+    const { calls } = mockFetch(base())
+    await openPage()
+    await userEvent.selectOptions(screen.getByLabelText('Lọc theo chi nhánh'), '2')
+    await userEvent.selectOptions(screen.getByLabelText('Lọc theo trạng thái'), 'true')
+    await userEvent.type(screen.getByLabelText('Tìm người dùng'), 'ha')
+    await waitFor(() => {
+      const last = calls.filter((c) => c.path.startsWith('/api/admin/users?')).at(-1)
+      expect(last?.path).toContain('branch_id=2')
+      expect(last?.path).toContain('is_active=true')
+      expect(last?.path).toContain('q=ha')
+    })
+  })
+
+  it('creates a user, shows the temporary password once and resets the form', async () => {
+    const created = makeUser({ id: 9, username: 'ngoc.vo', full_name: 'Võ Bảo Ngọc', branch_id: 2 })
+    const { calls } = mockFetch({
+      ...base(),
+      'POST /api/admin/users': { status: 201, json: { ...created, temp_password: 'Kx7mQ4pRt2Aa' } },
+    })
+    await openPage()
+    await userEvent.type(screen.getByLabelText('Họ tên'), 'Võ Bảo Ngọc')
+    await userEvent.type(screen.getByLabelText('Tên đăng nhập'), 'ngoc.vo')
+    await userEvent.selectOptions(screen.getByLabelText('Chi nhánh'), '2')
+    await userEvent.click(screen.getByRole('button', { name: 'Tạo tài khoản' }))
+
+    const status = await screen.findByRole('status')
+    expect(within(status).getByText('Kx7mQ4pRt2Aa')).toBeInTheDocument()
+    expect(status).toHaveTextContent('Chỉ hiển thị một lần')
+    const post = calls.find((c) => c.method === 'POST' && c.path === '/api/admin/users')
+    expect(post?.body).toEqual({ full_name: 'Võ Bảo Ngọc', username: 'ngoc.vo', branch_id: 2, role: 'member' })
+    expect(screen.getByLabelText('Họ tên')).toHaveValue('')
+    expect(screen.getByLabelText('Tên đăng nhập')).toHaveValue('')
+  })
+
+  it('removes the temporary password from the page when dismissed', async () => {
+    mockFetch({
+      ...base(),
+      'POST /api/admin/users': {
+        status: 201,
+        json: { ...makeUser({ id: 9, username: 'ngoc.vo' }), temp_password: 'Kx7mQ4pRt2Aa' },
+      },
+    })
+    await openPage()
+    await userEvent.type(screen.getByLabelText('Họ tên'), 'Võ Bảo Ngọc')
+    await userEvent.type(screen.getByLabelText('Tên đăng nhập'), 'ngoc.vo')
+    await userEvent.click(screen.getByRole('button', { name: 'Tạo tài khoản' }))
+    await screen.findByText('Kx7mQ4pRt2Aa')
+    await userEvent.click(screen.getByRole('button', { name: 'Đã ghi lại' }))
+    expect(screen.queryByText('Kx7mQ4pRt2Aa')).not.toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('shows a Vietnamese error when the username is taken', async () => {
+    mockFetch({
+      ...base(),
+      'POST /api/admin/users': { status: 409, json: { detail: 'username_taken' } },
+    })
+    await openPage()
+    await userEvent.type(screen.getByLabelText('Họ tên'), 'Ai Đó')
+    await userEvent.type(screen.getByLabelText('Tên đăng nhập'), 'ha.le')
+    await userEvent.click(screen.getByRole('button', { name: 'Tạo tài khoản' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Tên đăng nhập đã tồn tại.')
+  })
+
+  it('deactivates and reactivates a user', async () => {
+    const { calls } = mockFetch({
+      ...base(),
+      'PATCH /api/admin/users/2': (req) => ({
+        json: { ...users[1], is_active: (req.body as { is_active: boolean }).is_active },
+      }),
+    })
+    await openPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Khoá ha.le' }))
+    await waitFor(() => {
+      const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/api/admin/users/2')
+      expect(patch?.body).toEqual({ is_active: false })
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Mở khoá tuan.bui' }))
+    await waitFor(() => {
+      const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/api/admin/users/3')
+      expect(patch?.body).toEqual({ is_active: true })
+    })
+  })
+
+  it('shows the cannot_modify_self error', async () => {
+    mockFetch({
+      ...base(),
+      'PATCH /api/admin/users/1': { status: 409, json: { detail: 'cannot_modify_self' } },
+    })
+    await openPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Khoá long.pham' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('không thể tự hạ quyền')
+  })
+
+  it('resets a password after confirmation and shows the new temporary password', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const { calls } = mockFetch({
+      ...base(),
+      'POST /api/admin/users/2/reset-password': { json: { temp_password: 'Zz9Yy8Xx7Ww6' } },
+    })
+    await openPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Đặt lại mật khẩu của ha.le' }))
+    expect(await screen.findByText('Zz9Yy8Xx7Ww6')).toBeInTheDocument()
+    expect(calls.some((c) => c.path === '/api/admin/users/2/reset-password')).toBe(true)
+  })
+
+  it('does not reset the password when the admin cancels the confirmation', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const { calls } = mockFetch(base())
+    await openPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Đặt lại mật khẩu của ha.le' }))
+    expect(calls.some((c) => c.path.endsWith('/reset-password'))).toBe(false)
+  })
+})
