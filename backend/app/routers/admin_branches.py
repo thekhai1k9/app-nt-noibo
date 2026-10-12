@@ -66,7 +66,7 @@ async def update_branch(
     branch = await session.get(Branch, branch_id)
     if branch is None:
         raise HTTPException(status_code=404, detail="branch_not_found")
-    data = body.model_dump(exclude_unset=True)
+    data = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     await _ensure_unique(session, data.get("name"), data.get("code"), exclude_id=branch_id)
     for field, value in data.items():
         setattr(branch, field, value)
@@ -86,4 +86,8 @@ async def delete_branch(branch_id: int, session: AsyncSession = Depends(get_sess
     if await _user_count(session, branch_id) > 0:
         raise HTTPException(status_code=409, detail="branch_has_users")
     await session.delete(branch)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="branch_has_users")

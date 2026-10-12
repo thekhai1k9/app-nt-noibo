@@ -36,6 +36,7 @@ async def test_create_duplicate_name_or_code(client, admin_headers):
     assert r1.json()["detail"] == "branch_exists"
     r2 = await client.post("/api/admin/branches", headers=admin_headers, json={"name": "Khác", "code": "HN"})
     assert r2.status_code == 409
+    assert r2.json()["detail"] == "branch_exists"
 
 
 async def test_create_validates_input(client, admin_headers):
@@ -79,3 +80,52 @@ async def test_delete_branch_with_users_is_blocked(client, admin_headers):
     r = await client.delete(f"/api/admin/branches/{bid}", headers=admin_headers)
     assert r.status_code == 409
     assert r.json()["detail"] == "branch_has_users"
+
+
+async def test_member_forbidden_on_write_endpoints(client, member_headers):
+    for method, url, kw in [
+        ("post", "/api/admin/branches", {"json": {"name": "A", "code": "A"}}),
+        ("patch", "/api/admin/branches/1", {"json": {"name": "B"}}),
+        ("delete", "/api/admin/branches/1", {}),
+    ]:
+        r = await getattr(client, method)(url, headers=member_headers, **kw)
+        assert r.status_code == 403
+        assert r.json()["detail"] == "forbidden"
+
+
+async def test_write_endpoints_require_authentication(client):
+    assert (await client.post("/api/admin/branches", json={"name": "A", "code": "A"})).status_code == 401
+    assert (await client.patch("/api/admin/branches/1", json={"name": "B"})).status_code == 401
+    assert (await client.delete("/api/admin/branches/1")).status_code == 401
+
+
+async def test_delete_unknown_branch(client, admin_headers):
+    r = await client.delete("/api/admin/branches/999", headers=admin_headers)
+    assert r.status_code == 404
+    assert r.json()["detail"] == "branch_not_found"
+
+
+async def test_update_ignores_explicit_nulls(client, admin_headers):
+    bid = await create_branch(name="Hà Nội", code="HN")
+    r = await client.patch(
+        f"/api/admin/branches/{bid}", headers=admin_headers, json={"name": None, "address": "X"}
+    )
+    assert r.status_code == 200
+    assert r.json()["name"] == "Hà Nội"
+    assert r.json()["address"] == "X"
+
+
+async def test_update_to_existing_name_conflicts(client, admin_headers):
+    await create_branch(name="Hà Nội", code="HN")
+    other = await create_branch(name="Đà Nẵng", code="ĐN")
+    r = await client.patch(f"/api/admin/branches/{other}", headers=admin_headers, json={"name": "Hà Nội"})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "branch_exists"
+
+
+async def test_update_same_name_and_code_on_same_branch(client, admin_headers):
+    bid = await create_branch(name="Hà Nội", code="HN")
+    r = await client.patch(
+        f"/api/admin/branches/{bid}", headers=admin_headers, json={"name": "Hà Nội", "code": "HN"}
+    )
+    assert r.status_code == 200
