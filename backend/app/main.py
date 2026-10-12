@@ -7,7 +7,7 @@ from redis.exceptions import RedisError
 from app.chat.service import ChatError
 from app.config import get_settings
 from app.logging_conf import setup_logging
-from app.routers import admin_branches, admin_users, auth, chat, health
+from app.routers import admin_branches, admin_rooms, admin_users, auth, chat, health
 
 DEFAULT_SECRET = "dev-secret-change-me"
 ENV_EXAMPLE_SECRET = "change-me-to-a-long-random-string"
@@ -52,6 +52,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router, prefix="/api")
     app.include_router(admin_branches.router, prefix="/api")
     app.include_router(admin_users.router, prefix="/api")
+    app.include_router(admin_rooms.router, prefix="/api")
     app.include_router(chat.router, prefix="/api")
     return app
 

@@ -216,3 +216,29 @@ async def test_reset_password_revokes_old_refresh_cookie(client, admin_headers):
         r = await victim.post("/api/auth/refresh", headers={"cookie": f"refresh_token={old_cookie}"})
         assert r.status_code == 401
         assert r.json()["detail"] == "invalid_refresh"
+
+
+async def test_locking_a_user_disconnects_their_websockets(client, admin_headers, bus):
+    from tests.conftest import create_user
+
+    uid = await create_user("victim")
+    r = await client.patch(f"/api/admin/users/{uid}", json={"is_active": False}, headers=admin_headers)
+    assert r.status_code == 200
+    assert ("user", uid, {"type": "disconnect"}) in bus.published
+
+
+async def test_updating_other_fields_does_not_disconnect_anyone(client, admin_headers, bus):
+    from tests.conftest import create_user
+
+    uid = await create_user("alice")
+    await client.patch(f"/api/admin/users/{uid}", json={"full_name": "Tên Mới"}, headers=admin_headers)
+    assert not any(event == {"type": "disconnect"} for _, _, event in bus.published)
+
+
+async def test_resetting_a_password_disconnects_their_websockets(client, admin_headers, bus):
+    from tests.conftest import create_user
+
+    uid = await create_user("alice")
+    r = await client.post(f"/api/admin/users/{uid}/reset-password", headers=admin_headers)
+    assert r.status_code == 200
+    assert ("user", uid, {"type": "disconnect"}) in bus.published

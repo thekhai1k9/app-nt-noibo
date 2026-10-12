@@ -5,9 +5,11 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.chat.bus import MessageBus, publish_user_safely
 from app.db import get_session
 from app.deps import require_admin
 from app.models import Branch, User
+from app.routers.chat import get_bus
 from app.schemas import ResetPasswordOut, UserCreate, UserCreated, UserOut, UserUpdate
 from app.security import generate_temp_password, hash_password
 from app.sessions import revoke_all_refresh_tokens
@@ -81,6 +83,7 @@ async def update_user(
     body: UserUpdate,
     session: AsyncSession = Depends(get_session),
     admin: User = Depends(require_admin),
+    bus: MessageBus = Depends(get_bus),
 ) -> User:
     user = await _get_user_or_404(session, user_id)
     data = body.model_dump(exclude_unset=True)
@@ -100,6 +103,8 @@ async def update_user(
     if data.get("is_active") is False:
         await revoke_all_refresh_tokens(session, user.id)
     await session.commit()
+    if data.get("is_active") is False:
+        await publish_user_safely(bus, user.id, {"type": "disconnect"})
     return user
 
 
@@ -108,6 +113,7 @@ async def reset_password(
     user_id: int,
     session: AsyncSession = Depends(get_session),
     _admin: User = Depends(require_admin),
+    bus: MessageBus = Depends(get_bus),
 ) -> ResetPasswordOut:
     user = await _get_user_or_404(session, user_id)
     temp_password = generate_temp_password()
@@ -115,4 +121,5 @@ async def reset_password(
     user.must_change_password = True
     await revoke_all_refresh_tokens(session, user.id)
     await session.commit()
+    await publish_user_safely(bus, user.id, {"type": "disconnect"})
     return ResetPasswordOut(temp_password=temp_password)
