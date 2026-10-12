@@ -122,6 +122,8 @@ async def _reader(websocket: WebSocket, conn: Connection, hub: Hub) -> None:
     window: deque[float] = deque()
     while True:
         raw = await _receive(websocket)
+        if conn.close_code is not None:  # hub đã quyết định đóng: không xử lý thêm frame nào
+            return
         if raw is None:
             conn.offer({"type": "error", "code": "unsupported_frame", "client_id": None})
             continue

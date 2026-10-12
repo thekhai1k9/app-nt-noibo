@@ -6,10 +6,9 @@ from typing import NamedTuple, Protocol
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-log = logging.getLogger(__name__)
+from app.config import get_settings
 
-ROOM_PREFIX = "kn:room:"
-USER_PREFIX = "kn:user:"
+log = logging.getLogger(__name__)
 
 
 class BusEvent(NamedTuple):
@@ -29,22 +28,25 @@ class MessageBus(Protocol):
 class RedisMessageBus:
     """MessageBus dùng Redis pub/sub. `listen_redis` phải là kết nối riêng không có socket_timeout."""
 
-    def __init__(self, redis: Redis, listen_redis: Redis | None = None):
+    def __init__(self, redis: Redis, listen_redis: Redis | None = None, prefix: str | None = None):
         self._redis = redis
         self._listen_redis = listen_redis
+        prefix = get_settings().bus_channel_prefix if prefix is None else prefix
+        self._room_prefix = f"{prefix}:room:"
+        self._user_prefix = f"{prefix}:user:"
 
     async def publish_room(self, room_id: int, event: dict) -> None:
-        await self._redis.publish(f"{ROOM_PREFIX}{room_id}", json.dumps(event, ensure_ascii=False))
+        await self._redis.publish(f"{self._room_prefix}{room_id}", json.dumps(event, ensure_ascii=False))
 
     async def publish_user(self, user_id: int, event: dict) -> None:
-        await self._redis.publish(f"{USER_PREFIX}{user_id}", json.dumps(event, ensure_ascii=False))
+        await self._redis.publish(f"{self._user_prefix}{user_id}", json.dumps(event, ensure_ascii=False))
 
     async def listen(self) -> AsyncIterator[BusEvent]:
         if self._listen_redis is None:
             raise RuntimeError("listen() needs a dedicated listen_redis connection without socket_timeout")
         pubsub = self._listen_redis.pubsub()
         try:
-            await pubsub.psubscribe(f"{ROOM_PREFIX}*", f"{USER_PREFIX}*")
+            await pubsub.psubscribe(f"{self._room_prefix}*", f"{self._user_prefix}*")
             subscribed = False
             async for item in pubsub.listen():
                 kind = item["type"]
@@ -56,10 +58,10 @@ class RedisMessageBus:
                 if kind != "pmessage":
                     continue
                 channel: str = item["channel"]
-                if channel.startswith(ROOM_PREFIX):
-                    scope, raw_id = "room", channel[len(ROOM_PREFIX) :]
+                if channel.startswith(self._room_prefix):
+                    scope, raw_id = "room", channel[len(self._room_prefix) :]
                 else:
-                    scope, raw_id = "user", channel[len(USER_PREFIX) :]
+                    scope, raw_id = "user", channel[len(self._user_prefix) :]
                 try:
                     event = BusEvent(scope, int(raw_id), json.loads(item["data"]))
                 except (ValueError, TypeError):

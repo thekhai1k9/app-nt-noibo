@@ -176,3 +176,61 @@ async def test_deleting_a_group_leaves_other_rooms_messages_and_memberships_alon
     assert list(remaining) == kept
     assert rooms == {other_group, direct}
     assert members == {(other_group, a), (other_group, b), (direct, a), (direct, b)}
+
+
+async def test_renaming_a_group_notifies_every_current_member(client, admin_headers, bus):
+    a, b = await create_user("alice"), await create_user("bob")
+    await create_user("carol")  # không thuộc nhóm
+    room = await create_room(name="Cũ", member_ids=[a, b])
+    r = await client.patch(f"/api/admin/rooms/{room}", json={"name": "Mới"}, headers=admin_headers)
+    assert r.status_code == 200
+    assert room_changed_targets(bus) == sorted([a, b])
+
+
+async def test_concurrent_double_add_of_the_same_user_is_idempotent(client, admin_headers):
+    import asyncio
+
+    a, b = await create_user("alice"), await create_user("bob")
+    room = await create_room(name="Nhóm", member_ids=[a])
+    await add_message(room, a, "lịch sử")
+    results = await asyncio.gather(
+        *[client.post(f"/api/admin/rooms/{room}/members", json={"user_id": b}, headers=admin_headers) for _ in range(2)]
+    )
+    assert [r.status_code for r in results] == [200, 200]
+    async with SessionLocal() as s:
+        member = await s.get(RoomMember, (room, b))
+        assert member is not None and member.last_read_message_id is not None
+        assert len((await s.execute(select(RoomMember).where(RoomMember.room_id == room))).all()) == 2
+
+
+async def test_add_member_survives_losing_the_membership_race(client, admin_headers, monkeypatch):
+    from app.routers import admin_rooms
+
+    a, b = await create_user("alice"), await create_user("bob")
+    room = await create_room(name="Nhóm", member_ids=[a, b])
+
+    async def stale_member_ids(session, room_id):  # request song song đã chen vào: kiểm tra thấy chưa có b
+        return [a]
+
+    monkeypatch.setattr(admin_rooms, "_member_ids", stale_member_ids)
+    r = await client.post(f"/api/admin/rooms/{room}/members", json={"user_id": b}, headers=admin_headers)
+    assert r.status_code == 200
+
+
+class _CountingFailingBus:
+    def __init__(self):
+        self.attempts = 0
+
+    async def publish_user(self, user_id, event):
+        from redis.exceptions import RedisError
+
+        self.attempts += 1
+        raise RedisError("down")
+
+
+async def test_notify_stops_after_the_first_failed_publish():
+    from app.routers.admin_rooms import _notify
+
+    bus = _CountingFailingBus()
+    await _notify(bus, [1, 2, 3, 4])
+    assert bus.attempts == 1

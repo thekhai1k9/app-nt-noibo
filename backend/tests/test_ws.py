@@ -440,3 +440,30 @@ async def test_periodic_reconcile_closes_a_user_locked_without_any_bus_event(liv
         (await s.get(User, a)).is_active = False
         await s.commit()
     assert await wait_closed(ws, timeout=3) == 4403  # WS_RECONCILE_SECONDS=0.3 trong conftest
+
+
+# ---------- reader ngừng xử lý khi kết nối đã đánh dấu đóng ----------
+
+async def test_reader_stops_processing_frames_once_the_connection_is_closing(monkeypatch):
+    from app.chat import service
+    from app.chat.hub import Connection, Hub
+    from app.db import SessionLocal
+    from app.routers import ws as ws_module
+    from tests.helpers import InMemoryBus
+
+    sent = []
+
+    async def spy_send(*args, **kwargs):
+        sent.append(args)
+        raise AssertionError("không được xử lý frame sau khi đã đóng")
+
+    monkeypatch.setattr(service, "send_message", spy_send)
+
+    class FakeSocket:
+        async def receive(self):
+            return {"type": "websocket.receive", "text": json.dumps({"type": "send", "room_id": 1, "body": "x"})}
+
+    conn = Connection(1)
+    conn.close(4403)
+    await asyncio.wait_for(ws_module._reader(FakeSocket(), conn, Hub(InMemoryBus(), SessionLocal)), 1)
+    assert sent == []

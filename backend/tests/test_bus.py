@@ -5,6 +5,7 @@ from contextlib import aclosing, suppress
 import pytest
 from redis.exceptions import RedisError
 
+from app.config import get_settings
 from app.chat.bus import RedisMessageBus, publish_room_safely, publish_user_safely
 from app.redis_client import build_listen_redis, get_redis
 
@@ -42,7 +43,7 @@ async def test_redis_bus_delivers_room_and_user_events():
 async def test_redis_bus_publishes_json():
     bus = RedisMessageBus(get_redis())
     pubsub = get_redis().pubsub()
-    await pubsub.subscribe("kn:room:5")
+    await pubsub.subscribe(f"{get_settings().bus_channel_prefix}:room:5")
     await pubsub.get_message(timeout=1)  # xác nhận subscribe
     await bus.publish_room(5, {"type": "x", "vi": "tiếng Việt"})
     message = None
@@ -86,3 +87,35 @@ async def test_listen_requires_a_dedicated_connection():
     with pytest.raises(RuntimeError, match="listen_redis"):
         async for _ in bus.listen():
             pass
+
+
+async def test_redis_bus_uses_the_configured_channel_prefix():
+    from app.config import get_settings
+
+    prefix = get_settings().bus_channel_prefix
+    assert prefix == "kn-test"  # conftest
+    bus = RedisMessageBus(get_redis(), build_listen_redis())
+    other = RedisMessageBus(get_redis(), prefix="other")
+    received = []
+
+    async def consume():
+        async with aclosing(bus.listen()) as events:
+            async for event in events:
+                received.append(event)
+                if len(received) == 2:
+                    return
+
+    task = asyncio.create_task(consume())
+    for _ in range(100):
+        if received:
+            break
+        await asyncio.sleep(0.02)
+    await other.publish_room(1, {"type": "foreign"})  # prefix khác: không được nhận
+    await bus.publish_user(2, {"type": "mine"})
+    try:
+        await asyncio.wait_for(task, 3)
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+    assert [(e.scope, e.target_id) for e in received[1:]] == [("user", 2)]

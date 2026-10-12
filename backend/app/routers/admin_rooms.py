@@ -3,6 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat import service
@@ -88,7 +89,8 @@ async def _detail(session: AsyncSession, room: Room) -> AdminRoomDetail:
 
 async def _notify(bus: MessageBus, user_ids: list[int]) -> None:
     for user_id in user_ids:
-        await publish_user_safely(bus, user_id, {"type": "rooms_changed"})
+        if not await publish_user_safely(bus, user_id, {"type": "rooms_changed"}):
+            return  # bus hỏng/treo: không mất thêm N x timeout; các client sẽ đối soát sau
 
 
 async def _active_user_or_404(session: AsyncSession, user_id: int) -> User:
@@ -149,11 +151,15 @@ async def get_room(room_id: RoomIdPath, session: AsyncSession = Depends(get_sess
 
 @router.patch("/{room_id}", response_model=AdminRoomDetail)
 async def rename_room(
-    room_id: RoomIdPath, body: RoomRenameIn, session: AsyncSession = Depends(get_session)
+    room_id: RoomIdPath,
+    body: RoomRenameIn,
+    session: AsyncSession = Depends(get_session),
+    bus: MessageBus = Depends(get_bus),
 ) -> AdminRoomDetail:
     room = await _group_or_404(session, room_id)
     room.name = body.name
     await session.commit()
+    await _notify(bus, await _member_ids(session, room.id))
     return await _detail(session, room)
 
 
@@ -181,7 +187,11 @@ async def add_member(
         # Người mới vào không coi lịch sử là chưa đọc: đặt vị trí đã đọc = tin nhắn mới nhất hiện có.
         latest = (await session.execute(select(func.max(Message.id)).where(Message.room_id == room.id))).scalar()
         session.add(RoomMember(room_id=room.id, user_id=body.user_id, last_read_message_id=latest))
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:  # request song song đã thêm cùng người này: coi như đã xong
+            await session.rollback()
+            room = await _group_or_404(session, room_id)  # rollback làm hết hạn đối tượng cũ
     await _notify(bus, [body.user_id])
     return await _detail(session, room)
 
