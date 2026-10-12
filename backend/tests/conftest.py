@@ -17,6 +17,7 @@ from app import models  # noqa: F401  (đăng ký các bảng vào Base.metadata
 from app.db import Base, SessionLocal, engine
 from app.main import create_app
 from app.models import Branch, User
+from app.redis_client import get_redis
 from app.security import hash_password
 
 TEST_PASSWORD = "Passw0rd!"
@@ -37,6 +38,7 @@ async def _schema():
 async def _clean():
     async with engine.begin() as conn:
         await conn.execute(text("TRUNCATE refresh_tokens, users, branches RESTART IDENTITY CASCADE"))
+    await get_redis().flushdb()
     yield
 
 
