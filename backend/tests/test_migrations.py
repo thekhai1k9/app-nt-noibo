@@ -61,6 +61,20 @@ async def test_migrations_match_models(scratch_alembic):
     await asyncio.to_thread(command.upgrade, cfg, "head")
     diffs = await _diff_against_models(scratch_url)
     assert diffs == [], f"models và migration lệch nhau: {diffs}"
+    # alembic không so sánh được chỉ mục biểu thức, nên kiểm tra trực tiếp trên schema đã migrate.
+    engine = create_async_engine(scratch_url)
+    try:
+        async with engine.connect() as conn:
+            indexdef = (
+                await conn.execute(text("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_messages_room_id_id'"))
+            ).scalar_one()
+            uq = (
+                await conn.execute(text("SELECT conname FROM pg_constraint WHERE conname = 'uq_messages_room_sender_client'"))
+            ).scalar_one()
+    finally:
+        await engine.dispose()
+    assert "room_id" in indexdef and "id DESC" in indexdef, indexdef
+    assert uq == "uq_messages_room_sender_client"
 
 
 async def test_migrations_roundtrip(scratch_alembic):
