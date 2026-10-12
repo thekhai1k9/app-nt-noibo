@@ -97,11 +97,24 @@ export function refreshSession(): Promise<RefreshResult> {
   if (!refreshInFlight) {
     const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined
     const run = locks ? locks.request('kn-refresh', () => refreshOnce()) : refreshOnce()
-    refreshInFlight = run.finally(() => {
-      refreshInFlight = null
+    const tracked: Promise<RefreshResult> = run.finally(() => {
+      // Chỉ xoá nếu vẫn là lần refresh này (resetApiState có thể đã thay bằng lần mới).
+      if (refreshInFlight === tracked) refreshInFlight = null
     })
+    refreshInFlight = tracked
   }
   return refreshInFlight
+}
+
+/** Resolve khi lần refresh đang chạy (nếu có) đã kết thúc; không bao giờ reject. */
+export async function waitForRefresh(): Promise<void> {
+  const pending = refreshInFlight
+  if (!pending) return
+  try {
+    await pending
+  } catch {
+    // kết quả refresh không quan trọng với người gọi
+  }
 }
 
 const NO_REFRESH_PATHS = new Set(['/auth/login', '/auth/refresh', '/auth/logout'])

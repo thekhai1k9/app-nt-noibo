@@ -5,8 +5,10 @@ import {
   api,
   getAccessToken,
   refreshSession,
+  resetApiState,
   setAccessToken,
   setAuthLostHandler,
+  waitForRefresh,
 } from './api'
 
 const tokenJson = (token: string) => ({
@@ -165,5 +167,69 @@ describe('api client', () => {
     expect(err).toBeInstanceOf(Error)
     expect(err.status).toBe(403)
     expect(err.code).toBe('forbidden')
+  })
+})
+
+/** fetch giả: mỗi lần gọi trả về một promise do test tự quyết định lúc nào hoàn tất. */
+function deferredFetch() {
+  const pending: Array<(token: string) => void> = []
+  const fn = vi.fn(
+    () =>
+      new Promise<Response>((resolve) => {
+        pending.push((token) =>
+          resolve(
+            new Response(
+              JSON.stringify({ access_token: token, token_type: 'bearer', must_change_password: false }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            ),
+          ),
+        )
+      }),
+  )
+  vi.stubGlobal('fetch', fn)
+  return { fn, pending }
+}
+
+describe('waitForRefresh', () => {
+  it('resolves immediately when no refresh is in flight', async () => {
+    await expect(waitForRefresh()).resolves.toBeUndefined()
+  })
+
+  it('resolves only after an in-flight refresh has settled', async () => {
+    const { pending } = deferredFetch()
+    const refresh = refreshSession()
+    let waited = false
+    const waiter = waitForRefresh().then(() => {
+      waited = true
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(waited).toBe(false)
+    pending[0]('fresh')
+    await waiter
+    expect(waited).toBe(true)
+    await expect(refresh).resolves.toBe('ok')
+    expect(getAccessToken()).toBe('fresh')
+  })
+
+  it('never rejects, even when the refresh fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('offline')))
+    void refreshSession()
+    await expect(waitForRefresh()).resolves.toBeUndefined()
+  })
+
+  it('does not let a stale refresh clear a newer in-flight refresh', async () => {
+    const { fn, pending } = deferredFetch()
+    const stale = refreshSession()
+    resetApiState()
+    const newer = refreshSession()
+    expect(fn).toHaveBeenCalledTimes(2)
+    pending[0]('old')
+    await stale
+    // refresh mới vẫn đang chạy: lời gọi tiếp theo phải dùng lại nó, không tạo request thứ ba
+    const joined = refreshSession()
+    expect(fn).toHaveBeenCalledTimes(2)
+    pending[1]('new')
+    await expect(joined).resolves.toBe('ok')
+    await newer
   })
 })
