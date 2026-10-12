@@ -159,6 +159,7 @@ async def _reader(websocket: WebSocket, conn: Connection, hub: Hub) -> None:
         kind = data.get("type") if isinstance(data, dict) else None
         if kind == "ping":
             conn.offer({"type": "pong"})
+            await hub.refresh_presence(conn)
         elif kind == "send":
             await _handle_send(conn, hub, data, window)
         elif kind == "typing":
@@ -191,6 +192,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             ids = await service.user_room_ids(session, user.id)
         apply_room_snapshot(conn, version, ids)  # bỏ qua nếu hub đã áp dụng snapshot mới hơn trong lúc chờ
         await websocket.send_json({"type": "ready", "user_id": user.id})
+        await hub.on_connected(conn)
         tasks = {
             asyncio.create_task(_reader(websocket, conn, hub)),
             asyncio.create_task(_writer(websocket, conn)),
@@ -210,3 +212,4 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _close(websocket, conn.close_code)
     finally:
         hub.unregister(conn)
+        await asyncio.shield(hub.on_disconnected(conn))

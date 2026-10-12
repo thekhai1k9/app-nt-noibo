@@ -4,12 +4,14 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat import service
+from app.chat.presence import Presence
 from app.chat.bus import MessageBus, RedisMessageBus, publish_room_safely, publish_user_safely
 from app.chat.schemas import MemberReceipt, MessageOut, MessagePage, RoomOut, to_message_out
 from app.db import get_session
 from app.deps import get_ready_user
 from app.ids import MessageId, MessageIdPath, MessageIdQuery, RoomIdPath, UserId
-from app.models import Branch, User
+from app.config import get_settings
+from app.models import Branch, Room, RoomMember, User
 from app.redis_client import get_redis
 
 router = APIRouter(tags=["chat"])
@@ -17,6 +19,15 @@ router = APIRouter(tags=["chat"])
 
 def get_bus() -> MessageBus:
     return RedisMessageBus(get_redis())
+
+
+def get_presence() -> Presence:
+    settings = get_settings()
+    return Presence(get_redis(), settings.bus_channel_prefix, settings.presence_ttl_seconds)
+
+
+class PresenceOut(BaseModel):
+    online_user_ids: list[int]
 
 
 class DirectoryUser(BaseModel):
@@ -64,6 +75,25 @@ async def directory(
         )
         for u, branch_name in rows
     ]
+
+
+@router.get("/presence", response_model=PresenceOut)
+async def get_presence_snapshot(
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_ready_user),
+    presence: Presence = Depends(get_presence),
+) -> PresenceOut:
+    mine = (
+        select(RoomMember.room_id)
+        .join(Room, Room.id == RoomMember.room_id)
+        .where(RoomMember.user_id == user.id, Room.archived_at.is_(None))
+    )
+    rows = await session.execute(
+        select(RoomMember.user_id).where(RoomMember.room_id.in_(mine), RoomMember.user_id != user.id).distinct()
+    )
+    peers = set(rows.scalars())
+    online = await presence.online_user_ids() if peers else set()
+    return PresenceOut(online_user_ids=sorted(online & peers))
 
 
 @router.get("/rooms", response_model=list[RoomOut])

@@ -1,12 +1,14 @@
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable, Iterable
 from contextlib import AbstractAsyncContextManager, aclosing
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.chat.bus import BusEvent, MessageBus
+from app.chat.bus import BusEvent, MessageBus, publish_room_safely
+from app.chat.presence import Presence
 from app.chat.service import user_room_ids
 from app.models import Room, RoomMember, User
 
@@ -30,6 +32,8 @@ class Connection:
         self.queue: asyncio.Queue[dict | None] = asyncio.Queue(maxsize=queue_size)
         self.close_code: int | None = None
         self.version = 0  # tăng mỗi khi hub gán lại room_ids
+        self.conn_id = uuid.uuid4().hex
+        self.presence_registered = False  # on_connected đã ghi presence thành công
 
     def offer(self, event: dict) -> bool:
         if self.close_code is not None:
@@ -64,11 +68,16 @@ class Hub:
         bus: MessageBus,
         session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
         reconnect_delay: float = 1.0,
+        presence: Presence | None = None,
     ):
         self.bus = bus
         self._session_factory = session_factory
         self._reconnect_delay = reconnect_delay
         self._conns: dict[int, set[Connection]] = {}
+        self.presence = presence
+        self._last_online: set[int] | None = None  # None cho tới lượt quét đầu tiên
+        self._announce_tasks: set[asyncio.Task] = set()
+        self._closing = False
 
     def register(self, conn: Connection) -> None:
         self._conns.setdefault(conn.user_id, set()).add(conn)
@@ -95,8 +104,9 @@ class Hub:
         if not isinstance(event.payload, dict):
             return
         if event.scope == "room":
+            own_presence = event.payload.get("user_id") if event.payload.get("type") == "presence" else None
             for conn in self._all():
-                if event.target_id in conn.room_ids:
+                if event.target_id in conn.room_ids and conn.user_id != own_presence:  # không báo presence cho chính mình
                     self._offer(conn, event.payload)
             return
         if event.scope != "user":
@@ -196,6 +206,96 @@ class Hub:
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30)
 
+    # ---------- presence ----------
+
+    def _spawn_announce(self, user_id: int, online: bool) -> None:
+        """Phát presence ở tác vụ nền để không chặn/ làm trễ `ready` hay việc đóng kết nối."""
+        if self._closing:
+            return
+        task = asyncio.create_task(self._announce(user_id, online))
+        self._announce_tasks.add(task)
+        task.add_done_callback(self._announce_tasks.discard)
+
+    async def _announce(self, user_id: int, online: bool) -> None:
+        try:
+            async with self._session_factory() as session:
+                room_ids = await user_room_ids(session, user_id)  # chỉ phòng chưa lưu trữ mà user là thành viên
+            event = {"type": "presence", "user_id": user_id, "online": online}
+            for room_id in room_ids:
+                await publish_room_safely(self.bus, room_id, event)
+        except Exception:
+            log.exception("failed to announce presence")
+
+    async def on_connected(self, conn: Connection) -> None:
+        if self.presence is None:
+            return
+        try:
+            was_online = await self.presence.touch(conn.user_id, conn.conn_id)
+        except Exception:
+            log.warning("presence touch failed on connect", exc_info=True)
+            return
+        conn.presence_registered = True
+        if self._last_online is not None:
+            self._last_online.add(conn.user_id)
+        if not was_online:
+            self._spawn_announce(conn.user_id, True)
+
+    async def on_disconnected(self, conn: Connection) -> None:
+        if self.presence is None or not conn.presence_registered:
+            return
+        try:
+            await self.presence.remove(conn.user_id, conn.conn_id)
+            still_online = conn.user_id in await self.presence.online_user_ids()
+        except Exception:
+            log.warning("presence remove failed on disconnect", exc_info=True)
+            return  # phần tử sẽ hết hạn và bộ quét sẽ đối soát
+        if not still_online:
+            if self._last_online is not None:
+                self._last_online.discard(conn.user_id)
+            self._spawn_announce(conn.user_id, False)
+
+    async def refresh_presence(self, conn: Connection) -> None:
+        """Gia hạn kết nối khi client ping; lỗi Redis không ảnh hưởng kết nối."""
+        if self.presence is None:
+            return
+        try:
+            await self.presence.touch(conn.user_id, conn.conn_id)
+        except Exception:
+            log.warning("presence refresh failed", exc_info=True)
+
+    async def sweep_presence(self) -> None:
+        """Một lượt: gia hạn kết nối cục bộ TRƯỚC, rồi đối soát tập online với lượt trước và phát thay đổi."""
+        if self.presence is None:
+            return
+        local = [c for c in self._all() if c.close_code is None]
+        await self.presence.touch_many((c.user_id, c.conn_id) for c in local)
+        online = await self.presence.online_user_ids()
+        online |= {c.user_id for c in self._all() if c.close_code is None}  # kết nối vừa đăng ký giữa chừng
+        previous, self._last_online = self._last_online, online
+        if previous is None:
+            return
+        for user_id in sorted(online - previous):
+            await self._announce(user_id, True)
+        for user_id in sorted(previous - online):
+            await self._announce(user_id, False)
+
+    async def _sweep_guarded(self) -> None:
+        try:
+            await asyncio.wait_for(self.sweep_presence(), timeout=RECONCILE_TIMEOUT_SECONDS)
+        except Exception:
+            log.exception("presence sweep failed or timed out")
+
+    async def run_presence_sweeper(self, interval: float) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            await self._sweep_guarded()
+
     async def close_all(self, code: int = 1001) -> None:
+        self._closing = True
+        tasks = list(self._announce_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         for conn in self._all():
             conn.close(code)

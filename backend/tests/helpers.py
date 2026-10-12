@@ -44,8 +44,13 @@ async def ws_open(ws_base: str, token: str):
     return ws, first
 
 
-async def recv_json(ws, timeout: float = 3):
-    return json.loads(await asyncio.wait_for(ws.recv(), timeout))
+async def recv_json(ws, timeout: float = 3, include_presence: bool = False):
+    """Nhận một sự kiện; mặc định bỏ qua `presence` (sự kiện nền do kết nối của người khác gây ra)."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        event = json.loads(await asyncio.wait_for(ws.recv(), max(deadline - asyncio.get_running_loop().time(), 0.001)))
+        if include_presence or event.get("type") != "presence":
+            return event
 
 
 async def expect_silence(ws, seconds: float = 0.4):

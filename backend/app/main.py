@@ -7,6 +7,7 @@ from redis.exceptions import RedisError
 
 from app.chat.bus import RedisMessageBus
 from app.chat.hub import Hub
+from app.chat.presence import Presence
 from app.chat.retention import run_purger
 from app.chat.service import ChatError
 from app.config import get_settings
@@ -32,10 +33,12 @@ async def lifespan(app: FastAPI):
             "(generate one with: openssl rand -hex 32)"
         )
     listen_redis = build_listen_redis()
-    hub = Hub(RedisMessageBus(get_redis(), listen_redis), SessionLocal)
+    presence = Presence(get_redis(), settings.bus_channel_prefix, settings.presence_ttl_seconds)
+    hub = Hub(RedisMessageBus(get_redis(), listen_redis), SessionLocal, presence=presence)
     app.state.hub = hub
     runner = asyncio.create_task(hub.run())
     reconciler = asyncio.create_task(hub.run_reconciler(settings.ws_reconcile_seconds))
+    sweeper = asyncio.create_task(hub.run_presence_sweeper(settings.presence_sweep_seconds))
     purger = asyncio.create_task(
         run_purger(SessionLocal, settings.room_archive_retention_days, settings.room_purge_interval_seconds)
     )
@@ -44,11 +47,14 @@ async def lifespan(app: FastAPI):
     finally:
         runner.cancel()
         reconciler.cancel()
+        sweeper.cancel()
         purger.cancel()
         with suppress(asyncio.CancelledError):
             await runner
         with suppress(asyncio.CancelledError):
             await reconciler
+        with suppress(asyncio.CancelledError):
+            await sweeper
         with suppress(asyncio.CancelledError):
             await purger
         await hub.close_all()
