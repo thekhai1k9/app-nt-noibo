@@ -338,3 +338,38 @@ async def test_frame_is_measured_in_encoded_bytes_not_characters(live_server):
     assert len(text) < 16_384 < len(text.encode("utf-8"))
     await ws.send(text)
     assert await wait_closed(ws) == 4413
+
+
+# ---------- lỗi nội bộ ----------
+
+async def test_unexpected_error_while_sending_returns_internal_error_and_keeps_the_connection(live_server, monkeypatch):
+    from app.chat import service
+
+    a = await create_user("alice")
+    room = await create_room(member_ids=[a])
+    ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(service, "send_message", boom)
+    await _send(ws, room, "sẽ lỗi", "i1")
+    assert await recv_json(ws) == {"type": "error", "code": "internal_error", "client_id": "i1"}
+    await ws.send(json.dumps({"type": "ping"}))
+    assert await recv_json(ws) == {"type": "pong"}
+    await ws.close()
+
+
+async def test_database_failure_while_authenticating_closes_with_1011(live_server, monkeypatch):
+    from app.routers import ws as ws_module
+
+    await create_user("alice")
+    token = await _token(live_server, "alice")
+
+    def broken_session():
+        raise ConnectionError("db down")
+
+    monkeypatch.setattr(ws_module, "SessionLocal", broken_session)
+    ws = await connect(f"{live_server.ws}/api/ws")
+    await ws.send(json.dumps({"type": "auth", "token": token}))
+    assert await wait_closed(ws) == 1011
