@@ -1,13 +1,18 @@
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from redis.exceptions import RedisError
 
+from app.chat.bus import RedisMessageBus
+from app.chat.hub import Hub
 from app.chat.service import ChatError
 from app.config import get_settings
+from app.db import SessionLocal
 from app.logging_conf import setup_logging
-from app.routers import admin_branches, admin_rooms, admin_users, auth, chat, health
+from app.redis_client import build_listen_redis, get_redis
+from app.routers import admin_branches, admin_rooms, admin_users, auth, chat, health, ws
 
 DEFAULT_SECRET = "dev-secret-change-me"
 ENV_EXAMPLE_SECRET = "change-me-to-a-long-random-string"
@@ -25,7 +30,18 @@ async def lifespan(app: FastAPI):
             f"JWT_SECRET must be a real secret of at least {MIN_SECRET_LENGTH} characters when APP_ENV=prod "
             "(generate one with: openssl rand -hex 32)"
         )
-    yield
+    listen_redis = build_listen_redis()
+    hub = Hub(RedisMessageBus(get_redis(), listen_redis), SessionLocal)
+    app.state.hub = hub
+    runner = asyncio.create_task(hub.run())
+    try:
+        yield
+    finally:
+        runner.cancel()
+        with suppress(asyncio.CancelledError):
+            await runner
+        await hub.close_all()
+        await listen_redis.aclose()
 
 
 async def redis_unavailable(request: Request, exc: RedisError) -> JSONResponse:
@@ -54,6 +70,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_users.router, prefix="/api")
     app.include_router(admin_rooms.router, prefix="/api")
     app.include_router(chat.router, prefix="/api")
+    app.include_router(ws.router, prefix="/api")
     return app
 
 

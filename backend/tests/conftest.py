@@ -11,7 +11,12 @@ os.environ["LOGIN_MAX_ATTEMPTS"] = "3"
 os.environ["WS_RATE_LIMIT_MESSAGES"] = "5"
 os.environ["WS_AUTH_TIMEOUT_SECONDS"] = "1"
 
+import asyncio
+import socket
+from dataclasses import dataclass
+
 import pytest_asyncio
+import uvicorn
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
@@ -152,3 +157,32 @@ async def token_for(client, username: str) -> str:
 
 def auth_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+@dataclass
+class LiveServer:
+    http: str
+    ws: str
+
+
+@pytest_asyncio.fixture
+async def live_server():
+    """Chạy ứng dụng thật (có lifespan, Hub và Redis thật) trên cổng ngẫu nhiên trong cùng event loop."""
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    config = uvicorn.Config(create_app(), host="127.0.0.1", port=port, log_level="warning", lifespan="on")
+    server = uvicorn.Server(config)
+    task = asyncio.create_task(server.serve())
+    for _ in range(200):
+        if server.started:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        raise RuntimeError("uvicorn không khởi động được")
+    try:
+        yield LiveServer(http=f"http://127.0.0.1:{port}", ws=f"ws://127.0.0.1:{port}")
+    finally:
+        server.should_exit = True
+        await task

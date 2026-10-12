@@ -55,4 +55,4 @@ async def expect_silence(ws, seconds: float = 0.4):
 
 async def wait_closed(ws, timeout: float = 3) -> int | None:
     await asyncio.wait_for(ws.wait_closed(), timeout)
-    return ws.close_code
+    return ws.protocol.close_code  # websockets 13.1: Connection has no close_code attribute
