@@ -116,7 +116,7 @@ async def test_rename_add_and_remove_members(client, admin_headers, bus):
     assert (missing.status_code, missing.json()["detail"]) == (404, "member_not_found")
 
 
-async def test_delete_group_removes_messages_and_notifies_every_member(client, admin_headers, bus):
+async def test_delete_group_archives_it_and_notifies_every_member(client, admin_headers, bus):
     a, b = await create_user("alice"), await create_user("bob")
     room = await create_room(name="Bỏ", member_ids=[a, b])
     await add_message(room, a)
@@ -124,9 +124,9 @@ async def test_delete_group_removes_messages_and_notifies_every_member(client, a
     assert r.status_code == 204
     assert room_changed_targets(bus) == sorted([a, b])
     async with SessionLocal() as s:
-        assert (await s.execute(select(Room))).first() is None
-        assert (await s.execute(select(RoomMember))).first() is None
-        assert (await s.execute(select(Message))).first() is None
+        assert (await s.get(Room, room)).archived_at is not None
+        assert len((await s.execute(select(RoomMember))).all()) == 2
+        assert len((await s.execute(select(Message))).all()) == 1
     assert (await client.delete(f"/api/admin/rooms/{room}", headers=admin_headers)).status_code == 404
 
 
@@ -159,12 +159,12 @@ async def test_re_adding_an_existing_member_keeps_their_read_position(client, ad
     assert await _unread(client, "bob", room) == 1
 
 
-async def test_deleting_a_group_leaves_other_rooms_messages_and_memberships_alone(client, admin_headers):
+async def test_archiving_a_group_leaves_other_rooms_alone(client, admin_headers):
     a, b = await create_user("alice"), await create_user("bob")
     doomed = await create_room(name="Bỏ", member_ids=[a, b])
     other_group = await create_room(name="Giữ", member_ids=[a, b])
     direct = await create_direct(a, b)
-    await add_message(doomed, a, "sẽ mất")
+    archived_msg = await add_message(doomed, a, "sẽ được lưu")
     kept = [await add_message(other_group, a, "nhóm khác"), await add_message(direct, b, "tin riêng")]
 
     assert (await client.delete(f"/api/admin/rooms/{doomed}", headers=admin_headers)).status_code == 204
@@ -173,9 +173,13 @@ async def test_deleting_a_group_leaves_other_rooms_messages_and_memberships_alon
         remaining = (await s.execute(select(Message.id).order_by(Message.id))).scalars().all()
         members = set((await s.execute(select(RoomMember.room_id, RoomMember.user_id))).all())
         rooms = set((await s.execute(select(Room.id))).scalars())
-    assert list(remaining) == kept
-    assert rooms == {other_group, direct}
-    assert members == {(other_group, a), (other_group, b), (direct, a), (direct, b)}
+    assert list(remaining) == [archived_msg, *kept]
+    assert rooms == {doomed, other_group, direct}
+    assert (doomed, a) in members and (doomed, b) in members
+    assert {(other_group, a), (other_group, b), (direct, a), (direct, b)} <= members
+    async with SessionLocal() as s:
+        assert (await s.get(Room, other_group)).archived_at is None
+        assert (await s.get(Room, direct)).archived_at is None
 
 
 async def test_renaming_a_group_notifies_every_current_member(client, admin_headers, bus):

@@ -7,6 +7,7 @@ from redis.exceptions import RedisError
 
 from app.chat.bus import RedisMessageBus
 from app.chat.hub import Hub
+from app.chat.retention import run_purger
 from app.chat.service import ChatError
 from app.config import get_settings
 from app.db import SessionLocal
@@ -35,15 +36,21 @@ async def lifespan(app: FastAPI):
     app.state.hub = hub
     runner = asyncio.create_task(hub.run())
     reconciler = asyncio.create_task(hub.run_reconciler(settings.ws_reconcile_seconds))
+    purger = asyncio.create_task(
+        run_purger(SessionLocal, settings.room_archive_retention_days, settings.room_purge_interval_seconds)
+    )
     try:
         yield
     finally:
         runner.cancel()
         reconciler.cancel()
+        purger.cancel()
         with suppress(asyncio.CancelledError):
             await runner
         with suppress(asyncio.CancelledError):
             await reconciler
+        with suppress(asyncio.CancelledError):
+            await purger
         await hub.close_all()
         await listen_redis.aclose()
 

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat import service
+from app.config import get_settings
 from app.chat.bus import MessageBus, publish_user_safely
 from app.db import get_session
 from app.deps import require_admin
@@ -30,6 +31,8 @@ class AdminRoomOut(BaseModel):
     branch_id: int | None
     member_count: int
     created_at: datetime
+    archived_at: datetime | None = None
+    purge_at: datetime | None = None
 
 
 class AdminRoomDetail(AdminRoomOut):
@@ -54,9 +57,33 @@ class MemberIn(BaseModel):
     user_id: UserId
 
 
-async def _group_or_404(session: AsyncSession, room_id: int) -> Room:
+def _purge_at(room: Room) -> datetime | None:
+    if room.archived_at is None:
+        return None
+    return room.archived_at + timedelta(days=get_settings().room_archive_retention_days)
+
+
+def _room_out(room: Room, member_count: int) -> AdminRoomOut:
+    return AdminRoomOut(
+        id=room.id,
+        name=room.name or "",
+        branch_id=room.branch_id,
+        member_count=member_count,
+        created_at=room.created_at,
+        archived_at=room.archived_at,
+        purge_at=_purge_at(room),
+    )
+
+
+async def _group_or_404(session: AsyncSession, room_id: int, *, archived: bool | None = False) -> Room:
+    """archived: False = chỉ nhóm hoạt động, True = chỉ nhóm đã lưu trữ, None = cả hai."""
     room = await session.get(Room, room_id)
-    if room is None or room.type != "group":
+    if (
+        room is None
+        or room.type != "group"
+        or (archived is False and room.archived_at is not None)
+        or (archived is True and room.archived_at is None)
+    ):
         raise HTTPException(status_code=404, detail="room_not_found")
     return room
 
@@ -83,6 +110,8 @@ async def _detail(session: AsyncSession, room: Room) -> AdminRoomDetail:
         branch_id=room.branch_id,
         member_count=len(members),
         created_at=room.created_at,
+        archived_at=room.archived_at,
+        purge_at=_purge_at(room),
         members=members,
     )
 
@@ -102,13 +131,16 @@ async def _active_user_or_404(session: AsyncSession, user_id: int) -> User:
 
 @router.get("", response_model=list[AdminRoomOut])
 async def list_rooms(
-    q: str | None = None, branch_id: BranchIdQuery = None, session: AsyncSession = Depends(get_session)
+    q: str | None = None,
+    branch_id: BranchIdQuery = None,
+    archived: bool = False,
+    session: AsyncSession = Depends(get_session),
 ) -> list[AdminRoomOut]:
     counts = select(RoomMember.room_id, func.count().label("n")).group_by(RoomMember.room_id).subquery()
     query = (
         select(Room, func.coalesce(counts.c.n, 0))
         .outerjoin(counts, counts.c.room_id == Room.id)
-        .where(Room.type == "group")
+        .where(Room.type == "group", Room.archived_at.is_not(None) if archived else Room.archived_at.is_(None))
         .order_by(Room.name)
     )
     if branch_id is not None:
@@ -116,10 +148,7 @@ async def list_rooms(
     if q and q.strip():
         query = query.where(Room.name.ilike(f"%{service.escape_like(q.strip())}%", escape="\\"))
     rows = (await session.execute(query)).all()
-    return [
-        AdminRoomOut(id=r.id, name=r.name or "", branch_id=r.branch_id, member_count=n, created_at=r.created_at)
-        for r, n in rows
-    ]
+    return [_room_out(r, n) for r, n in rows]
 
 
 @router.post("", response_model=AdminRoomDetail, status_code=201)
@@ -146,7 +175,7 @@ async def create_room(
 
 @router.get("/{room_id}", response_model=AdminRoomDetail)
 async def get_room(room_id: RoomIdPath, session: AsyncSession = Depends(get_session)) -> AdminRoomDetail:
-    return await _detail(session, await _group_or_404(session, room_id))
+    return await _detail(session, await _group_or_404(session, room_id, archived=None))
 
 
 @router.patch("/{room_id}", response_model=AdminRoomDetail)
@@ -169,9 +198,20 @@ async def delete_room(
 ) -> None:
     room = await _group_or_404(session, room_id)
     member_ids = await _member_ids(session, room.id)
-    await session.delete(room)
+    room.archived_at = func.now()
     await session.commit()
     await _notify(bus, member_ids)
+
+
+@router.post("/{room_id}/restore", response_model=AdminRoomDetail)
+async def restore_room(
+    room_id: RoomIdPath, session: AsyncSession = Depends(get_session), bus: MessageBus = Depends(get_bus)
+) -> AdminRoomDetail:
+    room = await _group_or_404(session, room_id, archived=True)
+    room.archived_at = None
+    await session.commit()
+    await _notify(bus, await _member_ids(session, room.id))
+    return await _detail(session, room)
 
 
 @router.post("/{room_id}/members", response_model=AdminRoomDetail)

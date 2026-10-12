@@ -29,7 +29,11 @@ def _direct_key(a: int, b: int) -> str:
 
 
 async def user_room_ids(session: AsyncSession, user_id: int) -> set[int]:
-    rows = await session.execute(select(RoomMember.room_id).where(RoomMember.user_id == user_id))
+    rows = await session.execute(
+        select(RoomMember.room_id)
+        .join(Room, Room.id == RoomMember.room_id)
+        .where(RoomMember.user_id == user_id, Room.archived_at.is_(None))
+    )
     return set(rows.scalars())
 
 
@@ -38,7 +42,7 @@ async def require_member(session: AsyncSession, room_id: int, user_id: int) -> R
     row = await session.execute(
         select(Room)
         .join(RoomMember, RoomMember.room_id == Room.id)
-        .where(Room.id == room_id, RoomMember.user_id == user_id)
+        .where(Room.id == room_id, RoomMember.user_id == user_id, Room.archived_at.is_(None))
     )
     room = row.scalar_one_or_none()
     if room is None:
@@ -168,7 +172,9 @@ async def list_messages(
 async def list_rooms(session: AsyncSession, user_id: int) -> list[RoomOut]:
     mine = (
         await session.execute(
-            select(Room).join(RoomMember, RoomMember.room_id == Room.id).where(RoomMember.user_id == user_id)
+            select(Room)
+            .join(RoomMember, RoomMember.room_id == Room.id)
+            .where(RoomMember.user_id == user_id, Room.archived_at.is_(None))
         )
     ).scalars().all()
     if not mine:
@@ -208,6 +214,7 @@ async def list_rooms(session: AsyncSession, user_id: int) -> list[RoomOut]:
     unread_rows = await session.execute(
         select(RoomMember.room_id, func.count(Message.id))
         .select_from(RoomMember)
+        .join(Room, Room.id == RoomMember.room_id)
         .join(
             Message,
             and_(
@@ -218,7 +225,7 @@ async def list_rooms(session: AsyncSession, user_id: int) -> list[RoomOut]:
             ),
             isouter=True,
         )
-        .where(RoomMember.user_id == user_id)
+        .where(RoomMember.user_id == user_id, Room.archived_at.is_(None))
         .group_by(RoomMember.room_id)
     )
     unread = dict(unread_rows.all())

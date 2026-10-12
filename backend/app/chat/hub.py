@@ -7,7 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat.bus import BusEvent, MessageBus
-from app.models import RoomMember, User
+from app.chat.service import user_room_ids
+from app.models import Room, RoomMember, User
 
 log = logging.getLogger(__name__)
 
@@ -108,8 +109,7 @@ class Hub:
                 conn.close(code)
         elif kind == "rooms_changed" and conns:
             async with self._session_factory() as session:
-                rows = await session.execute(select(RoomMember.room_id).where(RoomMember.user_id == event.target_id))
-                room_ids = set(rows.scalars())
+                room_ids = await user_room_ids(session, event.target_id)
             for conn in conns:
                 conn.room_ids = set(room_ids)
                 conn.version += 1
@@ -132,7 +132,9 @@ class Hub:
                 blocked_locked = {uid for uid, active, _ in rows_state if not active}
                 blocked_reauth = {uid for uid, active, must_change in rows_state if active and must_change}
                 rows = await session.execute(
-                    select(RoomMember.user_id, RoomMember.room_id).where(RoomMember.user_id.in_(user_ids))
+                    select(RoomMember.user_id, RoomMember.room_id)
+                    .join(Room, Room.id == RoomMember.room_id)
+                    .where(RoomMember.user_id.in_(user_ids), Room.archived_at.is_(None))
                 )
                 by_user: dict[int, set[int]] = {}
                 for user_id, room_id in rows:

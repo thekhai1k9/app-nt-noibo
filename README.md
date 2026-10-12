@@ -42,7 +42,7 @@ Tất cả dưới `/api`, cần `Authorization: Bearer <access token>` và đã
 | Lịch sử tin nhắn (con trỏ) | `GET /rooms/{id}/messages?before=&after=&around=&limit=` |
 | Đánh dấu đã đọc | `POST /rooms/{id}/read` `{"message_id": 10}` |
 | Sửa / xoá tin của mình | `PATCH` / `DELETE /messages/{id}` |
-| Admin quản lý nhóm | `/admin/rooms` (tạo, đổi tên, thêm/bớt thành viên, xoá) |
+| Admin quản lý nhóm | `/admin/rooms` (tạo, đổi tên, thêm/bớt thành viên, lưu trữ = xoá; `?archived=true` xem nhóm đã lưu trữ; `POST /admin/rooms/{id}/restore` khôi phục) |
 
 ### Phân trang tin nhắn
 
@@ -104,7 +104,7 @@ Lỗi REST có dạng `{"detail":"<code>"}`; sai kiểu/khoảng giá trị đ�
 - Nhận `rooms_changed` (được thêm/gỡ khỏi phòng, đổi tên nhóm, phòng bị xoá): tải lại `GET /rooms`.
 - Server cũng tự đối soát định kỳ (`WS_RECONCILE_SECONDS`, mặc định 30 giây) và đóng kết nối của tài khoản đã khoá hoặc phải đổi mật khẩu, nên client phải xử lý 4401/4403 bất cứ lúc nào.
 
-**Xoá nhóm là xoá vĩnh viễn**: admin xoá một nhóm (`DELETE /admin/rooms/{id}`) sẽ xoá **toàn bộ tin nhắn** của nhóm đó, không khôi phục được. Giao diện admin phải yêu cầu xác nhận rõ ràng trước khi gọi.
+**Xoá nhóm = lưu trữ 3 ngày rồi xoá vĩnh viễn**: `DELETE /admin/rooms/{id}` (204) không xoá dữ liệu mà đặt `archived_at`. Nhóm đã lưu trữ biến mất với mọi người dùng thường (danh sách phòng, tin nhắn, gửi/sửa/xoá/đánh dấu đã đọc đều trả `404 room_not_found`, WebSocket không còn nhận tin của nhóm) và các thành viên nhận `rooms_changed`. Admin xem được bằng `GET /admin/rooms?archived=true` (mỗi nhóm có `archived_at` và `purge_at`), xem chi tiết bằng `GET /admin/rooms/{id}`, khôi phục bằng `POST /admin/rooms/{id}/restore` (thành viên thấy lại đủ tin nhắn và số chưa đọc cũ); đổi tên, thêm/gỡ thành viên trên nhóm đã lưu trữ trả `404 room_not_found`. Tiến trình nền (chạy lúc khởi động rồi mỗi `ROOM_PURGE_INTERVAL_SECONDS` giây, mặc định 3600) xoá vĩnh viễn nhóm đã lưu trữ quá `ROOM_ARCHIVE_RETENTION_DAYS` ngày (mặc định 3) cùng toàn bộ tin nhắn. Phòng chat 1-1 không bị ảnh hưởng. Lưu ý: bản sao lưu DB vẫn chứa dữ liệu đã xoá vĩnh viễn cho tới khi hết hạn theo chính sách sao lưu (Plan 7). Giao diện admin vẫn phải xác nhận trước khi lưu trữ.
 
 ### Kiểm tra đầu-cuối: `scripts/e2e_chat_smoke.py`
 
