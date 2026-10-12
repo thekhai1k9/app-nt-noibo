@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 
 from app.chat.bus import BusEvent
 from app.chat.hub import Connection, Hub
@@ -77,6 +78,19 @@ async def test_connection_close_is_idempotent_and_blocks_further_offers():
     assert conn.offer({"type": "x"}) is False
 
 
+async def stop(task: asyncio.Task) -> None:
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def wait_for_queue(conn: Connection) -> None:
+    for _ in range(100):
+        if not conn.queue.empty():
+            return
+        await asyncio.sleep(0.02)
+
+
 async def test_run_dispatches_bus_events_to_connections():
     bus = InMemoryBus()
     hub = Hub(bus, SessionLocal, reconnect_delay=0.01)
@@ -85,33 +99,77 @@ async def test_run_dispatches_bus_events_to_connections():
     task = asyncio.create_task(hub.run())
     try:
         await bus.publish_room(10, {"type": "message", "n": 1})
-        for _ in range(100):
-            if not conn.queue.empty():
-                break
-            await asyncio.sleep(0.02)
+        await wait_for_queue(conn)
         assert drain(conn) == [{"type": "message", "n": 1}]
     finally:
-        task.cancel()
+        await stop(task)
 
 
-async def test_run_asks_clients_to_resync_after_the_bus_fails_and_recovers():
+async def test_no_resync_while_the_bus_keeps_failing_before_it_ever_subscribed():
     bus = InMemoryBus()
-    bus.fail_listens = 1
+    bus.fail_listens = 3
     hub = Hub(bus, SessionLocal, reconnect_delay=0.01)
     conn = Connection(1, [10])
     hub.register(conn)
     task = asyncio.create_task(hub.run())
     try:
-        for _ in range(100):
-            if not conn.queue.empty():
-                break
-            await asyncio.sleep(0.02)
-        assert {"type": "resync"} in drain(conn)
+        await asyncio.sleep(0.3)  # đủ cho 3 lần thất bại (0.01 + 0.02 + 0.04) rồi đăng ký được
+        assert bus.fail_listens == 0
+        assert drain(conn) == []
+        await bus.publish_room(10, {"type": "message", "n": 1})
+        await wait_for_queue(conn)
+        assert drain(conn) == [{"type": "message", "n": 1}]
+    finally:
+        await stop(task)
+
+
+async def test_run_sends_exactly_one_resync_after_resubscribing_and_events_flow_again():
+    bus = InMemoryBus()
+    bus.fail_after_subscribe = 1
+    hub = Hub(bus, SessionLocal, reconnect_delay=0.01)
+    conn = Connection(1, [10])
+    hub.register(conn)
+    task = asyncio.create_task(hub.run())
+    try:
+        await wait_for_queue(conn)
+        await asyncio.sleep(0.1)
+        assert drain(conn) == [{"type": "resync"}]
         await bus.publish_room(10, {"type": "message", "n": 2})  # hub đã nghe lại được
-        for _ in range(100):
-            if not conn.queue.empty():
-                break
-            await asyncio.sleep(0.02)
+        await wait_for_queue(conn)
         assert drain(conn) == [{"type": "message", "n": 2}]
     finally:
-        task.cancel()
+        await stop(task)
+
+
+async def test_a_failing_event_does_not_stop_the_listener_or_trigger_resync():
+    calls = 0
+
+    def flaky_session_factory():
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("db down")
+
+    bus = InMemoryBus()
+    hub = Hub(bus, flaky_session_factory, reconnect_delay=0.01)
+    conn = Connection(1, [10])
+    hub.register(conn)
+    task = asyncio.create_task(hub.run())
+    try:
+        await bus.publish_user(1, {"type": "rooms_changed"})
+        await bus.publish_room(10, {"type": "message", "n": 3})
+        await wait_for_queue(conn)
+        await asyncio.sleep(0.1)
+        assert calls == 1
+        assert drain(conn) == [{"type": "message", "n": 3}]
+    finally:
+        await stop(task)
+
+
+async def test_non_dict_payload_is_ignored():
+    hub = Hub(InMemoryBus(), SessionLocal)
+    conn = Connection(1, [10])
+    hub.register(conn)
+    await hub._dispatch(BusEvent("room", 10, [1, 2]))
+    await hub._dispatch(BusEvent("user", 1, "rooms_changed"))
+    assert drain(conn) == []
+    assert conn.close_code is None

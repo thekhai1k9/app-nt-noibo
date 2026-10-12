@@ -40,10 +40,11 @@ class RedisMessageBus:
         await self._redis.publish(f"{USER_PREFIX}{user_id}", json.dumps(event, ensure_ascii=False))
 
     async def listen(self) -> AsyncIterator[BusEvent]:
-        client = self._listen_redis or self._redis
-        pubsub = client.pubsub()
-        await pubsub.psubscribe(f"{ROOM_PREFIX}*", f"{USER_PREFIX}*")
+        if self._listen_redis is None:
+            raise RuntimeError("listen() needs a dedicated listen_redis connection without socket_timeout")
+        pubsub = self._listen_redis.pubsub()
         try:
+            await pubsub.psubscribe(f"{ROOM_PREFIX}*", f"{USER_PREFIX}*")
             subscribed = False
             async for item in pubsub.listen():
                 kind = item["type"]
@@ -60,9 +61,11 @@ class RedisMessageBus:
                 else:
                     scope, raw_id = "user", channel[len(USER_PREFIX) :]
                 try:
-                    yield BusEvent(scope, int(raw_id), json.loads(item["data"]))
+                    event = BusEvent(scope, int(raw_id), json.loads(item["data"]))
                 except (ValueError, TypeError):
                     log.warning("dropping malformed bus message on %s", channel)
+                    continue
+                yield event
         finally:
             await pubsub.aclose()
 
@@ -72,7 +75,7 @@ async def publish_room_safely(bus: MessageBus, room_id: int, event: dict) -> boo
     try:
         await bus.publish_room(room_id, event)
         return True
-    except RedisError:
+    except (RedisError, TypeError, ValueError):
         log.warning("could not publish room event", exc_info=True)
         return False
 
@@ -81,6 +84,6 @@ async def publish_user_safely(bus: MessageBus, user_id: int, event: dict) -> boo
     try:
         await bus.publish_user(user_id, event)
         return True
-    except RedisError:
+    except (RedisError, TypeError, ValueError):
         log.warning("could not publish user event", exc_info=True)
         return False

@@ -22,4 +22,5 @@ def build_listen_redis() -> Redis:
         decode_responses=True,
         socket_connect_timeout=3,
         health_check_interval=30,
+        socket_keepalive=True,  # phát hiện kết nối nửa mở (TCP half-open) khi không có socket_timeout
     )

@@ -1,7 +1,8 @@
 import asyncio
 import json
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 
+import pytest
 from redis.exceptions import RedisError
 
 from app.chat.bus import RedisMessageBus, publish_room_safely, publish_user_safely
@@ -26,7 +27,12 @@ async def test_redis_bus_delivers_room_and_user_events():
         await asyncio.sleep(0.02)
     await bus.publish_room(7, {"type": "message", "n": 1})
     await bus.publish_user(9, {"type": "rooms_changed"})
-    await asyncio.wait_for(task, 3)
+    try:
+        await asyncio.wait_for(task, 3)
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
     assert received[0].scope == "system" and received[0].payload == {"type": "subscribed"}
     assert (received[1].scope, received[1].target_id, received[1].payload) == ("room", 7, {"type": "message", "n": 1})
@@ -67,3 +73,16 @@ async def test_safe_publish_returns_true_on_success():
     bus = InMemoryBus()
     assert await publish_room_safely(bus, 1, {"type": "x"}) is True
     assert bus.published == [("room", 1, {"type": "x"})]
+
+
+async def test_safe_publish_swallows_unserializable_payloads():
+    bus = RedisMessageBus(get_redis())
+    assert await publish_room_safely(bus, 1, {"type": "x", "bad": {1, 2}}) is False
+    assert await publish_user_safely(bus, 1, {"type": "x", "bad": {1, 2}}) is False
+
+
+async def test_listen_requires_a_dedicated_connection():
+    bus = RedisMessageBus(get_redis())
+    with pytest.raises(RuntimeError, match="listen_redis"):
+        async for _ in bus.listen():
+            pass

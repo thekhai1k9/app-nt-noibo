@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Callable, Iterable
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, aclosing
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,6 +77,8 @@ class Hub:
             self._offer(conn, event)
 
     async def _dispatch(self, event: BusEvent) -> None:
+        if not isinstance(event.payload, dict):
+            return
         if event.scope == "room":
             for conn in self._all():
                 if event.target_id in conn.room_ids:
@@ -103,19 +105,23 @@ class Hub:
         had_subscription = False
         while True:
             try:
-                async for event in self.bus.listen():
-                    if event.scope == "system":
-                        if had_subscription:
-                            self.broadcast({"type": "resync"})
-                        had_subscription = True
-                        delay = self._reconnect_delay
-                        continue
-                    await self._dispatch(event)
+                async with aclosing(self.bus.listen()) as events:
+                    async for event in events:
+                        if event.scope == "system":
+                            if had_subscription:
+                                self.broadcast({"type": "resync"})
+                            had_subscription = True
+                            delay = self._reconnect_delay
+                            continue
+                        try:
+                            await self._dispatch(event)
+                        except Exception:
+                            log.exception("failed to dispatch bus event")
+                            continue
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("message bus listener failed")
-            self.broadcast({"type": "resync"})
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30)
 

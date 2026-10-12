@@ -12,22 +12,26 @@ class InMemoryBus:
 
     def __init__(self):
         self.published: list[tuple[str, int, dict]] = []
-        self.fail_listens = 0
+        self.fail_listens = 0  # số lần listen() tiếp theo lỗi trước khi đăng ký
+        self.fail_after_subscribe = 0  # số lần listen() tiếp theo đăng ký xong rồi mới lỗi
         self._queue: asyncio.Queue[BusEvent] = asyncio.Queue()
 
     async def publish_room(self, room_id: int, event: dict) -> None:
         self.published.append(("room", room_id, event))
-        await self._queue.put(BusEvent("room", room_id, event))
+        await self._queue.put(BusEvent("room", room_id, json.loads(json.dumps(event))))
 
     async def publish_user(self, user_id: int, event: dict) -> None:
         self.published.append(("user", user_id, event))
-        await self._queue.put(BusEvent("user", user_id, event))
+        await self._queue.put(BusEvent("user", user_id, json.loads(json.dumps(event))))
 
     async def listen(self):
         if self.fail_listens > 0:
             self.fail_listens -= 1
             raise ConnectionError("bus down")
         yield BusEvent("system", 0, {"type": "subscribed"})
+        if self.fail_after_subscribe > 0:
+            self.fail_after_subscribe -= 1
+            raise ConnectionError("bus dropped")
         while True:
             yield await self._queue.get()
 
