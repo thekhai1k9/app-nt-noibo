@@ -31,17 +31,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const bootstrap = useCallback(async () => {
     setStatus('loading')
-    const result = await refreshSession()
-    if (result === 'denied') {
-      setUser(null)
-      setStatus('anonymous')
-      return
-    }
-    if (result === 'unavailable') {
-      setStatus('error')
-      return
-    }
     try {
+      const result = await refreshSession()
+      if (result === 'denied') {
+        setUser(null)
+        setStatus('anonymous')
+        return
+      }
+      if (result === 'unavailable') {
+        setStatus('error')
+        return
+      }
       setUser(await api<User>('/auth/me'))
       setStatus('authenticated')
     } catch (err) {
@@ -49,7 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(null)
         setStatus('anonymous')
       } else {
-        setStatus('error')
+        setStatus('error') // mọi lỗi khác (kể cả lỗi không phải ApiError) đều hiện màn hình "Thử lại"
       }
     }
   }, [])

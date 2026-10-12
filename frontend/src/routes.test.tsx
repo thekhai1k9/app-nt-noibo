@@ -20,6 +20,23 @@ describe('route guards', () => {
     expect(screen.queryByRole('link', { name: 'Quản trị' })).not.toBeInTheDocument()
   })
 
+  it('links to the change-password page from the home page, without the forced-change notice', async () => {
+    mockFetch(sessionRoutes(makeUser()))
+    renderApp('/')
+    await userEvent.click(await screen.findByRole('link', { name: 'Đổi mật khẩu' }))
+    expect(await screen.findByRole('heading', { name: 'Đổi mật khẩu' })).toBeInTheDocument()
+    expect(screen.queryByText('Bạn cần đặt mật khẩu mới trước khi tiếp tục.')).not.toBeInTheDocument()
+  })
+
+  it('shows a retry screen when the refresh response is not valid JSON', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('<html>', { status: 200 })),
+    )
+    renderApp('/')
+    expect(await screen.findByRole('button', { name: 'Thử lại' })).toBeInTheDocument()
+  })
+
   it('shows the admin link for an admin', async () => {
     mockFetch(sessionRoutes(makeUser({ role: 'admin' })))
     renderApp('/')

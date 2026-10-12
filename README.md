@@ -18,9 +18,9 @@ docker compose -f docker-compose.yml up -d --build
 
 ## Giao diện web
 
-Sau khi `docker compose up -d --build`, mở `http://<địa-chỉ-máy-chủ>/` trong trình duyệt. Đăng nhập bằng tài khoản admin tạo ở bước trên; lần đầu hệ thống bắt đổi mật khẩu.
+Sau khi `docker compose up -d --build`, mở `http://<địa-chỉ-máy-chủ>/` trong trình duyệt. Đăng nhập bằng tài khoản admin tạo ở bước bên dưới; lần đầu hệ thống bắt đổi mật khẩu. Sau khi kéo mã nguồn mới về, hãy chạy lại `docker compose up -d --build` vì giao diện web được đóng gói sẵn trong image.
 
-Phát triển giao diện (cần Node 22+; stack docker compose đang chạy để có API):
+Phát triển giao diện (cần Node 22.4+; stack docker compose đang chạy để có API):
 
 ```bash
 cd frontend

@@ -23,7 +23,14 @@ export function HomePage() {
       <header className="topbar">
         <strong>Kết Nối</strong>
         <div className="row">
-          {user?.role === 'admin' && <Link to="/admin">Quản trị</Link>}
+          {user?.role === 'admin' && (
+            <Link to="/admin" className="btn">
+              Quản trị
+            </Link>
+          )}
+          <Link to="/change-password" className="btn">
+            Đổi mật khẩu
+          </Link>
           <button type="button" className="btn" disabled={pending} onClick={() => void onLogout()}>
             Đăng xuất
           </button>

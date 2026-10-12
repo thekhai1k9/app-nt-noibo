@@ -63,6 +63,7 @@ export function LoginPage() {
             label="Mật khẩu"
             type="password"
             autoComplete="current-password"
+            maxLength={256}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required

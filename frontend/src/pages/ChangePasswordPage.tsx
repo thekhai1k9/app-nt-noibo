@@ -66,6 +66,7 @@ export function ChangePasswordPage() {
           label="Mật khẩu hiện tại"
           type="password"
           autoComplete="current-password"
+          maxLength={256}
           value={current}
           onChange={(e) => setCurrent(e.target.value)}
           required
@@ -75,6 +76,7 @@ export function ChangePasswordPage() {
           label="Mật khẩu mới"
           type="password"
           autoComplete="new-password"
+          maxLength={128}
           value={next}
           onChange={(e) => setNext(e.target.value)}
           required
@@ -84,6 +86,7 @@ export function ChangePasswordPage() {
           label="Nhập lại mật khẩu mới"
           type="password"
           autoComplete="new-password"
+          maxLength={128}
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
           required
