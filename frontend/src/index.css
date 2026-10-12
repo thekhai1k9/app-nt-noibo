@@ -128,7 +128,7 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
 .ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ===== Chat ===== */
-.chat-shell { display: flex; height: 100vh; background: var(--bg); }
+.chat-shell { display: flex; height: 100vh; height: 100dvh; background: var(--bg); }
 .chat-side {
   flex: 0 0 340px; background: var(--surface); border-right: 1px solid var(--line);
   display: flex; flex-direction: column; min-height: 0; min-width: 0;

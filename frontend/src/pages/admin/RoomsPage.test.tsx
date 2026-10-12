@@ -221,7 +221,7 @@ describe('RoomsPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Quản lý Dự án kho' }))
     const confirm = await screen.findByLabelText('Gõ tên nhóm để xác nhận')
     const archive = screen.getByRole('button', { name: 'Lưu trữ nhóm' })
-    expect(screen.getByText(/Tin nhắn được giữ 3 ngày và có thể khôi phục/)).toBeInTheDocument()
+    expect(screen.getByText(/Tin nhắn được giữ trong thời gian lưu trữ và có thể khôi phục/)).toBeInTheDocument()
     expect(archive).toBeDisabled()
     for (const wrong of ['dự án kho', 'Dự án kho ', ' Dự án kho', 'Dự án']) {
       await userEvent.clear(confirm)
@@ -254,7 +254,7 @@ describe('RoomsPage', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Đã lưu trữ' }))
     expect(await screen.findByText('Nhóm cũ')).toBeInTheDocument()
     expect(calls.some((c) => c.method === 'GET' && c.path === '/api/admin/rooms?archived=true')).toBe(true)
-    expect(screen.getByText(`Xoá vĩnh viễn vào ${formatDateTime(purgeAt)}`)).toBeInTheDocument()
+    expect(screen.getByText(`Xoá vĩnh viễn sau ${formatDateTime(purgeAt)}`)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Quản lý/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Gỡ/ })).not.toBeInTheDocument()
     expect(screen.queryByText('Dự án kho')).not.toBeInTheDocument()

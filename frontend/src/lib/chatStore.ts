@@ -16,6 +16,8 @@ export interface Thread {
 
 export interface ChatState {
   status: SocketStatus
+  /** Đã từng kết nối thành công (nhận ready) trong phiên này. */
+  hasConnected: boolean
   rooms: Room[]
   roomsLoaded: boolean
   roomsError: boolean
@@ -43,7 +45,7 @@ function sortRooms(rooms: Room[]): Room[] {
 }
 
 export class ChatStore {
-  private state: ChatState = { status: 'offline', rooms: [], roomsLoaded: false, roomsError: false, threads: {} }
+  private state: ChatState = { status: 'offline', hasConnected: false, rooms: [], roomsLoaded: false, roomsError: false, threads: {} }
   private readonly listeners = new Set<() => void>()
 
   subscribe = (listener: () => void): (() => void) => {
@@ -66,7 +68,9 @@ export class ChatStore {
   }
 
   setStatus(status: SocketStatus): void {
-    if (this.state.status !== status) this.set({ status })
+    if (this.state.status !== status || (status === 'open' && !this.state.hasConnected)) {
+      this.set({ status, hasConnected: this.state.hasConnected || status === 'open' })
+    }
   }
 
   setRooms(rooms: Room[]): void {
@@ -209,7 +213,9 @@ export class ChatStore {
     this.set({ rooms: this.state.rooms.map((r) => (r.id === roomId && r.unread_count !== 0 ? { ...r, unread_count: 0 } : r)) })
   }
 
-  reset(): void {
-    this.set({ rooms: [], roomsLoaded: false, roomsError: false, threads: {} })
+  removeThreads(roomIds: number[]): void {
+    const threads = { ...this.state.threads }
+    for (const id of roomIds) delete threads[id]
+    this.set({ threads })
   }
 }

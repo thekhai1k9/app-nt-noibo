@@ -122,16 +122,6 @@ describe('ChatStore threads', () => {
     store.setStatus('offline')
     expect(listener).toHaveBeenCalledTimes(1)
   })
-
-  it('reset() clears everything', () => {
-    const store = new ChatStore()
-    store.setRooms([room(1)])
-    store.applyLatest(1, page([1]))
-    store.reset()
-    expect(store.getState().rooms).toEqual([])
-    expect(store.getState().threads).toEqual({})
-    expect(store.getState().roomsLoaded).toBe(false)
-  })
 })
 
 describe('ChatStore reconciliation and buffering', () => {

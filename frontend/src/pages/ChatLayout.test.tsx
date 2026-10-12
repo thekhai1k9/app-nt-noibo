@@ -263,3 +263,55 @@ describe('chat layout', () => {
     void vi
   })
 })
+
+describe('chat provider lifetime', () => {
+  it('does not show the reconnecting banner during the very first connect', async () => {
+    mockFetch(routes())
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    await waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(0))
+    expect(screen.queryByText(/Đang kết nối lại/)).not.toBeInTheDocument()
+  })
+
+  it('keeps a pending message and the socket when navigating chat -> admin -> chat', async () => {
+    mockFetch({ ...routes(), ...sessionRoutes(makeUser({ id: 1, role: 'admin' })) } as Parameters<typeof mockFetch>[0])
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const ws = await connect()
+    await userEvent.type(screen.getByLabelText('Nhập tin nhắn'), 'chờ gửi{Enter}')
+    const sent = ws.sentJson.find((m) => m.type === 'send')!
+    await userEvent.click(await screen.findByRole('link', { name: 'Quản trị' }))
+    await userEvent.click(await screen.findByRole('link', { name: 'Về trò chuyện' }))
+    await userEvent.click(await screen.findByRole('link', { name: /Dự án kho/ }))
+    expect(await screen.findByText('chờ gửi')).toBeInTheDocument()
+    expect(screen.getByText('Đang gửi…')).toBeInTheDocument()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(ws.readyState).toBe(1)
+    await act(async () =>
+      ws.receive({ type: 'message', message: makeMessage({ id: 8, sender_id: 1, body: 'chờ gửi', client_id: sent.client_id as string }) }),
+    )
+    await waitFor(() => expect(screen.queryByText('Đang gửi…')).not.toBeInTheDocument())
+    expect(screen.getAllByText('chờ gửi')).toHaveLength(1)
+  })
+
+  it('opens no socket while the password change is pending, and starts one afterwards', async () => {
+    let changed = false
+    mockFetch({
+      ...routes(),
+      'POST /api/auth/refresh': { json: { access_token: 'tok-1', token_type: 'bearer', must_change_password: true } },
+      'GET /api/auth/me': () => ({ json: makeUser({ id: 1, must_change_password: !changed }) }),
+      'POST /api/auth/change-password': () => {
+        changed = true
+        return { json: { access_token: 'tok-2', token_type: 'bearer', must_change_password: false } }
+      },
+    } as Parameters<typeof mockFetch>[0])
+    renderApp('/')
+    await userEvent.type(await screen.findByLabelText('Mật khẩu hiện tại'), 'TempPass1234')
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    await userEvent.type(screen.getByLabelText('Mật khẩu mới'), 'NewPassw0rd!')
+    await userEvent.type(screen.getByLabelText('Nhập lại mật khẩu mới'), 'NewPassw0rd!')
+    await userEvent.click(screen.getByRole('button', { name: 'Lưu mật khẩu mới' }))
+    await screen.findByRole('link', { name: /Dự án kho/ })
+    await waitFor(() => expect(FakeWebSocket.instances.length).toBe(1))
+  })
+})

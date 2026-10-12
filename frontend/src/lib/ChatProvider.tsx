@@ -23,17 +23,22 @@ function build(userId: number, userName: string): { socket: ChatSocket } & ChatC
   return { store, controller, socket }
 }
 
-/** Chỉ dùng dưới RequireAuth: giữ một WebSocket cho cả phiên làm việc của người dùng. */
+/**
+ * Chỉ dùng dưới RequireAuth, phía trên mọi route đã đăng nhập (chat, admin, đổi mật khẩu) để
+ * trạng thái và tin đang chờ gửi còn nguyên khi chuyển trang. Giữ một WebSocket cho cả phiên.
+ */
 export function ChatProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth()
   const userId = user?.id
   const userName = user?.full_name ?? ''
+  // Máy chủ đóng WebSocket (4401) khi người dùng còn phải đổi mật khẩu: chỉ kết nối sau khi đổi xong.
+  const mustChange = user?.must_change_password ?? false
   // Một instance cho mỗi người dùng; effect bên dưới start/stop được (an toàn với StrictMode).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const instance = useMemo(() => (userId !== undefined ? build(userId, userName) : null), [userId])
 
   useEffect(() => {
-    if (!instance) return
+    if (!instance || mustChange) return
     const { socket, controller } = instance
     socket.start()
     void controller.loadRooms()
@@ -52,7 +57,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       socket.stop()
       controller.dispose()
     }
-  }, [instance])
+  }, [instance, mustChange])
 
   if (!instance) return null
   return <ChatContext.Provider value={{ store: instance.store, controller: instance.controller }}>{children}</ChatContext.Provider>

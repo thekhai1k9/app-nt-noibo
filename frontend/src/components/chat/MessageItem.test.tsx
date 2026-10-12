@@ -101,13 +101,13 @@ describe('MessageItem', () => {
     render(
       <MessageItem {...props} onDiscard={onDiscard} message={{ ...base, id: -1, sender_id: 1, client_id: 'c1', pending: 'failed', errorCode: 'network_error' }} mine />,
     )
-    await userEvent.click(screen.getByRole('button', { name: 'Bỏ tin nhắn chưa gửi' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Bỏ khỏi danh sách' }))
     expect(onDiscard).toHaveBeenCalledWith('c1')
   })
 
   it('shows no discard button without the prop', () => {
     render(<MessageItem {...props} message={{ ...base, id: -1, sender_id: 1, client_id: 'c1', pending: 'failed' }} mine />)
-    expect(screen.queryByRole('button', { name: 'Bỏ tin nhắn chưa gửi' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Bỏ khỏi danh sách' })).not.toBeInTheDocument()
   })
 
   it('does not call onEdit when the text is unchanged, and hints when it is empty', async () => {

@@ -34,7 +34,7 @@ function setup(opts: { visible?: boolean; open?: boolean } = {}) {
     directory: vi.fn(),
   }
   let isOpen = opts.open ?? true
-  const socket = { send: vi.fn((_payload: Record<string, unknown>) => isOpen), getStatus: () => (isOpen ? 'open' : 'offline') as 'open' | 'offline' }
+  const socket = { send: vi.fn((_payload: Record<string, unknown>) => isOpen) }
   let counter = 0
   const controller = new ChatController({
     store,
@@ -246,7 +246,7 @@ describe('ChatController: unread counts and read markers', () => {
     let visible = false
     const store = new ChatStore()
     const api = { rooms: vi.fn().mockResolvedValue([room(1)]), messages: vi.fn().mockResolvedValue(page([1])), markRead: vi.fn().mockResolvedValue(undefined), openDirect: vi.fn(), editMessage: vi.fn(), deleteMessage: vi.fn(), directory: vi.fn() }
-    const controller = new ChatController({ store, api, socket: { send: vi.fn(() => true), getStatus: () => 'open' }, meId: 1, meName: 'Tôi', isVisible: () => visible })
+    const controller = new ChatController({ store, api, socket: { send: vi.fn(() => true) }, meId: 1, meName: 'Tôi', isVisible: () => visible })
     await controller.loadRooms()
     controller.setActiveRoom(1)
     await controller.openRoom(1)
@@ -520,3 +520,78 @@ describe('ChatController: REST reconciliation, buffering, discard', () => {
     expect(store.getState().threads[1].items).toHaveLength(3)
   })
 })
+
+describe('ChatController: resync cursor and room pruning', () => {
+  const range = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => a + i)
+  const idsOf = (store: ChatStore) => store.getState().threads[1].items.map((m) => m.id)
+
+  async function loadedTo50() {
+    const ctx = setup({ open: false })
+    ctx.api.messages.mockResolvedValueOnce(page([49, 50]))
+    await ctx.controller.openRoom(1)
+    return ctx
+  }
+
+  it('does not skip the gap when the echo of a resent message arrives while /rooms is pending', async () => {
+    const { controller, api, store, setOpen } = await loadedTo50()
+    controller.send(1, 'ok') // queued offline, cid-1
+    let resolveRooms: (r: Room[]) => void = () => {}
+    api.rooms.mockImplementationOnce(() => new Promise<Room[]>((r) => { resolveRooms = r }))
+    api.messages.mockImplementation(async (_room: number, q: { after?: number }) => {
+      const all = range(51, 99)
+      const items = all.filter((i) => i > (q.after ?? 0)).slice(0, 100).map((i) => msg(i))
+      return { items, has_more_before: false, has_more_after: false }
+    })
+    setOpen(true)
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    controller.handleSocketEvent({ type: 'message', message: msg(100, { sender_id: 1, body: 'ok', client_id: 'cid-1' }) })
+    resolveRooms([room(1)])
+    await flush()
+    expect(idsOf(store)).toEqual([49, 50, ...range(51, 99), 100])
+  })
+
+  it('does not skip the gap when a live message arrives during the rooms wait', async () => {
+    const { controller, api, store } = await loadedTo50()
+    let resolveRooms: (r: Room[]) => void = () => {}
+    api.rooms.mockImplementationOnce(() => new Promise<Room[]>((r) => { resolveRooms = r }))
+    api.messages.mockResolvedValue({ items: range(51, 59).map((i) => msg(i)), has_more_before: false, has_more_after: false })
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    controller.handleSocketEvent({ type: 'message', message: msg(60) })
+    resolveRooms([room(1)])
+    await flush()
+    expect(api.messages).toHaveBeenLastCalledWith(1, { after: 50, limit: 100 })
+    expect(idsOf(store)).toEqual([49, 50, ...range(51, 60)])
+  })
+
+  it('reloads the newest page when ready arrives while the first load is still in flight', async () => {
+    const { controller, api, store } = setup()
+    let resolveFirst: (p: MessagePage) => void = () => {}
+    api.messages.mockImplementationOnce(() => new Promise<MessagePage>((r) => { resolveFirst = r }))
+    const opening = controller.openRoom(1)
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    api.messages.mockResolvedValueOnce(page([1, 2, 3, 4, 5]))
+    resolveFirst(page([1, 2, 3]))
+    await opening
+    await flush()
+    expect(api.messages).toHaveBeenCalledTimes(2)
+    expect(idsOf(store)).toEqual([1, 2, 3, 4, 5])
+  })
+
+  it('drops threads, pending messages and timers of rooms that left the list', async () => {
+    const { controller, api, store, socket } = setup()
+    await controller.loadRooms()
+    await controller.openRoom(1)
+    controller.send(1, 'x')
+    api.rooms.mockResolvedValueOnce([room(2)])
+    await controller.loadRooms()
+    expect(store.getState().threads[1]).toBeUndefined()
+    vi.advanceTimersByTime(60_000)
+    api.messages.mockClear()
+    socket.send.mockClear()
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    await flush()
+    expect(api.messages).not.toHaveBeenCalled()
+    expect(socket.send).not.toHaveBeenCalled()
+  })
+})
+

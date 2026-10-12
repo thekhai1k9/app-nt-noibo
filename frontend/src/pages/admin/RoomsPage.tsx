@@ -240,7 +240,7 @@ function RoomDetail({ roomId, users, onArchived }: { roomId: number; users: User
       <div className="card stack">
         <h2 style={{ fontSize: 17 }}>Vùng nguy hiểm</h2>
         <p className="muted" style={{ margin: 0 }}>
-          Nhóm sẽ biến mất với mọi thành viên ngay. Tin nhắn được giữ 3 ngày và có thể khôi phục; sau đó bị xoá vĩnh viễn.
+          Nhóm sẽ biến mất với mọi thành viên ngay. Tin nhắn được giữ trong thời gian lưu trữ và có thể khôi phục; hạn xoá vĩnh viễn hiển thị ở tab Đã lưu trữ.
         </p>
         <div className="field">
           <input
@@ -378,7 +378,7 @@ export function RoomsPage() {
               ) : (
                 <div className="row" style={{ flexWrap: 'nowrap' }}>
                   <span className="muted" style={{ fontSize: 12 }}>
-                    {room.purge_at ? `Xoá vĩnh viễn vào ${formatDateTime(room.purge_at)}` : ''}
+                    {room.purge_at ? `Xoá vĩnh viễn sau ${formatDateTime(room.purge_at)}` : ''}
                   </span>
                   <button
                     type="button"

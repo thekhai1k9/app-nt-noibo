@@ -10,6 +10,7 @@
 // Tuỳ chọn: SHOT_DIR=<thư mục> (nơi lưu ảnh chụp khi một bước hỏng, mặc định thư mục tạm của hệ điều hành),
 //           HEADED=1 (mở cửa sổ trình duyệt).
 // In PASS/FAIL cho từng bước, cuối cùng in "N/M đạt" và thoát mã 1 nếu có bước hỏng.
+import { randomBytes } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -29,7 +30,9 @@ if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(BASE) && process.env.E2
 }
 const { chromium } = await import(pathToFileURL(path.join(PLAYWRIGHT_DIR, 'node_modules/playwright/index.mjs')).href)
 
-const ADMIN_PW = 'UiAdminPassw0rd!'
+// Mật khẩu mới của admin: lấy từ E2E_ADMIN_NEW_PASSWORD hoặc sinh ngẫu nhiên (in ra một lần để chạy lại).
+const ADMIN_PW = process.env.E2E_ADMIN_NEW_PASSWORD || `Ui-${randomBytes(9).toString('base64url')}-9a!`
+if (!process.env.E2E_ADMIN_NEW_PASSWORD) console.log(`Mật khẩu admin mới cho lần chạy này: ${ADMIN_PW} (đặt E2E_ADMIN_NEW_PASSWORD để chạy lại)`)
 const ALICE_PW = 'UiAlicePassw0rd!'
 const BOB_PW = 'UiBobPassw0rd!'
 const TAG = Date.now().toString(36).slice(-6)

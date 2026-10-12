@@ -41,7 +41,7 @@ npm run build    # kiểm tra kiểu và build ra frontend/dist
 - Sửa ("(đã sửa)") và xoá ("Tin nhắn đã bị xoá", nội dung bị bỏ với mọi người) được với tin của chính mình.
 - Tin nhắn chỉ là văn bản thuần: không hiển thị HTML; chỉ địa chỉ `http://` và `https://` được tự nhận thành liên kết (mở tab mới, `rel="noopener noreferrer nofollow"`).
 
-**Trang admin "Phòng và nhóm"** (`/admin/rooms`): tìm và lọc nhóm theo chi nhánh; tạo nhóm (tên, chi nhánh hoặc liên chi nhánh, chọn thành viên); đổi tên; thêm, gỡ thành viên. Admin không xem được nội dung tin nhắn. **"Xoá" nhóm là lưu trữ**: phải gõ lại đúng tên nhóm để xác nhận; nhóm biến mất ngay với mọi thành viên nhưng được giữ 3 ngày ở tab "Đã lưu trữ" (kèm thời điểm xoá) và có thể **"Khôi phục"** nguyên vẹn cùng tin nhắn trong thời gian đó; hết hạn thì tự động bị **xoá vĩnh viễn cùng toàn bộ tin nhắn**. Số ngày giữ đặt bằng `ROOM_ARCHIVE_RETENTION_DAYS` (mặc định 3), chu kỳ dọn bằng `ROOM_PURGE_INTERVAL_SECONDS` (xem `.env.example`).
+**Trang admin "Phòng và nhóm"** (`/admin/rooms`): tìm và lọc nhóm theo chi nhánh; tạo nhóm (tên, chi nhánh hoặc liên chi nhánh, chọn thành viên); đổi tên; thêm, gỡ thành viên. Admin không xem được nội dung tin nhắn. **"Xoá" nhóm là lưu trữ**: phải gõ lại đúng tên nhóm để xác nhận; nhóm biến mất ngay với mọi thành viên nhưng được giữ (mặc định 3 ngày) ở tab "Đã lưu trữ" (kèm thời điểm xoá) và có thể **"Khôi phục"** nguyên vẹn cùng tin nhắn trong thời gian đó; hết hạn thì tự động bị **xoá vĩnh viễn cùng toàn bộ tin nhắn**. Số ngày giữ đặt bằng `ROOM_ARCHIVE_RETENTION_DAYS` (mặc định 3), chu kỳ dọn bằng `ROOM_PURGE_INTERVAL_SECONDS` (xem `.env.example`).
 
 ### Kiểm tra trên trình duyệt thật: `scripts/e2e_chat_ui.mjs`
 
@@ -59,6 +59,8 @@ Chạy (từ thư mục gốc repo, Node 22+, stack đã `docker compose up -d -
 PLAYWRIGHT_DIR=/tmp/kn-e2e BASE_URL=http://localhost ADMIN_USER=ui.admin ADMIN_TEMP_PASSWORD=<mật khẩu tạm> \
   node scripts/e2e_chat_ui.mjs
 ```
+
+Mật khẩu mới của admin do script sinh ngẫu nhiên và in ra một lần ở đầu; muốn chạy lại trên cùng stack, đặt `E2E_ADMIN_NEW_PASSWORD=<mật khẩu đó>` (hoặc tự đặt giá trị ngay từ lần đầu).
 
 Ghi chú: script từ chối `BASE_URL` không phải localhost trừ khi đặt `E2E_ALLOW_REMOTE=1`. `context.setOffline` của Chromium không ngắt WebSocket, nên script đưa WebSocket qua proxy của Playwright (`routeWebSocket`) và tự cắt kết nối để mô phỏng mất mạng.
 
@@ -138,7 +140,7 @@ Lỗi REST có dạng `{"detail":"<code>"}`; sai kiểu/khoảng giá trị đ�
 - Nhận `rooms_changed` (được thêm/gỡ khỏi phòng, đổi tên nhóm, phòng bị xoá): tải lại `GET /rooms`.
 - Server cũng tự đối soát định kỳ (`WS_RECONCILE_SECONDS`, mặc định 30 giây) và đóng kết nối của tài khoản đã khoá hoặc phải đổi mật khẩu, nên client phải xử lý 4401/4403 bất cứ lúc nào.
 
-**Xoá nhóm = lưu trữ 3 ngày rồi xoá vĩnh viễn**: `DELETE /admin/rooms/{id}` (204) không xoá dữ liệu mà đặt `archived_at`. Nhóm đã lưu trữ biến mất với mọi người dùng thường (danh sách phòng, tin nhắn, gửi/sửa/xoá/đánh dấu đã đọc đều trả `404 room_not_found`, WebSocket không còn nhận tin của nhóm) và các thành viên nhận `rooms_changed`. Admin xem được bằng `GET /admin/rooms?archived=true` (mỗi nhóm có `archived_at` và `purge_at`), xem chi tiết bằng `GET /admin/rooms/{id}`, khôi phục bằng `POST /admin/rooms/{id}/restore` (thành viên thấy lại đủ tin nhắn và số chưa đọc cũ); đổi tên, thêm/gỡ thành viên trên nhóm đã lưu trữ trả `404 room_not_found`. Tiến trình nền (chạy lúc khởi động rồi mỗi `ROOM_PURGE_INTERVAL_SECONDS` giây, mặc định 3600) xoá vĩnh viễn nhóm đã lưu trữ quá `ROOM_ARCHIVE_RETENTION_DAYS` ngày (mặc định 3) cùng toàn bộ tin nhắn. Phòng chat 1-1 không bị ảnh hưởng. Lưu ý: bản sao lưu DB vẫn chứa dữ liệu đã xoá vĩnh viễn cho tới khi hết hạn theo chính sách sao lưu (Plan 7). Giao diện admin vẫn phải xác nhận trước khi lưu trữ.
+**Xoá nhóm = lưu trữ (mặc định 3 ngày) rồi xoá vĩnh viễn**: `DELETE /admin/rooms/{id}` (204) không xoá dữ liệu mà đặt `archived_at`. Nhóm đã lưu trữ biến mất với mọi người dùng thường (danh sách phòng, tin nhắn, gửi/sửa/xoá/đánh dấu đã đọc đều trả `404 room_not_found`, WebSocket không còn nhận tin của nhóm) và các thành viên nhận `rooms_changed`. Admin xem được bằng `GET /admin/rooms?archived=true` (mỗi nhóm có `archived_at` và `purge_at`), xem chi tiết bằng `GET /admin/rooms/{id}`, khôi phục bằng `POST /admin/rooms/{id}/restore` (thành viên thấy lại đủ tin nhắn và số chưa đọc cũ); đổi tên, thêm/gỡ thành viên trên nhóm đã lưu trữ trả `404 room_not_found`. Tiến trình nền (chạy lúc khởi động rồi mỗi `ROOM_PURGE_INTERVAL_SECONDS` giây, mặc định 3600) xoá vĩnh viễn nhóm đã lưu trữ quá `ROOM_ARCHIVE_RETENTION_DAYS` ngày (mặc định 3) cùng toàn bộ tin nhắn. Phòng chat 1-1 không bị ảnh hưởng. Lưu ý: bản sao lưu DB vẫn chứa dữ liệu đã xoá vĩnh viễn cho tới khi hết hạn theo chính sách sao lưu (Plan 7). Giao diện admin vẫn phải xác nhận trước khi lưu trữ.
 
 ### Kiểm tra đầu-cuối: `scripts/e2e_chat_smoke.py`
 

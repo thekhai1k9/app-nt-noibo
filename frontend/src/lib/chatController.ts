@@ -1,12 +1,11 @@
 import type { ChatApi } from './chatApi'
 import { EMPTY_THREAD, type ChatMessage, type ChatStore } from './chatStore'
 import type { Message, Room, ServerEvent } from './types'
-import type { SocketStatus } from './ws'
 
 export interface ChatControllerDeps {
   store: ChatStore
   api: ChatApi
-  socket: { send(payload: object): boolean; getStatus(): SocketStatus }
+  socket: { send(payload: object): boolean }
   meId: number
   meName: string
   newClientId?: () => string
@@ -30,6 +29,7 @@ export class ChatController {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly pendingMeta = new Map<string, PendingMeta>()
   private readonly lastMarked = new Map<number, number>()
+  private readonly latestInFlight = new Map<number, Promise<void>>()
 
   constructor(private readonly deps: ChatControllerDeps) {}
 
@@ -41,6 +41,7 @@ export class ChatController {
       const rooms = await this.deps.api.rooms()
       if (seq === this.roomsSeq) {
         this.deps.store.setRooms(rooms)
+        this.pruneRemovedRooms(new Set(rooms.map((r) => r.id)))
         // Bản chụp cũ có thể khôi phục huy hiệu chưa đọc của phòng đã đánh dấu đọc.
         for (const r of this.deps.store.getState().rooms) {
           if (r.unread_count > 0 && r.last_message && (this.lastMarked.get(r.id) ?? 0) >= r.last_message.id) {
@@ -60,7 +61,26 @@ export class ChatController {
     this.markReadIfViewing(roomId)
   }
 
-  private async loadLatest(roomId: number): Promise<void> {
+  /** Phòng đã bị lưu trữ/xoá khỏi danh sách: bỏ thread, tin đang chờ, hẹn giờ để khỏi gọi API vô ích. */
+  private pruneRemovedRooms(alive: Set<number>): void {
+    const gone = Object.keys(this.deps.store.getState().threads).map(Number).filter((id) => !alive.has(id))
+    if (gone.length === 0) return
+    for (const [clientId, meta] of [...this.pendingMeta]) {
+      if (!alive.has(meta.roomId)) this.confirm(clientId)
+    }
+    for (const id of gone) this.lastMarked.delete(id)
+    this.deps.store.removeThreads(gone)
+  }
+
+  private loadLatest(roomId: number): Promise<void> {
+    const run = this.fetchLatest(roomId).finally(() => {
+      if (this.latestInFlight.get(roomId) === run) this.latestInFlight.delete(roomId)
+    })
+    this.latestInFlight.set(roomId, run)
+    return run
+  }
+
+  private async fetchLatest(roomId: number): Promise<void> {
     try {
       const page = await this.deps.api.messages(roomId, { limit: PAGE_SIZE })
       this.deps.store.applyLatest(roomId, page)
@@ -76,8 +96,8 @@ export class ChatController {
     return null
   }
 
-  private async catchUp(roomId: number): Promise<void> {
-    let after = this.lastRealId(roomId)
+  private async catchUp(roomId: number, cursor?: number | null): Promise<void> {
+    let after = cursor !== undefined ? cursor : this.lastRealId(roomId)
     if (after === null) return this.loadLatest(roomId)
     try {
       for (let i = 0; i < CATCH_UP_MAX_PAGES; i++) {
@@ -221,17 +241,31 @@ export class ChatController {
   }
 
   private async resync(): Promise<void> {
-    this.resendPending()
-    await this.loadRooms()
+    // Chụp con trỏ bù tin ĐỒNG BỘ trước mọi await/gửi lại: tin trực tiếp (hoặc echo của tin gửi lại)
+    // đến trong lúc chờ có thể đẩy lastRealId vượt qua khoảng còn thiếu.
     const threads = this.deps.store.getState().threads
-    await Promise.all(
-      Object.entries(threads)
-        .filter(([, thread]) => thread.loaded)
-        .map(async ([roomId]) => {
-          await this.catchUp(Number(roomId))
-          this.markReadIfViewing(Number(roomId))
-        }),
-    )
+    const cursors = new Map<number, number | null>()
+    const loading: number[] = []
+    for (const [key, thread] of Object.entries(threads)) {
+      const roomId = Number(key)
+      if (thread.loaded) cursors.set(roomId, this.lastRealId(roomId))
+    }
+    // Lần tải đầu có thể chưa tạo thread nào trong store, nên duyệt theo các lần tải đang chạy.
+    for (const roomId of this.latestInFlight.keys()) if (!cursors.has(roomId)) loading.push(roomId)
+    this.resendPending()
+    const work: Promise<void>[] = [this.loadRooms()]
+    for (const [roomId, cursor] of cursors) {
+      work.push(this.catchUp(roomId, cursor).then(() => this.markReadIfViewing(roomId)))
+    }
+    for (const roomId of loading) {
+      // Lần tải đầu đang chạy có thể đã chụp trước khi mất kết nối: tải lại trang mới nhất khi nó xong.
+      work.push(
+        (this.latestInFlight.get(roomId) ?? Promise.resolve())
+          .then(() => this.loadLatest(roomId))
+          .then(() => this.markReadIfViewing(roomId)),
+      )
+    }
+    await Promise.all(work)
   }
 
   private onMessage(message: Message): void {

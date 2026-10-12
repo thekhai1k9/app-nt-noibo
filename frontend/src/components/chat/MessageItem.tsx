@@ -104,7 +104,7 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onE
                 Thử lại
               </button>
               {onDiscard && (
-                <button type="button" className="btn btn-ghost" aria-label="Bỏ tin nhắn chưa gửi" onClick={() => message.client_id && onDiscard(message.client_id)}>
+                <button type="button" className="btn btn-ghost" aria-label="Bỏ khỏi danh sách" onClick={() => message.client_id && onDiscard(message.client_id)}>
                   Bỏ
                 </button>
               )}

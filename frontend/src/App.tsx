@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { FullPageMessage } from './components/FullPageMessage'
 import { RequireAdmin, RequireAuth } from './components/guards'
@@ -7,6 +7,7 @@ import { ChangePasswordPage } from './pages/ChangePasswordPage'
 import { ConversationPane } from './components/chat/ConversationPane'
 import { ChatHome } from './pages/ChatHome'
 import { ChatLayout } from './pages/ChatLayout'
+import { ChatProvider } from './lib/ChatProvider'
 import { LoginPage } from './pages/LoginPage'
 
 const AdminLayout = lazy(() => import('./pages/admin/AdminLayout').then((m) => ({ default: m.AdminLayout })))
@@ -21,37 +22,40 @@ export function AppRoutes() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route
-            path="/change-password"
             element={
               <RequireAuth allowPasswordChange>
-                <ChangePasswordPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            element={
-              <RequireAuth>
-                <ChatLayout />
+                <ChatProvider>
+                  <Outlet />
+                </ChatProvider>
               </RequireAuth>
             }
           >
-            <Route path="/" element={<ChatHome />} />
-            <Route path="/chat/:roomId" element={<ConversationPane />} />
-          </Route>
-          <Route
-            path="/admin"
-            element={
-              <RequireAuth>
-                <RequireAdmin>
-                  <AdminLayout />
-                </RequireAdmin>
-              </RequireAuth>
-            }
-          >
-            <Route index element={<Navigate to="users" replace />} />
-            <Route path="users" element={<UsersPage />} />
-            <Route path="branches" element={<BranchesPage />} />
-            <Route path="rooms" element={<RoomsPage />} />
+            <Route path="/change-password" element={<ChangePasswordPage />} />
+            <Route
+              element={
+                <RequireAuth>
+                  <ChatLayout />
+                </RequireAuth>
+              }
+            >
+              <Route path="/" element={<ChatHome />} />
+              <Route path="/chat/:roomId" element={<ConversationPane />} />
+            </Route>
+            <Route
+              path="/admin"
+              element={
+                <RequireAuth>
+                  <RequireAdmin>
+                    <AdminLayout />
+                  </RequireAdmin>
+                </RequireAuth>
+              }
+            >
+              <Route index element={<Navigate to="users" replace />} />
+              <Route path="users" element={<UsersPage />} />
+              <Route path="branches" element={<BranchesPage />} />
+              <Route path="rooms" element={<RoomsPage />} />
+            </Route>
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
