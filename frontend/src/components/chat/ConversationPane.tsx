@@ -1,10 +1,13 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useAuth } from '../../lib/auth'
-import { useChatController, useRooms, useThread } from '../../lib/ChatProvider'
+import { useChatController, useMembers, useOnline, useRooms, useThread, useTyping } from '../../lib/ChatProvider'
 import { Composer } from './Composer'
 import { ConnectionBanner } from './ConnectionBanner'
 import { MessageList } from './MessageList'
+import { PresenceDot } from './PresenceDot'
+import { SeenLabel } from './SeenLabel'
+import { TypingIndicator } from './TypingIndicator'
 
 function NotFound() {
   return (
@@ -33,6 +36,20 @@ function Conversation({ roomId }: { roomId: number }) {
   const { rooms, loaded } = useRooms()
   const thread = useThread(roomId)
   const room = rooms.find((r) => r.id === roomId)
+  const members = useMembers(roomId)
+  const typingNames = useTyping(roomId)
+  const peerOnline = useOnline(room?.type === 'direct' ? room.peer_id : null)
+  const meId = user?.id ?? 0
+  const isGroup = room?.type === 'group'
+
+  const seenFor = useMemo(() => {
+    if (!thread.loaded) return null
+    const last = [...thread.items].reverse().find((m) => m.sender_id === meId && !m.pending && !m.deleted)
+    if (!last) return null
+    const others = members.filter((m) => m.user_id !== meId)
+    const seenBy = others.filter((m) => m.last_read_message_id !== null && m.last_read_message_id >= last.id).map((m) => m.full_name)
+    return { messageId: last.id, label: <SeenLabel seenBy={seenBy} total={others.length} isGroup={isGroup} /> }
+  }, [thread.loaded, thread.items, members, meId, isGroup])
 
   useEffect(() => {
     controller.setActiveRoom(roomId)
@@ -51,6 +68,12 @@ function Conversation({ roomId }: { roomId: number }) {
         <div style={{ minWidth: 0 }}>
           <h2 style={{ fontSize: 17 }} className="ellipsis">{room?.name ?? ''}</h2>
           {room?.type === 'group' && <div className="muted" style={{ fontSize: 12 }}>{room.member_count} thành viên</div>}
+          {room?.type === 'direct' && peerOnline && (
+            <div className="muted presence-line" style={{ fontSize: 12 }}>
+              <PresenceDot online={peerOnline} />
+              <span>Đang hoạt động</span>
+            </div>
+          )}
         </div>
       </header>
       <ConnectionBanner />
@@ -60,8 +83,9 @@ function Conversation({ roomId }: { roomId: number }) {
         loaded={thread.loaded}
         loadingOlder={thread.loadingOlder}
         error={thread.error}
-        meId={user?.id ?? 0}
-        isGroup={room?.type === 'group'}
+        meId={meId}
+        isGroup={isGroup}
+        seenFor={seenFor}
         onLoadOlder={() => void controller.loadOlder(roomId)}
         onRetryLoad={() => void controller.openRoom(roomId)}
         onRetrySend={(clientId) => controller.retry(clientId)}
@@ -69,7 +93,8 @@ function Conversation({ roomId }: { roomId: number }) {
         onEdit={(id, body) => controller.edit(id, body)}
         onDelete={(id) => controller.remove(roomId, id)}
       />
-      <Composer onSend={(body) => controller.send(roomId, body)} />
+      <TypingIndicator names={typingNames} />
+      <Composer onSend={(body) => controller.send(roomId, body)} onTyping={() => controller.sendTyping(roomId)} />
     </>
   )
 }

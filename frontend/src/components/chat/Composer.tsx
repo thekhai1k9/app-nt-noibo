@@ -3,7 +3,7 @@ import { useState, type KeyboardEvent } from 'react'
 export const MAX_MESSAGE_LENGTH = 4000
 const COUNTER_FROM = 3500
 
-export function Composer({ onSend, disabled = false }: { onSend: (body: string) => void; disabled?: boolean }) {
+export function Composer({ onSend, onTyping, disabled = false }: { onSend: (body: string) => void; onTyping?: () => void; disabled?: boolean }) {
   const [text, setText] = useState('')
 
   function submit() {
@@ -32,7 +32,10 @@ export function Composer({ onSend, disabled = false }: { onSend: (body: string) 
           maxLength={MAX_MESSAGE_LENGTH}
           value={text}
           disabled={disabled}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => {
+            setText(event.target.value)
+            if (!disabled && event.target.value.trim()) onTyping?.()
+          }}
           onKeyDown={onKeyDown}
         />
         <button

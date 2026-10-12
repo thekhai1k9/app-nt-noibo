@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { ChatMessage } from '../../lib/chatStore'
 import { dayLabel, sameDay } from '../../lib/format'
 import { MessageItem } from './MessageItem'
@@ -14,6 +14,8 @@ interface Props {
   error: boolean
   meId: number
   isGroup: boolean
+  /** Nhãn đã xem gắn dưới tin có id này (tin thật cuối cùng của mình). */
+  seenFor?: { messageId: number; label: ReactNode } | null
   onLoadOlder: () => void
   onRetryLoad: () => void
   onRetrySend: (clientId: string) => void
@@ -152,6 +154,9 @@ export function MessageList(props: Props) {
                 onEdit={props.onEdit}
                 onDelete={props.onDelete}
               />
+              {props.seenFor && !message.pending && message.id === props.seenFor.messageId && (
+                <div className="seen-row">{props.seenFor.label}</div>
+              )}
             </Fragment>
           )
         })}

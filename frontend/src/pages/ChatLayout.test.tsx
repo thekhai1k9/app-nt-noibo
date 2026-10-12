@@ -11,6 +11,13 @@ const rooms = [
   makeRoom({ id: 2, type: 'direct', name: 'Trần Quốc Huy', peer_id: 3, last_message: makeMessage({ id: 9, room_id: 2, deleted: true, body: '', sender_name: 'Trần Quốc Huy' }), last_activity: '2026-10-15T08:00:00.000Z' }),
 ]
 
+function membersOf(readByHa: number | null) {
+  return [
+    { user_id: 1, full_name: 'Phạm Đức Long', last_read_message_id: 99 },
+    { user_id: 2, full_name: 'Lê Thu Hà', last_read_message_id: readByHa },
+  ]
+}
+
 function routes(extra: Record<string, unknown> = {}) {
   return {
     ...sessionRoutes(me),
@@ -19,6 +26,9 @@ function routes(extra: Record<string, unknown> = {}) {
       json: { items: [makeMessage({ id: 4, body: 'chào cả nhà' }), makeMessage({ id: 5, body: 'báo cáo xong' })], has_more_before: false, has_more_after: false },
     },
     'POST /api/rooms/1/read': { status: 204 },
+    'GET /api/presence': { json: { online_user_ids: [] } },
+    'GET /api/rooms/1/members': { json: membersOf(null) },
+    'GET /api/rooms/2/members': { json: [] },
     ...extra,
   } as Parameters<typeof mockFetch>[0]
 }
@@ -313,5 +323,96 @@ describe('chat provider lifetime', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Lưu mật khẩu mới' }))
     await screen.findByRole('link', { name: /Dự án kho/ })
     await waitFor(() => expect(FakeWebSocket.instances.length).toBe(1))
+  })
+})
+
+describe('realtime status UI', () => {
+  async function sendOwn(ws: FakeWebSocket, body: string, id: number) {
+    await userEvent.type(screen.getByLabelText('Nhập tin nhắn'), `${body}{Enter}`)
+    const sent = ws.sentJson.filter((m) => m.type === 'send').at(-1)!
+    await act(async () =>
+      ws.receive({ type: 'message', message: makeMessage({ id, sender_id: 1, sender_name: 'Phạm Đức Long', body, client_id: sent.client_id as string }) }),
+    )
+  }
+
+  it('shows the seen label after a read event and moves it to the newest own message', async () => {
+    mockFetch(routes())
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const ws = await connect()
+    await sendOwn(ws, 'tin một', 7)
+    expect(screen.queryByText(/Đã xem/)).not.toBeInTheDocument()
+    await act(async () => ws.receive({ type: 'read', room_id: 1, user_id: 2, message_id: 7 }))
+    const label = await screen.findByText('Đã xem bởi 1 người')
+    expect(label).toHaveAttribute('title', 'Lê Thu Hà')
+    expect(label.closest('.msg')).toBeNull()
+    await sendOwn(ws, 'tin hai', 8)
+    expect(screen.queryByText(/Đã xem/)).not.toBeInTheDocument()
+    await act(async () => ws.receive({ type: 'read', room_id: 1, user_id: 2, message_id: 8 }))
+    expect(await screen.findAllByText('Đã xem bởi 1 người')).toHaveLength(1)
+  })
+
+  it('shows and clears the typing line (5 s expiry, and when the typer sends a message)', async () => {
+    mockFetch(routes())
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const ws = await connect()
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      await act(async () => ws.receive({ type: 'typing', room_id: 1, user_id: 2, user_name: 'Lê Thu Hà' }))
+      expect(screen.getByRole('status')).toHaveTextContent('Lê Thu Hà đang soạn tin…')
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5100)
+      })
+      expect(screen.getByRole('status')).toBeEmptyDOMElement()
+      await act(async () => ws.receive({ type: 'typing', room_id: 1, user_id: 2, user_name: 'Lê Thu Hà' }))
+      expect(screen.getByRole('status')).toHaveTextContent('đang soạn tin')
+      await act(async () => ws.receive({ type: 'message', message: makeMessage({ id: 8, sender_id: 2, body: 'xong' }) }))
+      expect(screen.getByRole('status')).toBeEmptyDOMElement()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the presence dot in the sidebar and header of a direct room', async () => {
+    mockFetch(routes({ 'GET /api/rooms/2/messages': { json: { items: [], has_more_before: false, has_more_after: false } } }))
+    renderApp('/chat/2')
+    const ws = await connect()
+    const link = await screen.findByRole('link', { name: /Trần Quốc Huy/ })
+    expect(screen.queryByLabelText('Đang hoạt động')).not.toBeInTheDocument()
+    await act(async () => ws.receive({ type: 'presence', user_id: 3, online: true }))
+    expect(within(link).getByLabelText('Đang hoạt động')).toBeInTheDocument()
+    expect(screen.getAllByText('Đang hoạt động').length).toBeGreaterThan(0)
+    expect(screen.getAllByLabelText('Đang hoạt động')).toHaveLength(2)
+    await act(async () => ws.receive({ type: 'presence', user_id: 3, online: false }))
+    expect(screen.queryByLabelText('Đang hoạt động')).not.toBeInTheDocument()
+    expect(screen.queryByText('Đang hoạt động')).not.toBeInTheDocument()
+  })
+
+  it('reloads presence and members after a reconnect', async () => {
+    const { calls } = mockFetch(routes())
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const ws = await connect()
+    const count = (path: string) => calls.filter((c) => c.path === path).length
+    await waitFor(() => expect(count('/api/presence')).toBeGreaterThan(0))
+    const before = { p: count('/api/presence'), m: count('/api/rooms/1/members') }
+    await act(async () => ws.serverClose(1006))
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1300))
+    })
+    await connect()
+    await waitFor(() => expect(count('/api/presence')).toBeGreaterThan(before.p))
+    await waitFor(() => expect(count('/api/rooms/1/members')).toBeGreaterThan(before.m))
+  })
+
+  it('sends a typing frame once per 3 seconds while typing', async () => {
+    mockFetch(routes())
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const ws = await connect()
+    await userEvent.type(screen.getByLabelText('Nhập tin nhắn'), 'xin chào')
+    expect(ws.sentJson.filter((m) => m.type === 'typing')).toEqual([{ type: 'typing', room_id: 1 }])
   })
 })

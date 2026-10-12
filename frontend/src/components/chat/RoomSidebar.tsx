@@ -2,10 +2,11 @@ import { useRef, useState } from 'react'
 import { Link, NavLink } from 'react-router-dom'
 import { useAuth } from '../../lib/auth'
 import { initials, listTime } from '../../lib/format'
-import { useRooms } from '../../lib/ChatProvider'
+import { useChatState, useRooms } from '../../lib/ChatProvider'
 import type { Room } from '../../lib/types'
 import { ErrorAlert } from '../ErrorAlert'
 import { NewChatDialog } from './NewChatDialog'
+import { PresenceDot } from './PresenceDot'
 
 /** Bỏ dấu tiếng Việt và chữ hoa/thường để lọc: "duc" khớp "Đức". */
 function fold(text: string): string {
@@ -26,6 +27,7 @@ function preview(room: Room): string {
 export function RoomSidebar() {
   const { user, logout } = useAuth()
   const { rooms, loaded, error } = useRooms()
+  const online = useChatState((s) => s.online)
   const [filter, setFilter] = useState('')
   const [dialog, setDialog] = useState(false)
   const newChatButton = useRef<HTMLButtonElement>(null)
@@ -65,8 +67,11 @@ export function RoomSidebar() {
         )}
         {shown.map((room) => (
           <NavLink key={room.id} to={`/chat/${room.id}`} className="room-item">
-            <span className={`room-avatar${room.type === 'direct' ? ' direct' : ''}`} aria-hidden="true">
-              {initials(room.name ?? '')}
+            <span className="room-avatar-wrap">
+              <span className={`room-avatar${room.type === 'direct' ? ' direct' : ''}`} aria-hidden="true">
+                {initials(room.name ?? '')}
+              </span>
+              {room.type === 'direct' && room.peer_id !== null && <PresenceDot online={online[room.peer_id] === true} />}
             </span>
             <span style={{ flex: 1, minWidth: 0 }}>
               <span className="row" style={{ justifyContent: 'space-between', flexWrap: 'nowrap' }}>
