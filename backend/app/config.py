@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -18,7 +19,7 @@ class Settings(BaseSettings):
     ws_rate_limit_messages: int = 20
     ws_rate_limit_seconds: int = 10
     ws_auth_timeout_seconds: float = 5.0
-    ws_reconcile_seconds: float = 30.0
+    ws_reconcile_seconds: float = Field(30.0, gt=0)
     bus_channel_prefix: str = "kn"
     max_message_length: int = 4000
     log_level: str = "INFO"

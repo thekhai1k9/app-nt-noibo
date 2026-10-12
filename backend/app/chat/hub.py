@@ -116,8 +116,8 @@ class Hub:
                 self._offer(conn, {"type": "rooms_changed"})
 
     async def reconcile(self) -> None:
-        """Một lượt đối soát với DB: nạp lại room_ids của mọi kết nối và đóng (4403) kết nối của
-        user đã bị khoá hoặc phải đổi mật khẩu. Sự kiện bus có thể bị lỡ nên đây là lưới an toàn."""
+        """Một lượt đối soát với DB: nạp lại room_ids của mọi kết nối và đóng kết nối của user bị khoá (4403)
+        hoặc phải đổi mật khẩu (4401). Sự kiện bus có thể bị lỡ nên đây là lưới an toàn."""
         conns = self._all()
         if not conns:
             return
@@ -128,7 +128,9 @@ class Hub:
                 rows = await session.execute(
                     select(User.id, User.is_active, User.must_change_password).where(User.id.in_(user_ids))
                 )
-                blocked = {uid for uid, active, must_change in rows if not active or must_change}
+                rows_state = list(rows)
+                blocked_locked = {uid for uid, active, _ in rows_state if not active}
+                blocked_reauth = {uid for uid, active, must_change in rows_state if active and must_change}
                 rows = await session.execute(
                     select(RoomMember.user_id, RoomMember.room_id).where(RoomMember.user_id.in_(user_ids))
                 )
@@ -139,11 +141,17 @@ class Hub:
             log.exception("failed to reconcile connections with the database")
             return
         for conn in conns:
-            if conn.user_id in blocked:
+            if conn.user_id in blocked_locked:
                 conn.close(CLOSE_ACCOUNT_LOCKED)
+            elif conn.user_id in blocked_reauth:
+                conn.close(CLOSE_UNAUTHENTICATED)
             elif conn.version == versions[conn]:  # chưa có sự kiện/snapshot mới hơn trong lúc đọc DB
-                conn.room_ids = set(by_user.get(conn.user_id, ()))
+                new_rooms = set(by_user.get(conn.user_id, ()))
+                changed = new_rooms != conn.room_ids
+                conn.room_ids = new_rooms
                 conn.version += 1
+                if changed:
+                    self._offer(conn, {"type": "rooms_changed"})
 
     async def _reconcile_guarded(self) -> None:
         try:

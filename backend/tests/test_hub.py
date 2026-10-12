@@ -207,7 +207,7 @@ async def test_resubscribing_reloads_membership_for_all_connections():
         await asyncio.sleep(0.1)
         assert stale_a.room_ids == {room} and tab2.room_ids == {room}
         assert stale_b.room_ids == set()
-        assert drain(stale_a) == [{"type": "resync"}]
+        assert drain(stale_a) == [{"type": "rooms_changed"}, {"type": "resync"}]  # reconcile báo phòng đổi, rồi resync
     finally:
         await stop(task)
 
@@ -272,18 +272,37 @@ async def test_reconcile_closes_a_user_deactivated_in_the_database_with_4403():
     assert other.close_code is None
 
 
-async def test_reconcile_closes_a_user_who_must_change_the_password():
+async def test_reconcile_closes_must_change_password_users_with_4401():
     from app.models import User
 
-    alice = await create_user("alice")
+    alice, bob = await create_user("alice"), await create_user("bob")
     hub = Hub(InMemoryBus(), SessionLocal)
-    conn = Connection(alice, [])
+    conn, locked = Connection(alice, []), Connection(bob, [])
     hub.register(conn)
+    hub.register(locked)
     async with SessionLocal() as s:
         (await s.get(User, alice)).must_change_password = True
+        bob_user = await s.get(User, bob)
+        bob_user.must_change_password = True
+        bob_user.is_active = False
         await s.commit()
     await hub.reconcile()
-    assert conn.close_code == 4403
+    assert conn.close_code == 4401
+    assert locked.close_code == 4403
+
+
+async def test_reconcile_tells_the_client_to_reload_rooms_when_membership_changed():
+    alice = await create_user("alice")
+    room = await create_room(member_ids=[alice])
+    hub = Hub(InMemoryBus(), SessionLocal)
+    conn = Connection(alice, {999})
+    hub.register(conn)
+    await hub.reconcile()
+    assert conn.room_ids == {room}
+    assert drain(conn) == [{"type": "rooms_changed"}]
+    await hub.reconcile()  # đã khớp DB: không ồn
+    assert conn.room_ids == {room}
+    assert drain(conn) == []
 
 
 async def test_reconcile_does_not_raise_when_the_database_fails():

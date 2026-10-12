@@ -46,7 +46,7 @@ Tất cả dưới `/api`, cần `Authorization: Bearer <access token>` và đã
 
 ### Phân trang tin nhắn
 
-`GET /rooms/{id}/messages` nhận tối đa **một** trong `before`, `after`, `around` (nhiều hơn một: `400 invalid_cursor`), cùng `limit` từ 1 đến 100 (mặc định 50). Mọi id phải là số nguyên dương trong khoảng cột DB (phòng/người dùng/chi nhánh tới 2^31-1, tin nhắn tới 2^63-1); ngoài khoảng là `422`.
+`GET /rooms/{id}/messages` nhận tối đa **một** trong `before`, `after`, `around` (nhiều hơn một: `400 invalid_cursor`), cùng `limit` từ 1 đến 100 (mặc định 50). Các tham số `before`/`after`/`around` phải ≥ 1; muốn "từ đầu" thì **bỏ tham số** thay vì gửi `0` (server trả 422). Mọi id phải là số nguyên dương trong khoảng cột DB (phòng/người dùng/chi nhánh tới 2^31-1, tin nhắn tới 2^63-1); ngoài khoảng là `422`.
 
 - Không tham số: trang mới nhất. `before=<id>`: các tin cũ hơn id đó. `after=<id>`: các tin mới hơn id đó (cũ nhất trước). `around=<id>`: tin đó ở giữa cùng tin cũ và mới hơn (`404 message_not_found` nếu không thuộc phòng).
 - `items` luôn sắp xếp **tăng dần** theo id.
@@ -61,9 +61,11 @@ Mở kết nối rồi gửi ngay `{"type":"auth","token":"<access token>"}` (tr
 | Mã | Ý nghĩa | Client làm gì |
 |---|---|---|
 | 4401 | Chưa xác thực, token sai/hết hạn, hoặc thông tin đăng nhập vừa đổi (đổi mật khẩu, admin đặt lại mật khẩu) | Làm mới token (`POST /auth/refresh`) rồi kết nối lại; nếu refresh thất bại thì về trang đăng nhập |
-| 4403 | Tài khoản bị khoá | **Không** kết nối lại, về trang đăng nhập |
+| 4403 | Tài khoản bị khoá (đối soát định kỳ chỉ dùng 4403 cho tài khoản bị khoá; tài khoản phải đổi mật khẩu bị đóng 4401) | **Không** kết nối lại, về trang đăng nhập |
 | 4408 | Client quá chậm (hàng đợi gửi đầy) | Kết nối lại và tải phần còn thiếu (xem quy tắc catch-up bên dưới) |
 | 4413 | Frame quá lớn | Không gửi lại đúng frame đó (kết nối lại được, nhưng đừng retry cùng nội dung) |
+
+**Không mở WebSocket khi người dùng chưa đổi mật khẩu lần đầu** (`must_change_password`): server đóng 4401, mà làm mới token vẫn thành công, nên client sẽ lặp vô hạn nếu không kiểm tra cờ này trước.
 
 Giới hạn frame là **16 KiB tính theo byte UTF-8** (không phải số ký tự; tiếng Việt có dấu tốn nhiều byte hơn), áp dụng cả cho frame `auth`. Trần cứng của tầng transport là 64 KiB (vượt thì đóng với mã 1009).
 
@@ -74,8 +76,8 @@ Giới hạn frame là **16 KiB tính theo byte UTF-8** (không phải số ký 
 | `code` | Nơi gặp | Ghi chú |
 |---|---|---|
 | `empty_message` | WS, REST | Nội dung rỗng sau khi cắt khoảng trắng |
-| `message_too_long` | WS, REST | Vượt 4000 ký tự (`MAX_MESSAGE_LENGTH`), cả khi gửi lẫn khi sửa |
-| `invalid_client_id` | WS, REST | `client_id` dài quá 64 ký tự (echo lại `client_id: null`) |
+| `message_too_long` | WS, REST | Vượt 4000 ký tự (`MAX_MESSAGE_LENGTH`) khi gửi; khi sửa tin chỉ trong khoảng 4001-10000 ký tự, trên 10000 ký tự REST trả 422 `validation_error` |
+| `invalid_client_id` | WS (không có REST gửi tin) | `client_id` rỗng hoặc dài quá 64 ký tự (echo lại `client_id: null`) |
 | `invalid_message` | WS, REST | Sai kiểu/khoảng giá trị (`room_id`, `body`, `client_id`...) hoặc chứa ký tự NUL |
 | `invalid_json` | WS | Frame không phải JSON |
 | `unknown_type` | WS | `type` không hỗ trợ |
@@ -90,6 +92,7 @@ Giới hạn frame là **16 KiB tính theo byte UTF-8** (không phải số ký 
 | `forbidden` | REST | Sửa/xoá tin của người khác, hoặc không phải admin |
 | `not_authenticated` | REST | Thiếu/sai access token (WS: đóng 4401) |
 | `password_change_required` | REST | Phải đổi mật khẩu trước |
+| `service_unavailable` | REST (503) | Redis lỗi |
 | `member_not_found`, `branch_not_found`, `branch_exists`, `branch_has_users`, `username_taken`, `cannot_modify_self` | REST (admin) | Quản trị người dùng/chi nhánh/nhóm |
 | `invalid_credentials`, `too_many_attempts`, `invalid_refresh`, `wrong_current_password`, `password_unchanged` | REST (auth) | Đăng nhập và đổi mật khẩu |
 
