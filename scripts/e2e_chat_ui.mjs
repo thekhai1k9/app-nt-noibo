@@ -7,9 +7,10 @@
 // Chạy (từ thư mục gốc repo, Node 22+):
 //   PLAYWRIGHT_DIR=<dir> BASE_URL=http://localhost ADMIN_USER=ui.admin ADMIN_TEMP_PASSWORD=<mật khẩu tạm> \
 //     node scripts/e2e_chat_ui.mjs
-// Tuỳ chọn: SHOT_DIR=<thư mục> (nơi lưu ảnh chụp khi một bước hỏng, mặc định thư mục hiện tại),
+// Tuỳ chọn: SHOT_DIR=<thư mục> (nơi lưu ảnh chụp khi một bước hỏng, mặc định thư mục tạm của hệ điều hành),
 //           HEADED=1 (mở cửa sổ trình duyệt).
 // In PASS/FAIL cho từng bước, cuối cùng in "N/M đạt" và thoát mã 1 nếu có bước hỏng.
+import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -19,7 +20,13 @@ if (!PLAYWRIGHT_DIR || !ADMIN_USER || !ADMIN_TEMP_PASSWORD) {
   process.exit(2)
 }
 const BASE = (process.env.BASE_URL ?? 'http://localhost').replace(/\/$/, '')
-const SHOT_DIR = process.env.SHOT_DIR ?? '.'
+const SHOT_DIR = process.env.SHOT_DIR ?? os.tmpdir()
+// Script này tạo người dùng/nhóm, đổi mật khẩu admin và khoá tài khoản: chỉ chạy trên stack thử nghiệm.
+// Mật khẩu trong script chỉ là giá trị dùng một lần cho stack thử nghiệm.
+if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(BASE) && process.env.E2E_ALLOW_REMOTE !== '1') {
+  console.error(`Từ chối chạy với BASE_URL=${BASE}: chỉ localhost/127.0.0.1. Đặt E2E_ALLOW_REMOTE=1 nếu chắc chắn đó là stack thử nghiệm.`)
+  process.exit(2)
+}
 const { chromium } = await import(pathToFileURL(path.join(PLAYWRIGHT_DIR, 'node_modules/playwright/index.mjs')).href)
 
 const ADMIN_PW = 'UiAdminPassw0rd!'
