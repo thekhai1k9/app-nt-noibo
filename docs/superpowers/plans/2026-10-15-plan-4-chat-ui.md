@@ -19,7 +19,7 @@ Làm: dọn backend tồn đọng (Task 1); nền tảng frontend (kiểu, API, 
 **Điều chỉnh có chủ ý so với bản thiết kế/spec:**
 - Không có cột thông tin bên phải (xem trên); tiêu đề phòng hiện tên phòng (chat 1-1: tên người kia) và số thành viên của nhóm.
 - Danh sách tin nhắn chưa "ảo hoá" bằng thư viện; trình duyệt bỏ qua việc render các tin ngoài màn hình nhờ `content-visibility: auto`. Spec yêu cầu danh sách ảo hoá; ta chỉ đổi cách làm sau khi có số đo thật.
-- Xoá nhóm ở trang admin đòi gõ lại tên nhóm để xác nhận (vì xoá nhóm xoá vĩnh viễn toàn bộ tin nhắn).
+- Admin "xoá" nhóm = **lưu trữ 3 ngày** (quyết định của chủ dự án): nhóm biến mất ngay với mọi thành viên, tin nhắn được giữ, admin khôi phục được trong 3 ngày; sau đó một tác vụ nền xoá vĩnh viễn. Backend ở Task 1b, giao diện ở Task 7; thời hạn cấu hình bằng `ROOM_ARCHIVE_RETENTION_DAYS` (mặc định 3).
 
 ## Global Constraints
 
@@ -45,7 +45,8 @@ Các tình huống spec ngầm đòi hỏi nhưng dễ bị bỏ sót; mỗi dò
 - Số chưa đọc đúng: tin của mình, phòng đang xem, tab ẩn (Task 4).
 - Cuộn: thêm tin cũ giữ nguyên vị trí; tin mới khi đang đọc tin cũ không kéo màn hình (Task 5).
 - Tin đã xoá không lộ nội dung; liên kết `javascript:` không thành liên kết; gõ tiếng Việt có dấu bằng bộ gõ không gửi nhầm khi bấm Enter xác nhận chữ (Task 2, 5).
-- Xoá nhóm ở trang admin cần gõ đúng tên nhóm (Task 7).
+- Nhóm đã lưu trữ không còn truy cập được qua REST/WebSocket/danh sách phòng/đếm chưa đọc, khôi phục đưa lại đúng như cũ, quá hạn thì bị xoá hẳn cùng tin nhắn, và tác vụ dọn không chết khi gặp lỗi (Task 1b).
+- Lưu trữ nhóm ở trang admin cần gõ đúng tên nhóm; nhóm đã lưu trữ hiện kèm hạn xoá vĩnh viễn và nút Khôi phục (Task 7).
 
 ---
 
@@ -93,7 +94,7 @@ frontend/
 ```
 (`HomePage.tsx` bị xoá, thay bằng `ChatLayout` + `ChatHome`.)
 
-Quy ước chạy lệnh: Git Bash. Test frontend chạy trực tiếp bằng Node trong `frontend/` (`npm test`, `npm run typecheck`, `npm run build`). Task 1 (backend) chạy qua `bash scripts/test.sh` từ thư mục gốc. Task 8 cần Docker.
+Quy ước chạy lệnh: Git Bash. Test frontend chạy trực tiếp bằng Node trong `frontend/` (`npm test`, `npm run typecheck`, `npm run build`). Task 1 và 1b (backend) chạy qua `bash scripts/test.sh` từ thư mục gốc. Task 8 cần Docker.
 
 ---
 
@@ -164,6 +165,64 @@ Expected: tất cả pass.
 ```bash
 git add backend README.md
 git commit -m "fix: reconcile closes reauth users with 4401 and tells clients to reload rooms; correct README" -m "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 1b: Lưu trữ nhóm 3 ngày thay cho xoá ngay (backend)
+
+**Files:**
+- Create: `backend/alembic/versions/0003_room_archive.py`, `backend/app/chat/retention.py`, `backend/tests/test_room_archive.py`
+- Modify: `backend/app/models.py`, `backend/app/config.py`, `backend/app/main.py`, `backend/app/chat/service.py`, `backend/app/chat/hub.py`, `backend/app/routers/admin_rooms.py`, `backend/tests/test_admin_rooms.py`, `backend/tests/test_migrations.py` (nếu liệt kê phiên bản/cột), `backend/tests/test_config.py`, `.env.example`, `README.md`
+
+**Interfaces:**
+- Consumes: mọi chỗ hiện đọc `RoomMember` để quyết định quyền truy cập (`service.user_room_ids`, `service.require_member`, danh sách phòng + đếm thành viên + đếm chưa đọc trong `service.py`; `Hub` ở `hub.py` khi nạp phòng cho `rooms_changed`/đăng ký và trong `reconcile`), cùng `admin_rooms.py` (`_group_or_404`, `delete_room`).
+- Produces:
+  - Cột `rooms.archived_at timestamptz NULL` (+ chỉ mục một phần cho `archived_at IS NOT NULL`); `Room.archived_at`.
+  - Cấu hình `room_archive_retention_days: int = Field(3, gt=0)`, `room_purge_interval_seconds: float = Field(3600, gt=0)` (env `ROOM_ARCHIVE_RETENTION_DAYS`, `ROOM_PURGE_INTERVAL_SECONDS`).
+  - REST admin: `DELETE /admin/rooms/{id}` → 204, **đặt `archived_at = now()`** (không xoá dữ liệu), báo `rooms_changed` cho các thành viên; nhóm đã lưu trữ → 404 `room_not_found`. `GET /admin/rooms?archived=true` liệt kê nhóm đã lưu trữ (mặc định chỉ nhóm đang hoạt động). `AdminRoomOut` thêm `archived_at: datetime | None` và `purge_at: datetime | None` (= `archived_at + retention`). `POST /admin/rooms/{id}/restore` → `AdminRoomDetail`, xoá `archived_at`, báo `rooms_changed`; nhóm không ở trạng thái lưu trữ → 404 `room_not_found`. `GET /admin/rooms/{id}` xem được cả nhóm đã lưu trữ; đổi tên/thêm/gỡ thành viên trên nhóm đã lưu trữ → 404 `room_not_found`.
+  - `retention.purge_archived_rooms(session_factory, retention_days, now=None) -> int` (xoá cứng các phòng nhóm có `archived_at <= now - retention_days`; tin nhắn và thành viên mất theo `ON DELETE CASCADE`; trả số phòng đã xoá) và `retention.run_purger(session_factory, retention_days, interval)` chạy mãi: chạy ngay lúc khởi động rồi mỗi `interval` giây; lỗi một lượt chỉ ghi log và vòng lặp vẫn chạy tiếp (theo mẫu `Hub.run_reconciler`/`_reconcile_guarded`). Khởi tạo và huỷ trong `lifespan` (`main.py`) cạnh `reconciler`.
+  - Nhóm đã lưu trữ **không còn tồn tại** với người dùng thường: bị loại khỏi `user_room_ids`, `require_member` (→ 404 `room_not_found` cho tin nhắn, đọc, gửi, sửa, xoá, đánh dấu đã đọc), danh sách phòng, đếm chưa đọc, `room_ids` của kết nối WebSocket (kể cả khi `reconcile`), và không nhận tin mới qua WebSocket.
+
+- [ ] **Step 1: Viết test thất bại (`backend/tests/test_room_archive.py`)**
+
+Dùng cùng helper/fixture như `test_admin_rooms.py`, `test_chat_api.py`, `test_ws.py`, `test_hub.py` (đọc các file đó trước). Cần các test:
+1. `test_delete_archives_instead_of_deleting`: sau `DELETE /api/admin/rooms/{id}` → 204; bản ghi `rooms` còn, `archived_at` khác null, tin nhắn và `room_members` vẫn còn.
+2. `test_archived_room_disappears_for_members`: thành viên `GET /api/rooms` không còn thấy phòng; `GET /api/rooms/{id}/messages`, `POST /api/rooms/{id}/read`, sửa và xoá tin nhắn của phòng đó đều 404 `room_not_found`.
+3. `test_archived_room_is_closed_to_websocket`: kết nối WS đã `ready`, admin lưu trữ nhóm → kết nối nhận `rooms_changed`; gửi `send` vào phòng đó trả sự kiện `error` `room_not_found`; tin mới của phòng không còn được đẩy tới kết nối. Thêm test cho `Hub.reconcile`: kết nối có `room_ids` chứa phòng đã lưu trữ → sau `reconcile()` `room_ids` không còn phòng đó.
+4. `test_admin_list_hides_archived_by_default_and_shows_with_flag`: danh sách mặc định không có nhóm đã lưu trữ; `?archived=true` chỉ có nhóm đã lưu trữ, với `archived_at` và `purge_at = archived_at + 3 ngày`.
+5. `test_archived_group_cannot_be_modified`: PATCH tên, POST/DELETE thành viên, DELETE lần hai → 404 `room_not_found`; `GET /api/admin/rooms/{id}` vẫn 200.
+6. `test_restore_brings_everything_back`: restore → 200, thành viên thấy lại phòng với đúng tin nhắn và số chưa đọc cũ, nhận `rooms_changed`; restore nhóm đang hoạt động hoặc không tồn tại → 404; người không phải admin → 403.
+7. `test_purge_deletes_only_expired_archived_rooms`: ba phòng — hoạt động, lưu trữ 1 ngày trước, lưu trữ 4 ngày trước (đặt `archived_at` trực tiếp trong DB); `purge_archived_rooms(SessionLocal, 3)` trả 1, phòng 4 ngày cùng tin nhắn/thành viên của nó biến mất, hai phòng kia còn; chạy lần hai trả 0. Kiểm biên với `now` cố định: đúng 3 ngày thì bị xoá, thiếu 1 giây thì chưa.
+8. `test_purger_survives_errors`: `run_purger` với session factory ném lỗi ở lượt đầu rồi chạy bình thường ở lượt sau (interval rất nhỏ) → lượt sau vẫn xoá được phòng quá hạn; huỷ task không rò rỉ.
+9. `test_direct_rooms_are_not_touched_by_archiving`: `DELETE /api/admin/rooms/{direct_id}` và `POST .../restore` → 404; `purge_archived_rooms` không xoá phòng direct.
+10. Trong `test_config.py`: `room_archive_retention_days` và `room_purge_interval_seconds` phải > 0.
+Sửa `test_admin_rooms.py`: các test cũ khẳng định xoá nhóm làm mất bản ghi/tin nhắn phải đổi thành khẳng định lưu trữ (bản ghi còn, `archived_at` đặt). Sửa `test_migrations.py` nếu nó kiểm danh sách cột/phiên bản.
+
+- [ ] **Step 2: Chạy test để xác nhận thất bại**
+
+Run: `bash scripts/test.sh tests/test_room_archive.py tests/test_admin_rooms.py tests/test_config.py -q`
+Expected: thất bại (chưa có cột, endpoint, module).
+
+- [ ] **Step 3: Viết mã**
+
+- Migration `0003_room_archive.py` (`revision = "0003"`, `down_revision = "0002"`): `op.add_column("rooms", sa.Column("archived_at", sa.DateTime(timezone=True), nullable=True))` và `op.create_index("ix_rooms_archived_at", "rooms", ["archived_at"], postgresql_where=sa.text("archived_at IS NOT NULL"))`; `downgrade` gỡ chỉ mục rồi cột. Model: `archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)`.
+- Cấu hình: hai trường mới như trên; thêm vào `.env.example` kèm chú thích.
+- `service.py` và `hub.py`: mọi truy vấn quyết định quyền/phòng của người dùng thường phải nối `Room` và thêm điều kiện `Room.archived_at.is_(None)` (xem danh sách ở Interfaces; chạy `grep -n RoomMember backend/app/chat/*.py` và xử lý từng chỗ, không bỏ sót). Nếu truy vấn chưa nối `Room`, nối bằng `Room.id == RoomMember.room_id`.
+- `admin_rooms.py`: `_group_or_404(session, room_id, *, archived: bool | None = False)` (`False` = chỉ nhóm hoạt động, `True` = chỉ nhóm đã lưu trữ, `None` = cả hai; `get_room` dùng `None`, `restore_room` dùng `True`, các thao tác còn lại dùng mặc định); `list_rooms` nhận `archived: bool = False`; `delete_room` đặt `room.archived_at = func.now()` rồi commit và `_notify` thành viên; thêm `restore_room`; `AdminRoomOut` thêm `archived_at` và `purge_at` (tính từ `get_settings().room_archive_retention_days`).
+- `retention.py` và `main.py`: như phần Interfaces (`delete(Room).where(Room.type == "group", Room.archived_at.is_not(None), Room.archived_at <= now - timedelta(days=retention_days))`; ghi log số phòng đã xoá, không ghi tên hay nội dung).
+- README (mục API admin): ghi hành vi mới, hai biến môi trường, và rằng bản sao lưu DB vẫn chứa dữ liệu đã xoá vĩnh viễn theo chính sách sao lưu (Plan 7).
+
+- [ ] **Step 4: Chạy toàn bộ test**
+
+Run: `bash scripts/test.sh -q`
+Expected: tất cả pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend .env.example README.md
+git commit -m "feat: archive deleted groups for 3 days with restore and background purge" -m "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -381,6 +440,8 @@ export interface AdminRoom {
   branch_id: number | null
   member_count: number
   created_at: string
+  archived_at: string | null
+  purge_at: string | null
 }
 
 export interface AdminRoomMember {
@@ -3582,8 +3643,8 @@ git commit -m "feat: add chat layout with room list, conversation pane and new-c
 
 **Interfaces:**
 - Consumes: `api`, `Field`, `ErrorAlert`, kiểu `AdminRoom`, `AdminRoomDetail`, `AdminRoomMember`, `Branch`, `User`, TanStack Query (khoá `['admin','rooms', qs]`, `['admin','room', id]`, `['admin','branches']`, `['admin','users', '']`).
-- Produces: `RoomsPage` (`<h1>Phòng và nhóm</h1>`); dải ghi chú "Quản trị viên không xem được nội dung tin nhắn"; ô tìm `aria-label="Tìm nhóm"` + lọc chi nhánh `aria-label="Lọc theo chi nhánh"`; bảng nhóm (tên, phạm vi, số thành viên, nút `aria-label="Quản lý {tên}"`); khung bên phải là form **"Tạo nhóm mới"** (tên, chi nhánh (tuỳ chọn "Liên chi nhánh"), danh sách người dùng đang hoạt động có hộp chọn và ô lọc `aria-label="Lọc người dùng"`, nút "Tạo nhóm") hoặc **chi tiết nhóm** (đổi tên + "Lưu tên"; danh sách thành viên có nút `aria-label="Gỡ {tên đăng nhập} khỏi nhóm"`; chọn người để thêm `aria-label="Thêm thành viên"` + nút "Thêm"; vùng nguy hiểm "Xoá nhóm" cần gõ đúng tên nhóm vào ô `aria-label="Gõ tên nhóm để xác nhận"` thì nút "Xoá nhóm" mới bật; có đoạn "Toàn bộ tin nhắn của nhóm sẽ bị xoá vĩnh viễn.").
-- API dùng: `GET /admin/rooms?q=&branch_id=`, `POST /admin/rooms`, `GET /admin/rooms/{id}`, `PATCH /admin/rooms/{id}`, `DELETE /admin/rooms/{id}`, `POST /admin/rooms/{id}/members`, `DELETE /admin/rooms/{id}/members/{user_id}`, `GET /admin/branches`, `GET /admin/users?is_active=true`.
+- Produces: `RoomsPage` (`<h1>Phòng và nhóm</h1>`); dải ghi chú "Quản trị viên không xem được nội dung tin nhắn"; ô tìm `aria-label="Tìm nhóm"` + lọc chi nhánh `aria-label="Lọc theo chi nhánh"`; bảng nhóm (tên, phạm vi, số thành viên, nút `aria-label="Quản lý {tên}"`); khung bên phải là form **"Tạo nhóm mới"** (tên, chi nhánh (tuỳ chọn "Liên chi nhánh"), danh sách người dùng đang hoạt động có hộp chọn và ô lọc `aria-label="Lọc người dùng"`, nút "Tạo nhóm") hoặc **chi tiết nhóm** (đổi tên + "Lưu tên"; danh sách thành viên có nút `aria-label="Gỡ {tên đăng nhập} khỏi nhóm"`; chọn người để thêm `aria-label="Thêm thành viên"` + nút "Thêm"; vùng nguy hiểm "Lưu trữ nhóm" cần gõ đúng tên nhóm vào ô `aria-label="Gõ tên nhóm để xác nhận"` thì nút "Lưu trữ nhóm" mới bật; có đoạn "Nhóm sẽ biến mất với mọi thành viên ngay. Tin nhắn được giữ 3 ngày và có thể khôi phục; sau đó bị xoá vĩnh viễn."). Bảng nhóm có hai tab `role="tab"` "Đang hoạt động" / "Đã lưu trữ"; tab "Đã lưu trữ" liệt kê nhóm kèm "Xoá vĩnh viễn vào {dd/MM/yyyy HH:mm}" (từ `purge_at`) và nút `aria-label="Khôi phục {tên}"`.
+- API dùng: `GET /admin/rooms?q=&branch_id=`, `POST /admin/rooms`, `GET /admin/rooms/{id}`, `PATCH /admin/rooms/{id}`, `DELETE /admin/rooms/{id}` (lưu trữ), `GET /admin/rooms?archived=true`, `POST /admin/rooms/{id}/restore`, `POST /admin/rooms/{id}/members`, `DELETE /admin/rooms/{id}/members/{user_id}`, `GET /admin/branches`, `GET /admin/users?is_active=true`.
 
 - [ ] **Step 1: Viết test thất bại**
 
@@ -3593,7 +3654,8 @@ git commit -m "feat: add chat layout with room list, conversation pane and new-c
 3. **creates a group** với tên, chi nhánh (hoặc để trống = liên chi nhánh), hai người được chọn → `POST /api/admin/rooms` với body `{ name, branch_id, member_ids }` đúng; danh sách được tải lại; form sạch.
 4. **create validation**: tên rỗng → nút "Tạo nhóm" bị vô hiệu hoặc không gửi yêu cầu; lỗi server (`user_not_found`) hiện bằng tiếng Việt.
 5. **manages a group**: bấm "Quản lý X" → thấy thành viên; đổi tên → `PATCH` body `{ name }`; gỡ một người → `DELETE .../members/{id}`; thêm người từ danh sách chọn → `POST .../members` body `{ user_id }`; mỗi thao tác tải lại chi tiết và danh sách.
-6. **delete needs the typed name**: nút "Xoá nhóm" vô hiệu cho tới khi gõ **chính xác** tên nhóm (khác hoa/thường hoặc thừa khoảng trắng vẫn vô hiệu); gõ đúng → `DELETE /api/admin/rooms/{id}` được gọi; sau đó khung quay về form tạo nhóm; trang có đoạn "Toàn bộ tin nhắn của nhóm sẽ bị xoá vĩnh viễn."
+6. **archive needs the typed name**: nút "Lưu trữ nhóm" vô hiệu cho tới khi gõ **chính xác** tên nhóm (khác hoa/thường hoặc thừa khoảng trắng vẫn vô hiệu); gõ đúng → `DELETE /api/admin/rooms/{id}` được gọi; sau đó khung quay về form tạo nhóm và nhóm biến mất khỏi tab "Đang hoạt động"; trang có đoạn giải thích giữ 3 ngày và có thể khôi phục.
+6b. **archived tab and restore**: tab "Đã lưu trữ" gọi `GET /api/admin/rooms?archived=true`, hiện hạn xoá vĩnh viễn theo `purge_at` (định dạng `dd/MM/yyyy HH:mm` giờ địa phương); bấm "Khôi phục {tên}" → `POST /api/admin/rooms/{id}/restore`, nhóm quay lại tab "Đang hoạt động"; tab rỗng hiện "Không có nhóm nào đã lưu trữ."; nhóm đã lưu trữ không có nút sửa/thêm/gỡ.
 7. **server errors**: `room_not_found` khi thao tác → thông báo tiếng Việt; không có `role="alert"` thừa lúc bình thường.
 8. **nav link**: trong `AdminLayout.test.tsx` thêm khẳng định có liên kết "Phòng và nhóm" trong thanh điều hướng và nó mang `aria-current="page"` khi ở `/admin/rooms`.
 
@@ -3609,9 +3671,9 @@ Expected: lỗi không tìm thấy `RoomsPage`; test điều hướng thất b�
 Viết theo mẫu của `UsersPage.tsx` và `BranchesPage.tsx` (đọc hai file đó trước để dùng cùng quy ước: `useQuery` + `useMutation`/hàm bất đồng bộ với `ErrorAlert`, `invalidateQueries` sau mỗi thay đổi, vô hiệu nút khi đang xử lý, `key` cho biểu mẫu theo nhóm được chọn, các lớp CSS `admin-main`, `admin-aside`, `table-scroll`, `table-row`, `card`, `stack`, `row`, `btn`...). Thành phần: `RoomsPage` (trạng thái `selected: number | null`), `CreateRoomForm`, `RoomDetail` (nhận `roomId`; truy vấn `['admin','room', id]`). Quy tắc bắt buộc:
 - Danh sách người dùng cho form tạo và ô "Thêm thành viên" lấy từ `GET /admin/users?is_active=true`; ô thêm chỉ liệt kê người **chưa** trong nhóm.
 - Gửi `branch_id` là `null` khi chọn "Liên chi nhánh"; `member_ids` là mảng số.
-- Xoá nhóm: so sánh `typed === room.name` (so khớp tuyệt đối, không trim, không bỏ qua hoa/thường); sau khi xoá thành công đặt `selected = null` và làm mới các truy vấn `['admin','rooms']`.
+- Lưu trữ nhóm: so sánh `typed === room.name` (so khớp tuyệt đối, không trim, không bỏ qua hoa/thường); sau khi thành công đặt `selected = null` và làm mới mọi truy vấn có khoá bắt đầu `['admin','rooms']` (cả danh sách đã lưu trữ); khôi phục cũng làm mới như vậy.
 - Mọi lỗi từ `api` hiển thị qua `ErrorAlert` (tiếng Việt từ `errors.ts`); xoá lỗi cũ khi bắt đầu thao tác mới.
-- Không dùng `window.confirm` cho xoá nhóm (đã có bước gõ tên).
+- Không dùng `window.confirm` cho lưu trữ nhóm (đã có bước gõ tên).
 
 `AdminLayout.tsx`: thêm `<NavLink to="/admin/rooms">Phòng và nhóm</NavLink>` sau "Chi nhánh". `App.tsx`: thêm `const RoomsPage = lazy(() => import('./pages/admin/RoomsPage').then((m) => ({ default: m.RoomsPage })))` và `<Route path="rooms" element={<RoomsPage />} />` trong nhóm route `/admin`.
 
@@ -3657,7 +3719,7 @@ git commit -m "feat: add admin groups page with typed confirmation for deleting 
   10. **An toàn:** Bob gửi `<img src=x onerror=alert(1)> https://example.com javascript:alert(1)`; Alice thấy đúng văn bản, có một liên kết `https://example.com` với `rel="noopener noreferrer nofollow"`, không có phần tử `img`, không có hộp thoại `alert` nào bật lên.
   11. **Token:** `localStorage`/`sessionStorage` rỗng; trong các yêu cầu mạng của Alice không có URL WebSocket nào chứa token (kiểm `page.on('websocket')` và URL).
   12. **Điện thoại 390px:** trang không có cuộn ngang; chỉ thấy danh sách khi chưa chọn phòng và chỉ thấy hội thoại khi đã chọn (có nút "Về danh sách").
-  13. **Admin:** admin mở `/admin/rooms`, thấy "UI nhóm"; tạo nhóm "UI nhóm 2" với một thành viên; thử xoá bằng cách gõ sai tên → nút vẫn tắt; gõ đúng → xoá được.
+  13. **Admin:** admin mở `/admin/rooms`, thấy "UI nhóm"; tạo nhóm "UI nhóm 2" với một thành viên; thử lưu trữ bằng cách gõ sai tên → nút vẫn tắt; gõ đúng → nhóm biến mất khỏi danh sách của thành viên (trang của thành viên không cần tải lại), tab "Đã lưu trữ" hiện nhóm kèm hạn xoá; bấm "Khôi phục" → thành viên thấy lại nhóm và tin nhắn.
   14. **Khoá tài khoản:** admin khoá `ui.bob` qua REST; trang của Bob về trang đăng nhập trong vòng ~40 giây (đối soát định kỳ hoặc sự kiện ngắt kết nối), không vòng lặp kết nối lại.
   15. Không có lỗi `pageerror` nào (loại trừ các dòng log 401 của `/auth/refresh` lúc chưa đăng nhập).
 - Cuối script: in tổng kết `N/M đạt`, thoát mã 1 nếu có bước hỏng.
@@ -3676,7 +3738,7 @@ Expected: mọi bước `PASS`. Với bước hỏng: điều tra nguyên nhân 
 
 - [ ] **Step 3: Cập nhật README**
 
-Thêm mục "Giao diện chat" sau mục "Giao diện web": mô tả bố cục (danh sách phòng, hội thoại, "+ Mới" để nhắn riêng), hành vi (tin hiện ngay và tự gửi lại khi mạng có lại, số chưa đọc, sửa/xoá tin của mình, liên kết `http/https` tự nhận dạng), trang admin "Phòng và nhóm" (tạo/đổi tên/thêm bớt thành viên; **xoá nhóm là xoá vĩnh viễn toàn bộ tin nhắn, phải gõ lại tên nhóm**), và cách chạy kiểm tra trình duyệt thật (`scripts/e2e_chat_ui.mjs`, **chỉ trên stack thử nghiệm**, cần Playwright cài ngoài repo, các biến môi trường `PLAYWRIGHT_DIR`, `BASE_URL`, `ADMIN_USER`, `ADMIN_TEMP_PASSWORD`).
+Thêm mục "Giao diện chat" sau mục "Giao diện web": mô tả bố cục (danh sách phòng, hội thoại, "+ Mới" để nhắn riêng), hành vi (tin hiện ngay và tự gửi lại khi mạng có lại, số chưa đọc, sửa/xoá tin của mình, liên kết `http/https` tự nhận dạng), trang admin "Phòng và nhóm" (tạo/đổi tên/thêm bớt thành viên; **"xoá" nhóm là lưu trữ 3 ngày (gõ lại tên nhóm để xác nhận), khôi phục được trong thời gian đó, sau đó tự động xoá vĩnh viễn cùng tin nhắn**), và cách chạy kiểm tra trình duyệt thật (`scripts/e2e_chat_ui.mjs`, **chỉ trên stack thử nghiệm**, cần Playwright cài ngoài repo, các biến môi trường `PLAYWRIGHT_DIR`, `BASE_URL`, `ADMIN_USER`, `ADMIN_TEMP_PASSWORD`).
 
 - [ ] **Step 4: Chạy lại toàn bộ test và commit**
 
@@ -3704,7 +3766,7 @@ git commit -m "test: add real-browser chat end-to-end script and document the ch
 
 **Nhất quán kiểu và tên:** `ChatSocket`/`SocketStatus`, `ChatStore`/`ChatState`/`Thread`/`ChatMessage`, `ChatController` (`send` trả `client_id`, `retry(clientId)`, `remove(roomId, messageId)`), `chatApi.*`, hook `useRooms`/`useThread`/`useSocketStatus`/`useChatController`, nhãn tiếng Việt dùng thống nhất giữa component và test ("Nhập tin nhắn", "Gửi tin nhắn", "Sửa tin nhắn", "Xoá tin nhắn", "Cuộc trò chuyện mới", "Tìm người", "Lọc cuộc trò chuyện", "Về danh sách"...). Hợp đồng của `HomePage` cũ (lời chào, "Quản trị", "Đổi mật khẩu", "Đăng xuất") giữ nguyên trong chân thanh bên nên các test hiện có ít phải sửa.
 
-**Review Focus:** 7 dòng đều có test: token ở khung đầu (Task 3 `authenticates with the first frame...`, Task 6 `authenticates the socket...`); không bão kết nối lại/4403/4401 (Task 3); không trùng/không mất (Task 4 controller + Task 6 `reconnecting banner...` + Task 8 bước 6, 7); chưa đọc (Task 4 `describe unread...`); cuộn (Task 5 `MessageList`); tin xoá, liên kết nguy hiểm, bộ gõ (Task 2 `linkify`, Task 5 `MessageItem`/`Composer`); xoá nhóm cần gõ tên (Task 7 test 6, Task 8 bước 13).
+**Review Focus:** 7 dòng đều có test: token ở khung đầu (Task 3 `authenticates with the first frame...`, Task 6 `authenticates the socket...`); không bão kết nối lại/4403/4401 (Task 3); không trùng/không mất (Task 4 controller + Task 6 `reconnecting banner...` + Task 8 bước 6, 7); chưa đọc (Task 4 `describe unread...`); cuộn (Task 5 `MessageList`); tin xoá, liên kết nguy hiểm, bộ gõ (Task 2 `linkify`, Task 5 `MessageItem`/`Composer`); lưu trữ nhóm (Task 1b `test_room_archive.py`, Task 7 test 6/6b, Task 8 bước 13).
 
 ## Các plan tiếp theo
 
