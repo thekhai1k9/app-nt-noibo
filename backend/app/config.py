@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     cookie_samesite: Literal["lax", "strict"] = "lax"
     login_max_attempts: int = 5
     login_window_seconds: int = 300
+    ws_rate_limit_messages: int = 20
+    ws_rate_limit_seconds: int = 10
+    ws_auth_timeout_seconds: float = 5.0
+    max_message_length: int = 4000
     log_level: str = "INFO"
 
 

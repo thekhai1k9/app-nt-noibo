@@ -8,6 +8,8 @@ os.environ["JWT_SECRET"] = "test-secret"
 os.environ["APP_ENV"] = "test"
 os.environ["COOKIE_SECURE"] = "false"
 os.environ["LOGIN_MAX_ATTEMPTS"] = "3"
+os.environ["WS_RATE_LIMIT_MESSAGES"] = "5"
+os.environ["WS_AUTH_TIMEOUT_SECONDS"] = "1"
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
