@@ -148,6 +148,19 @@ describe('MessageList', () => {
     expect(screen.queryByRole('button', { name: 'Tải thêm tin cũ' })).not.toBeInTheDocument()
   })
 
+  it('keeps the same older-messages control while loading so the content above the messages does not change height', () => {
+    // Trình duyệt thật: đổi nút "Tải thêm tin cũ" (cao 44px) thành một dòng chữ thấp hơn lúc bắt đầu tải
+    // làm nội dung đang đọc nhảy lên ~24px mà không có gì bù lại (scrollTop đã ở 0 hoặc gần 0).
+    const { rerender } = render(<MessageList {...base} hasMoreBefore items={[m(5)]} />)
+    const control = screen.getByRole('button', { name: 'Tải thêm tin cũ' })
+    rerender(<MessageList {...base} hasMoreBefore loadingOlder items={[m(5)]} />)
+    const loading = screen.getByRole('button', { name: 'Đang tải tin cũ…' })
+    expect(loading).toBe(control)
+    expect(loading).toBeDisabled()
+    rerender(<MessageList {...base} hasMoreBefore items={[m(5)]} />) // tải lỗi: trở lại như cũ
+    expect(screen.getByRole('button', { name: 'Tải thêm tin cũ' })).toBe(control)
+  })
+
   it('keeps the previous height reference fresh when the height changes without item changes', () => {
     const metrics = { scrollHeight: 500, clientHeight: 400, scrollTop: 0 }
     const { rerender } = render(<MessageList {...base} hasMoreBefore items={[m(5), m(6)]} />)

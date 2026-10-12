@@ -120,11 +120,12 @@ export function MessageList(props: Props) {
           </div>
         )}
         {!loaded && !error && <div className="muted msg-note">Đang tải…</div>}
-        {loadingOlder && <div className="muted msg-note">Đang tải tin cũ…</div>}
-        {loaded && hasMoreBefore && !loadingOlder && (
+        {loaded && hasMoreBefore && (
+          // Một nút cho cả hai trạng thái: thay nút bằng dòng chữ thấp hơn lúc bắt đầu tải sẽ làm nội dung
+          // đang đọc nhảy lên (không có tin mới nên phần bù vị trí cuộn không chạy).
           <div className="msg-note">
-            <button type="button" className="btn btn-ghost" onClick={props.onLoadOlder}>
-              Tải thêm tin cũ
+            <button type="button" className="btn btn-ghost" disabled={loadingOlder} onClick={props.onLoadOlder}>
+              {loadingOlder ? 'Đang tải tin cũ…' : 'Tải thêm tin cũ'}
             </button>
           </div>
         )}
