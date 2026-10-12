@@ -16,6 +16,20 @@ Triển khai thật (không mở cổng DB/Redis ra ngoài):
 docker compose -f docker-compose.yml up -d --build
 ```
 
+## Giao diện web
+
+Sau khi `docker compose up -d --build`, mở `http://<địa-chỉ-máy-chủ>/` trong trình duyệt. Đăng nhập bằng tài khoản admin tạo ở bước trên; lần đầu hệ thống bắt đổi mật khẩu.
+
+Phát triển giao diện (cần Node 22+; stack docker compose đang chạy để có API):
+
+```bash
+cd frontend
+npm install
+npm run dev      # http://localhost:5173, /api được proxy sang http://localhost:80
+npm test         # chạy test (Vitest)
+npm run build    # kiểm tra kiểu và build ra frontend/dist
+```
+
 ## Tạo tài khoản quản trị đầu tiên
 
 ```bash

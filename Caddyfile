@@ -1,8 +1,11 @@
 :80 {
+	encode gzip
 	handle /api/* {
 		reverse_proxy api:8000
 	}
 	handle {
-		respond "Kết Nối: giao diện web chưa được cài đặt." 200
+		root * /srv
+		try_files {path} /index.html
+		file_server
 	}
 }
