@@ -28,3 +28,20 @@ async def test_failure_counter_expires():
     await register_failure(redis, "k4", 60)
     ttl = await redis.ttl("k4")
     assert 0 < ttl <= 60
+
+
+async def test_register_failure_restores_missing_ttl():
+    redis = get_redis()
+    await redis.set("k5", 2)
+    assert await redis.ttl("k5") == -1
+    await register_failure(redis, "k5", 60)
+    ttl = await redis.ttl("k5")
+    assert 0 < ttl <= 60
+
+
+async def test_second_failure_does_not_extend_window():
+    redis = get_redis()
+    await register_failure(redis, "k6", 60)
+    await redis.expire("k6", 30)
+    await register_failure(redis, "k6", 60)
+    assert 0 < await redis.ttl("k6") <= 30
