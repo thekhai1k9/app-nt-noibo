@@ -318,7 +318,7 @@ async def test_frame_above_the_transport_ceiling_closes_the_connection(live_serv
     await create_user("alice")
     ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
     await ws.send("x" * 100_000)
-    assert await wait_closed(ws) is not None
+    assert await wait_closed(ws) == 1009  # chặn ở tầng transport (uvicorn ws_max_size), app chưa thấy frame nên không phải 4413
 
 
 async def test_frame_of_exactly_the_limit_is_an_ordinary_frame(live_server):
@@ -373,3 +373,31 @@ async def test_database_failure_while_authenticating_closes_with_1011(live_serve
     ws = await connect(f"{live_server.ws}/api/ws")
     await ws.send(json.dumps({"type": "auth", "token": token}))
     assert await wait_closed(ws) == 1011
+
+
+# ---------- client_id ----------
+
+async def test_client_id_longer_than_64_chars_is_rejected_and_nothing_is_stored(live_server):
+    a = await create_user("alice")
+    room = await create_room(member_ids=[a])
+    ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
+    await _send(ws, room, "id quá dài", "c" * 65)
+    assert await recv_json(ws) == {"type": "error", "code": "invalid_client_id", "client_id": None}
+    await ws.send(json.dumps({"type": "ping"}))
+    assert await recv_json(ws) == {"type": "pong"}
+    assert (await _messages_in(room)) == []
+    await ws.close()
+
+
+async def test_client_id_of_64_chars_works_and_is_idempotent(live_server):
+    a = await create_user("alice")
+    room = await create_room(member_ids=[a])
+    ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
+    cid = "c" * 64
+    await _send(ws, room, "một lần", cid)
+    first = await recv_json(ws)
+    assert first["message"]["client_id"] == cid
+    await _send(ws, room, "một lần", cid)
+    assert (await recv_json(ws))["message"]["id"] == first["message"]["id"]
+    assert len(await _messages_in(room)) == 1
+    await ws.close()

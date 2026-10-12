@@ -72,7 +72,7 @@ async def _authenticate(websocket: WebSocket) -> User | None:
 async def _close(websocket: WebSocket, code: int) -> None:
     try:
         await websocket.close(code=code)
-    except RuntimeError:
+    except (RuntimeError, WebSocketDisconnect, OSError):  # client đã biến mất hoặc đã đóng
         pass
 
 
@@ -100,7 +100,7 @@ async def _handle_send(conn: Connection, hub: Hub, data: dict, window: deque) ->
         return
     try:
         async with SessionLocal() as session:
-            message, sender_name, created = await service.send_message(session, conn.user_id, room_id, body, client_id)
+            message, sender_name, created = await service.send_message(session, conn.user_id, room_id, body, raw_client_id)
     except ChatError as err:
         if err.status == 401:
             conn.close(CLOSE_UNAUTHENTICATED)
