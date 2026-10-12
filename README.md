@@ -60,11 +60,11 @@ PLAYWRIGHT_DIR=/tmp/kn-e2e BASE_URL=http://localhost ADMIN_USER=ui.admin ADMIN_T
   node scripts/e2e_chat_ui.mjs
 ```
 
-Mật khẩu mới của admin do script sinh ngẫu nhiên và in ra một lần ở đầu; muốn chạy lại trên cùng stack, đặt `E2E_ADMIN_NEW_PASSWORD=<mật khẩu đó>` (hoặc tự đặt giá trị ngay từ lần đầu).
+Mật khẩu mới của admin do script sinh ngẫu nhiên và in ra một lần ở đầu; chạy lại trên cùng stack **bắt buộc** đặt `E2E_ADMIN_NEW_PASSWORD=<mật khẩu đã in>` (hoặc tự đặt giá trị ngay từ lần đầu).
 
 Ghi chú: script từ chối `BASE_URL` không phải localhost trừ khi đặt `E2E_ALLOW_REMOTE=1`. `context.setOffline` của Chromium không ngắt WebSocket, nên script đưa WebSocket qua proxy của Playwright (`routeWebSocket`) và tự cắt kết nối để mô phỏng mất mạng.
 
-Script in `PASS`/`FAIL` cho từng bước, tổng kết `N/M đạt` và thoát mã 1 nếu có bước hỏng. Tuỳ chọn: `SHOT_DIR=<thư mục>` để lưu ảnh chụp các trang khi một bước hỏng, `HEADED=1` để xem trình duyệt chạy. Tên người dùng và nhóm có hậu tố ngẫu nhiên nên chạy lại được trên cùng stack (admin đã đổi mật khẩu ở lần chạy trước vẫn dùng được).
+Script in `PASS`/`FAIL` cho từng bước, tổng kết `N/M đạt` và thoát mã 1 nếu có bước hỏng. Tuỳ chọn: `SHOT_DIR=<thư mục>` để lưu ảnh chụp các trang khi một bước hỏng, `HEADED=1` để xem trình duyệt chạy. Tên người dùng và nhóm có hậu tố ngẫu nhiên nên chạy lại được trên cùng stack (admin đã đổi mật khẩu ở lần chạy trước chỉ dùng lại được khi đặt `E2E_ADMIN_NEW_PASSWORD` đúng giá trị đã in).
 
 ## API chat (tóm tắt)
 

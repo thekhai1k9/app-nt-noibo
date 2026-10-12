@@ -30,6 +30,10 @@ export class ChatController {
   private readonly pendingMeta = new Map<string, PendingMeta>()
   private readonly lastMarked = new Map<number, number>()
   private readonly latestInFlight = new Map<number, Promise<void>>()
+  /** Mốc bù tin theo phòng: CHỈ tăng từ trang REST (không bao giờ từ tin trực tiếp), nên một lần bù lỗi không làm mất khoảng trống. */
+  private readonly syncedThrough = new Map<number, number>()
+  private readonly catchUpRuns = new Map<number, Promise<void>>()
+  private readonly catchUpAgain = new Set<number>()
 
   constructor(private readonly deps: ChatControllerDeps) {}
 
@@ -63,12 +67,16 @@ export class ChatController {
 
   /** Phòng đã bị lưu trữ/xoá khỏi danh sách: bỏ thread, tin đang chờ, hẹn giờ để khỏi gọi API vô ích. */
   private pruneRemovedRooms(alive: Set<number>): void {
-    const gone = Object.keys(this.deps.store.getState().threads).map(Number).filter((id) => !alive.has(id))
+    const threads = this.deps.store.getState().threads
+    // Không bỏ phòng đang xem hay thread còn tin chờ gửi; bản chụp sau sẽ dọn nếu phòng thật sự đã mất.
+    const gone = Object.keys(threads)
+      .map(Number)
+      .filter((id) => !alive.has(id) && id !== this.activeRoom && !threads[id].items.some((m) => m.pending))
     if (gone.length === 0) return
-    for (const [clientId, meta] of [...this.pendingMeta]) {
-      if (!alive.has(meta.roomId)) this.confirm(clientId)
+    for (const id of gone) {
+      this.lastMarked.delete(id)
+      this.syncedThrough.delete(id)
     }
-    for (const id of gone) this.lastMarked.delete(id)
     this.deps.store.removeThreads(gone)
   }
 
@@ -84,6 +92,7 @@ export class ChatController {
     try {
       const page = await this.deps.api.messages(roomId, { limit: PAGE_SIZE })
       this.deps.store.applyLatest(roomId, page)
+      this.syncedThrough.set(roomId, page.items.reduce((acc, m) => Math.max(acc, m.id), 0))
       this.confirmDelivered(page.items)
     } catch {
       this.deps.store.setThreadError(roomId, true)
@@ -96,20 +105,43 @@ export class ChatController {
     return null
   }
 
-  private async catchUp(roomId: number, cursor?: number | null): Promise<void> {
-    let after = cursor !== undefined ? cursor : this.lastRealId(roomId)
+  /** Bù tin từ mốc REST. Nếu đang có một lần bù cho phòng này thì hẹn chạy lại đúng một lần sau khi nó xong. */
+  private catchUp(roomId: number): Promise<void> {
+    const running = this.catchUpRuns.get(roomId)
+    if (running) {
+      this.catchUpAgain.add(roomId)
+      return running
+    }
+    const loop = async (): Promise<void> => {
+      do {
+        this.catchUpAgain.delete(roomId)
+        await this.catchUpOnce(roomId)
+      } while (this.catchUpAgain.has(roomId))
+    }
+    const run = loop().finally(() => {
+      this.catchUpRuns.delete(roomId)
+    })
+    this.catchUpRuns.set(roomId, run)
+    return run
+  }
+
+  private async catchUpOnce(roomId: number): Promise<void> {
+    let after = this.syncedThrough.get(roomId) ?? this.lastRealId(roomId)
     if (after === null) return this.loadLatest(roomId)
     try {
       for (let i = 0; i < CATCH_UP_MAX_PAGES; i++) {
         const page = await this.deps.api.messages(roomId, { after, limit: CATCH_UP_PAGE })
         this.deps.store.applyAfter(roomId, page)
         this.confirmDelivered(page.items)
+        if (page.items.length > 0) {
+          after = page.items[page.items.length - 1].id
+          this.syncedThrough.set(roomId, Math.max(this.syncedThrough.get(roomId) ?? 0, after))
+        }
         if (!page.has_more_after || page.items.length === 0) return
-        after = page.items[page.items.length - 1].id
       }
-      await this.loadLatest(roomId) // lỡ quá nhiều tin: tải lại trang mới nhất
+      await this.loadLatest(roomId) // lỡ quá nhiều tin: tải lại trang mới nhất (đặt lại mốc)
     } catch {
-      // lần ready/resync sau sẽ bù tiếp
+      // mốc giữ nguyên: lần ready/resync/openRoom sau sẽ bù tiếp từ đúng chỗ
     }
   }
 
@@ -241,21 +273,15 @@ export class ChatController {
   }
 
   private async resync(): Promise<void> {
-    // Chụp con trỏ bù tin ĐỒNG BỘ trước mọi await/gửi lại: tin trực tiếp (hoặc echo của tin gửi lại)
-    // đến trong lúc chờ có thể đẩy lastRealId vượt qua khoảng còn thiếu.
     const threads = this.deps.store.getState().threads
-    const cursors = new Map<number, number | null>()
+    const loadedRooms = Object.entries(threads).filter(([, t]) => t.loaded).map(([k]) => Number(k))
     const loading: number[] = []
-    for (const [key, thread] of Object.entries(threads)) {
-      const roomId = Number(key)
-      if (thread.loaded) cursors.set(roomId, this.lastRealId(roomId))
-    }
     // Lần tải đầu có thể chưa tạo thread nào trong store, nên duyệt theo các lần tải đang chạy.
-    for (const roomId of this.latestInFlight.keys()) if (!cursors.has(roomId)) loading.push(roomId)
+    for (const roomId of this.latestInFlight.keys()) if (!loadedRooms.includes(roomId)) loading.push(roomId)
     this.resendPending()
     const work: Promise<void>[] = [this.loadRooms()]
-    for (const [roomId, cursor] of cursors) {
-      work.push(this.catchUp(roomId, cursor).then(() => this.markReadIfViewing(roomId)))
+    for (const roomId of loadedRooms) {
+      work.push(this.catchUp(roomId).then(() => this.markReadIfViewing(roomId)))
     }
     for (const roomId of loading) {
       // Lần tải đầu đang chạy có thể đã chụp trước khi mất kết nối: tải lại trang mới nhất khi nó xong.
@@ -322,6 +348,8 @@ export class ChatController {
 
   async openDirect(userId: number): Promise<Room> {
     const room = await this.deps.api.openDirect(userId)
+    // Bản chụp /rooms cũ đang bay (không có phòng này) sẽ bị bỏ; tải lại để có bản mới.
+    void this.loadRooms()
     this.deps.store.upsertRoom(room)
     return room
   }

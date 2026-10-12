@@ -7,7 +7,8 @@
 // Chạy (từ thư mục gốc repo, Node 22+):
 //   PLAYWRIGHT_DIR=<dir> BASE_URL=http://localhost ADMIN_USER=ui.admin ADMIN_TEMP_PASSWORD=<mật khẩu tạm> \
 //     node scripts/e2e_chat_ui.mjs
-// Tuỳ chọn: SHOT_DIR=<thư mục> (nơi lưu ảnh chụp khi một bước hỏng, mặc định thư mục tạm của hệ điều hành),
+// Tuỳ chọn: E2E_ADMIN_NEW_PASSWORD=<mật khẩu mới của admin> (mặc định sinh ngẫu nhiên và in ra một lần; chạy lại trên cùng stack BẮT BUỘC đặt đúng giá trị đã in),
+//           SHOT_DIR=<thư mục> (nơi lưu ảnh chụp khi một bước hỏng, mặc định thư mục tạm của hệ điều hành),
 //           HEADED=1 (mở cửa sổ trình duyệt).
 // In PASS/FAIL cho từng bước, cuối cùng in "N/M đạt" và thoát mã 1 nếu có bước hỏng.
 import { randomBytes } from 'node:crypto'

@@ -344,6 +344,7 @@ describe('ChatController: edit, delete, direct rooms', () => {
   it('opens a direct room and adds it to the list', async () => {
     const { controller, api, store } = setup()
     api.openDirect.mockResolvedValueOnce(room(9, { type: 'direct', name: 'Hà', peer_id: 5 }))
+    api.rooms.mockResolvedValue([room(1), room(9, { type: 'direct', name: 'Hà', peer_id: 5 })]) // the server list includes the new room
     const opened = await controller.openDirect(5)
     expect(opened.id).toBe(9)
     expect(store.getState().rooms.some((r) => r.id === 9)).toBe(true)
@@ -577,21 +578,85 @@ describe('ChatController: resync cursor and room pruning', () => {
     expect(idsOf(store)).toEqual([1, 2, 3, 4, 5])
   })
 
-  it('drops threads, pending messages and timers of rooms that left the list', async () => {
-    const { controller, api, store, socket } = setup()
+  it('drops threads of rooms that left the list, but keeps the active room and threads with pending messages', async () => {
+    const { controller, api, store } = setup()
+    api.rooms.mockResolvedValue([room(1), room(2), room(3), room(4)])
+    await controller.loadRooms()
+    for (const id of [1, 2, 3, 4]) await controller.openRoom(id)
+    controller.setActiveRoom(2)
+    controller.send(3, 'x')
+    api.rooms.mockResolvedValueOnce([room(5)])
+    await controller.loadRooms()
+    const keys = Object.keys(store.getState().threads).map(Number).sort()
+    expect(keys).toEqual([2, 3])
+  })
+
+  it('does not GET messages for a pruned room on the next ready', async () => {
+    const { controller, api } = setup()
     await controller.loadRooms()
     await controller.openRoom(1)
-    controller.send(1, 'x')
     api.rooms.mockResolvedValueOnce([room(2)])
     await controller.loadRooms()
-    expect(store.getState().threads[1]).toBeUndefined()
-    vi.advanceTimersByTime(60_000)
     api.messages.mockClear()
-    socket.send.mockClear()
     controller.handleSocketEvent({ type: 'ready', user_id: 1 })
     await flush()
     expect(api.messages).not.toHaveBeenCalled()
-    expect(socket.send).not.toHaveBeenCalled()
+  })
+
+  it('keeps the gap recoverable after a failed catch-up followed by a live message and a second ready', async () => {
+    const { controller, api, store } = await loadedTo50()
+    api.messages.mockRejectedValueOnce(new Error('x'))
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    controller.handleSocketEvent({ type: 'message', message: msg(100) })
+    await flush()
+    expect(api.messages).toHaveBeenLastCalledWith(1, { after: 50, limit: 100 })
+    api.messages.mockResolvedValue({ items: range(51, 99).map((i) => msg(i)), has_more_before: false, has_more_after: false })
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    await flush()
+    expect(api.messages).toHaveBeenLastCalledWith(1, { after: 50, limit: 100 })
+    expect(idsOf(store)).toEqual([49, 50, ...range(51, 99), 100])
+  })
+
+  it('advances the watermark from REST pages only, and openRoom retries from it after a failure', async () => {
+    const { controller, api } = await loadedTo50()
+    controller.handleSocketEvent({ type: 'message', message: msg(80) }) // live: must not move the watermark
+    api.messages.mockRejectedValueOnce(new Error('x'))
+    await controller.openRoom(1)
+    expect(api.messages).toHaveBeenLastCalledWith(1, { after: 50, limit: 100 })
+    api.messages.mockResolvedValueOnce({ items: range(51, 60).map((i) => msg(i)), has_more_before: false, has_more_after: false })
+    await controller.openRoom(1)
+    expect(api.messages).toHaveBeenLastCalledWith(1, { after: 50, limit: 100 })
+    api.messages.mockResolvedValueOnce({ items: [msg(61)], has_more_before: false, has_more_after: false })
+    await controller.openRoom(1)
+    expect(api.messages).toHaveBeenLastCalledWith(1, { after: 60, limit: 100 })
+  })
+
+  it('runs one more catch-up after the running one instead of starting a duplicate', async () => {
+    const { controller, api } = await loadedTo50()
+    let resolveFirst: (p: MessagePage) => void = () => {}
+    api.messages.mockImplementationOnce(() => new Promise<MessagePage>((r) => { resolveFirst = r }))
+    const first = controller.openRoom(1)
+    const second = controller.openRoom(1)
+    const third = controller.openRoom(1)
+    expect(api.messages).toHaveBeenCalledTimes(2) // initial load + one running catch-up
+    api.messages.mockResolvedValue({ items: [], has_more_before: false, has_more_after: false })
+    resolveFirst({ items: [msg(51)], has_more_before: false, has_more_after: false })
+    await Promise.all([first, second, third])
+    expect(api.messages).toHaveBeenCalledTimes(3)
+    expect(api.messages).toHaveBeenLastCalledWith(1, { after: 51, limit: 100 })
+  })
+
+  it('an older in-flight rooms snapshot cannot overwrite a direct room added meanwhile', async () => {
+    const { controller, api, store } = setup()
+    let resolveRooms: (r: Room[]) => void = () => {}
+    api.rooms.mockImplementationOnce(() => new Promise<Room[]>((r) => { resolveRooms = r }))
+    const loading = controller.loadRooms()
+    api.openDirect.mockResolvedValueOnce(room(9, { type: 'direct' }))
+    api.rooms.mockResolvedValueOnce([room(1), room(9, { type: 'direct' })])
+    await controller.openDirect(5)
+    resolveRooms([room(1)])
+    await loading
+    await flush()
+    expect(store.getState().rooms.some((r) => r.id === 9)).toBe(true)
   })
 })
-
