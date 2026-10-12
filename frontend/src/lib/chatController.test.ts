@@ -910,7 +910,7 @@ describe('ChatController: review follow-ups', () => {
     controller.setActiveRoom(1)
     controller.handleSocketEvent({ type: 'resync' })
     await flush()
-    expect(api.presence).toHaveBeenCalledTimes(2)
+    expect(api.presence).toHaveBeenCalledTimes(1)
     expect(api.members).toHaveBeenCalledWith(1)
   })
 
