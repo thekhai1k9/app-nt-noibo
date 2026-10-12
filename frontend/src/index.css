@@ -119,6 +119,7 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
 }
 .table-head { background: #f9fafb; font-size: 12px; font-weight: 600; color: var(--muted); }
 .users-grid { grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.3fr) auto; }
+.rooms-grid { grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr) minmax(0, 0.8fr) auto; }
 .cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
 .avatar {
   width: 36px; height: 36px; border-radius: 50%; flex: none; background: #d5d9eb; color: #2d3470;

@@ -11,6 +11,7 @@ export function AdminLayout() {
         <div className="stack" style={{ gap: 4 }}>
           <NavLink to="/admin/users">Người dùng</NavLink>
           <NavLink to="/admin/branches">Chi nhánh</NavLink>
+          <NavLink to="/admin/rooms">Phòng và nhóm</NavLink>
         </div>
         <NavLink to="/" className="back" end>
           Về trò chuyện

@@ -11,6 +11,7 @@ import { LoginPage } from './pages/LoginPage'
 
 const AdminLayout = lazy(() => import('./pages/admin/AdminLayout').then((m) => ({ default: m.AdminLayout })))
 const BranchesPage = lazy(() => import('./pages/admin/BranchesPage').then((m) => ({ default: m.BranchesPage })))
+const RoomsPage = lazy(() => import('./pages/admin/RoomsPage').then((m) => ({ default: m.RoomsPage })))
 const UsersPage = lazy(() => import('./pages/admin/UsersPage').then((m) => ({ default: m.UsersPage })))
 
 export function AppRoutes() {
@@ -50,6 +51,7 @@ export function AppRoutes() {
             <Route index element={<Navigate to="users" replace />} />
             <Route path="users" element={<UsersPage />} />
             <Route path="branches" element={<BranchesPage />} />
+            <Route path="rooms" element={<RoomsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

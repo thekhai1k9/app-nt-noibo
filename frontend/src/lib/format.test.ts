@@ -1,4 +1,4 @@
-import { dayLabel, formatTime, initials, listTime, sameDay } from './format'
+import { dayLabel, formatDateTime, formatTime, initials, listTime, sameDay } from './format'
 
 const now = new Date(2026, 9, 15, 12, 0, 0) // 15/10/2026 12:00 giờ địa phương
 const at = (y: number, m: number, d: number, h = 9, min = 5) => new Date(y, m - 1, d, h, min).toISOString()
@@ -12,6 +12,10 @@ describe('format', () => {
 
   it('formats the time of day as HH:mm', () => {
     expect(formatTime(at(2026, 10, 15, 9, 5))).toBe('09:05')
+  })
+
+  it('formats date and time as dd/MM/yyyy HH:mm', () => {
+    expect(formatDateTime(at(2026, 10, 18, 9, 5))).toBe('18/10/2026 09:05')
   })
 
   it('labels days relative to now', () => {

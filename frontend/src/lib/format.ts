@@ -40,3 +40,9 @@ export function listTime(iso: string, now: Date = new Date()): string {
   const d = new Date(iso)
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}`
 }
+
+/** dd/MM/yyyy HH:mm theo giờ địa phương. */
+export function formatDateTime(iso: string): string {
+  const d = new Date(iso)
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}

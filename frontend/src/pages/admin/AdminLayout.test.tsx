@@ -21,6 +21,14 @@ describe('AdminLayout', () => {
     expect(within(nav).getByRole('link', { name: 'Chi nhánh' })).not.toHaveAttribute('aria-current')
   })
 
+  it('links to the groups page and marks it current there', async () => {
+    mockFetch({ ...admin(), ...emptyAdminData, 'GET /api/admin/rooms': { json: [] } })
+    renderApp('/admin/rooms')
+    const nav = await screen.findByRole('navigation', { name: 'Quản trị' })
+    expect(within(nav).getByRole('link', { name: 'Phòng và nhóm' })).toHaveAttribute('aria-current', 'page')
+    expect(within(nav).getByRole('link', { name: 'Chi nhánh' })).not.toHaveAttribute('aria-current')
+  })
+
   it('navigates between sections and back to the chat', async () => {
     mockFetch({ ...admin(), ...emptyAdminData })
     renderApp('/admin/users')
