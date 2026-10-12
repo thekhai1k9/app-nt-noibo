@@ -8,7 +8,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.chat import service
 from app.chat.bus import publish_room_safely
-from app.chat.hub import Connection, Hub
+from app.chat.hub import Connection, Hub, apply_room_snapshot
 from app.chat.schemas import to_message_out
 from app.chat.service import ChatError
 from app.config import get_settings
@@ -19,16 +19,36 @@ from app.security import decode_access_token
 log = logging.getLogger(__name__)
 router = APIRouter()
 
-MAX_FRAME_CHARS = 16_384
+MAX_FRAME_BYTES = 16_384
+MAX_ROOM_ID = 2**31 - 1
+MAX_CLIENT_ID_CHARS = 64
 CLOSE_UNAUTHENTICATED = 4401
 CLOSE_FRAME_TOO_LARGE = 4413
+CLOSE_INTERNAL_ERROR = 1011
+
+
+def _client_id(value) -> str | None:
+    """Chỉ echo lại client_id hợp lệ (chuỗi tối đa 64 ký tự), còn lại là null."""
+    return value if isinstance(value, str) and len(value) <= MAX_CLIENT_ID_CHARS else None
+
+
+async def _receive(websocket: WebSocket) -> str | None:
+    """Nhận một frame; trả None nếu không phải text (binary hoặc loại khác)."""
+    message = await websocket.receive()
+    if message["type"] == "websocket.disconnect":
+        raise WebSocketDisconnect(message.get("code", 1000))
+    text = message.get("text")
+    return text if isinstance(text, str) else None
 
 
 async def _authenticate(websocket: WebSocket) -> User | None:
     settings = get_settings()
     try:
-        raw = await asyncio.wait_for(websocket.receive_text(), timeout=settings.ws_auth_timeout_seconds)
-        data = json.loads(raw)
+        raw = await asyncio.wait_for(_receive(websocket), timeout=settings.ws_auth_timeout_seconds)
+        if raw is not None and len(raw.encode("utf-8")) > MAX_FRAME_BYTES:
+            await _close(websocket, CLOSE_FRAME_TOO_LARGE)
+            return None
+        data = json.loads(raw) if raw is not None else None
     except (asyncio.TimeoutError, ValueError, WebSocketDisconnect, RuntimeError):
         await _close(websocket, CLOSE_UNAUTHENTICATED)
         return None
@@ -36,8 +56,13 @@ async def _authenticate(websocket: WebSocket) -> User | None:
     user_id = decode_access_token(token) if isinstance(token, str) else None
     user = None
     if user_id is not None:
-        async with SessionLocal() as session:
-            user = await session.get(User, user_id)
+        try:
+            async with SessionLocal() as session:
+                user = await session.get(User, user_id)
+        except Exception:
+            log.exception("websocket auth: failed to load user")
+            await _close(websocket, CLOSE_INTERNAL_ERROR)
+            return None
     if user is None or not user.is_active or user.must_change_password:
         await _close(websocket, CLOSE_UNAUTHENTICATED)
         return None
@@ -53,7 +78,7 @@ async def _close(websocket: WebSocket, code: int) -> None:
 
 async def _handle_send(conn: Connection, hub: Hub, data: dict, window: deque) -> None:
     settings = get_settings()
-    client_id = data.get("client_id")
+    client_id = _client_id(data.get("client_id"))
     now = time.monotonic()
     while window and now - window[0] > settings.ws_rate_limit_seconds:
         window.popleft()
@@ -63,13 +88,15 @@ async def _handle_send(conn: Connection, hub: Hub, data: dict, window: deque) ->
     window.append(now)
 
     room_id, body = data.get("room_id"), data.get("body")
+    raw_client_id = data.get("client_id")
     if (
         not isinstance(room_id, int)
         or isinstance(room_id, bool)
+        or not (1 <= room_id <= MAX_ROOM_ID)
         or not isinstance(body, str)
-        or not (client_id is None or isinstance(client_id, str))
+        or not (raw_client_id is None or isinstance(raw_client_id, str))
     ):
-        conn.offer({"type": "error", "code": "invalid_message", "client_id": client_id if isinstance(client_id, str) else None})
+        conn.offer({"type": "error", "code": "invalid_message", "client_id": client_id})
         return
     try:
         async with SessionLocal() as session:
@@ -79,6 +106,10 @@ async def _handle_send(conn: Connection, hub: Hub, data: dict, window: deque) ->
             conn.close(CLOSE_UNAUTHENTICATED)
             return
         conn.offer({"type": "error", "code": err.code, "client_id": client_id})
+        return
+    except Exception:
+        log.exception("websocket send failed")
+        conn.offer({"type": "error", "code": "internal_error", "client_id": client_id})
         return
     event = {"type": "message", "message": to_message_out(message, sender_name).model_dump(mode="json")}
     if not created:
@@ -90,8 +121,11 @@ async def _handle_send(conn: Connection, hub: Hub, data: dict, window: deque) ->
 async def _reader(websocket: WebSocket, conn: Connection, hub: Hub) -> None:
     window: deque[float] = deque()
     while True:
-        raw = await websocket.receive_text()
-        if len(raw) > MAX_FRAME_CHARS:
+        raw = await _receive(websocket)
+        if raw is None:
+            conn.offer({"type": "error", "code": "unsupported_frame", "client_id": None})
+            continue
+        if len(raw.encode("utf-8")) > MAX_FRAME_BYTES:
             conn.close(CLOSE_FRAME_TOO_LARGE)
             return
         try:
@@ -128,7 +162,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     hub.register(conn)
     try:
         async with SessionLocal() as session:
-            conn.room_ids = await service.user_room_ids(session, user.id)
+            version = conn.version
+            ids = await service.user_room_ids(session, user.id)
+        apply_room_snapshot(conn, version, ids)  # bỏ qua nếu hub đã áp dụng snapshot mới hơn trong lúc chờ
         await websocket.send_json({"type": "ready", "user_id": user.id})
         tasks = {
             asyncio.create_task(_reader(websocket, conn, hub)),
@@ -140,10 +176,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await asyncio.gather(*pending, return_exceptions=True)
         for task in done:
             exc = task.exception()
-            if exc is not None and not isinstance(exc, (WebSocketDisconnect, RuntimeError)):
+            if isinstance(exc, RuntimeError):
+                log.debug("websocket task ended with RuntimeError", exc_info=exc)
+            elif exc is not None and not isinstance(exc, WebSocketDisconnect):
                 log.error("websocket task failed", exc_info=exc)
-        if conn.close_code is not None and conn.queue.qsize():
-            # reader tự đóng (ví dụ 4413): để writer kịp đóng WebSocket với mã đã đặt
+        if conn.close_code is not None:
+            # reader tự đóng (ví dụ 4413) hoặc writer bị huỷ trước khi kịp đóng; _close nuốt lỗi đóng đôi
             await _close(websocket, conn.close_code)
     finally:
         hub.unregister(conn)

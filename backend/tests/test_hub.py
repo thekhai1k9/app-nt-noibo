@@ -2,7 +2,7 @@ import asyncio
 from contextlib import suppress
 
 from app.chat.bus import BusEvent
-from app.chat.hub import Connection, Hub
+from app.chat.hub import Connection, Hub, apply_room_snapshot
 from app.db import SessionLocal
 from app.models import RoomMember
 from tests.conftest import create_room, create_user
@@ -124,17 +124,19 @@ async def test_no_resync_while_the_bus_keeps_failing_before_it_ever_subscribed()
 
 
 async def test_run_sends_exactly_one_resync_after_resubscribing_and_events_flow_again():
+    alice = await create_user("alice")
+    room = await create_room(member_ids=[alice])  # sau resync hub nạp lại thành viên từ DB
     bus = InMemoryBus()
     bus.fail_after_subscribe = 1
     hub = Hub(bus, SessionLocal, reconnect_delay=0.01)
-    conn = Connection(1, [10])
+    conn = Connection(alice, [room])
     hub.register(conn)
     task = asyncio.create_task(hub.run())
     try:
         await wait_for_queue(conn)
         await asyncio.sleep(0.1)
         assert drain(conn) == [{"type": "resync"}]
-        await bus.publish_room(10, {"type": "message", "n": 2})  # hub đã nghe lại được
+        await bus.publish_room(room, {"type": "message", "n": 2})  # hub đã nghe lại được
         await wait_for_queue(conn)
         assert drain(conn) == [{"type": "message", "n": 2}]
     finally:
@@ -173,3 +175,64 @@ async def test_non_dict_payload_is_ignored():
     await hub._dispatch(BusEvent("user", 1, "rooms_changed"))
     assert drain(conn) == []
     assert conn.close_code is None
+
+
+async def test_apply_room_snapshot_skips_a_stale_snapshot_after_the_hub_reloaded():
+    alice = await create_user("alice")
+    room = await create_room(member_ids=[alice])
+    hub = Hub(InMemoryBus(), SessionLocal)
+    conn = Connection(alice, [])
+    hub.register(conn)
+    seen = conn.version  # endpoint đọc snapshot cũ (rỗng) rồi bị hub vượt mặt
+    await hub._dispatch(BusEvent("user", alice, {"type": "rooms_changed"}))
+    assert conn.room_ids == {room} and conn.version == seen + 1
+    assert apply_room_snapshot(conn, seen, set()) is False
+    assert conn.room_ids == {room}
+    assert apply_room_snapshot(conn, conn.version, {room, 99}) is True
+    assert conn.room_ids == {room, 99}
+
+
+async def test_resubscribing_reloads_membership_for_all_connections():
+    alice, bob = await create_user("alice"), await create_user("bob")
+    room = await create_room(member_ids=[alice])
+    bus = InMemoryBus()
+    bus.fail_after_subscribe = 1
+    hub = Hub(bus, SessionLocal, reconnect_delay=0.01)
+    stale_a, stale_b, tab2 = Connection(alice, [12345]), Connection(bob, [room]), Connection(alice, [])
+    for c in (stale_a, stale_b, tab2):
+        hub.register(c)
+    task = asyncio.create_task(hub.run())
+    try:
+        await wait_for_queue(stale_a)
+        await asyncio.sleep(0.1)
+        assert stale_a.room_ids == {room} and tab2.room_ids == {room}
+        assert stale_b.room_ids == set()
+        assert drain(stale_a) == [{"type": "resync"}]
+    finally:
+        await stop(task)
+
+
+async def test_a_failing_membership_reload_does_not_kill_the_listener():
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def broken_session():
+        raise ConnectionError("db down")
+        yield
+
+    bus = InMemoryBus()
+    bus.fail_after_subscribe = 1
+    hub = Hub(bus, broken_session, reconnect_delay=0.01)
+    conn = Connection(1, [10])
+    hub.register(conn)
+    task = asyncio.create_task(hub.run())
+    try:
+        await wait_for_queue(conn)
+        await asyncio.sleep(0.1)
+        assert drain(conn) == [{"type": "resync"}]
+        assert conn.room_ids == {10}
+        await bus.publish_room(10, {"type": "message", "n": 3})
+        await wait_for_queue(conn)
+        assert drain(conn) == [{"type": "message", "n": 3}]
+    finally:
+        await stop(task)

@@ -8,7 +8,6 @@ from websockets.asyncio.client import connect
 from tests.conftest import (
     add_message,
     auth_headers,
-    create_direct,
     create_room,
     create_user,
     login,
@@ -277,3 +276,65 @@ async def test_rest_edit_and_delete_are_pushed_to_connected_members(live_server)
         await http.delete(f"/api/messages/{msg}", headers=headers)
         assert await recv_json(wb) == {"type": "message_deleted", "room_id": room, "message_id": msg}
     await wb.close()
+
+
+# ---------- đầu vào dị dạng và kích thước frame ----------
+
+async def test_out_of_range_room_id_returns_an_error_and_keeps_the_connection(live_server):
+    await create_user("alice")
+    ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
+    await _send(ws, 99999999999, "quá lớn", "big")
+    assert await recv_json(ws) == {"type": "error", "code": "invalid_message", "client_id": "big"}
+    await _send(ws, 0, "không", "zero")
+    assert (await recv_json(ws))["code"] == "invalid_message"
+    await ws.send(json.dumps({"type": "ping"}))
+    assert await recv_json(ws) == {"type": "pong"}
+    await ws.close()
+
+
+async def test_binary_frame_after_auth_returns_unsupported_frame_and_keeps_the_connection(live_server):
+    await create_user("alice")
+    ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
+    await ws.send(b"\x00\x01\x02")
+    assert await recv_json(ws) == {"type": "error", "code": "unsupported_frame", "client_id": None}
+    await ws.send(json.dumps({"type": "ping"}))
+    assert await recv_json(ws) == {"type": "pong"}
+    await ws.close()
+
+
+async def test_binary_frame_before_auth_is_closed_with_4401(live_server):
+    ws = await connect(f"{live_server.ws}/api/ws")
+    await ws.send(b"\x00\x01\x02")
+    assert await wait_closed(ws) == 4401
+
+
+async def test_oversized_first_frame_is_closed_with_4413(live_server):
+    ws = await connect(f"{live_server.ws}/api/ws")
+    await ws.send("x" * 20_000)
+    assert await wait_closed(ws) == 4413
+
+
+async def test_frame_above_the_transport_ceiling_closes_the_connection(live_server):
+    await create_user("alice")
+    ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
+    await ws.send("x" * 100_000)
+    assert await wait_closed(ws) is not None
+
+
+async def test_frame_of_exactly_the_limit_is_an_ordinary_frame(live_server):
+    await create_user("alice")
+    ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
+    await ws.send("x" * 16_384)
+    assert (await recv_json(ws))["code"] == "invalid_json"
+    await ws.send(json.dumps({"type": "ping"}))
+    assert await recv_json(ws) == {"type": "pong"}
+    await ws.close()
+
+
+async def test_frame_is_measured_in_encoded_bytes_not_characters(live_server):
+    await create_user("alice")
+    ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
+    text = "ệ" * 5_500  # 5.500 ký tự nhưng 16.500 byte UTF-8
+    assert len(text) < 16_384 < len(text.encode("utf-8"))
+    await ws.send(text)
+    assert await wait_closed(ws) == 4413

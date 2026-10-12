@@ -23,6 +23,7 @@ class Connection:
         self.room_ids: set[int] = set(room_ids)
         self.queue: asyncio.Queue[dict | None] = asyncio.Queue(maxsize=queue_size)
         self.close_code: int | None = None
+        self.version = 0  # tăng mỗi khi hub gán lại room_ids
 
     def offer(self, event: dict) -> bool:
         if self.close_code is not None:
@@ -41,6 +42,14 @@ class Connection:
         while not self.queue.empty():
             self.queue.get_nowait()
         self.queue.put_nowait(None)
+
+
+def apply_room_snapshot(conn: Connection, version: int, room_ids: Iterable[int]) -> bool:
+    """Gán room_ids đọc từ DB chỉ khi hub chưa áp dụng snapshot mới hơn (version không đổi)."""
+    if conn.version != version:
+        return False
+    conn.room_ids = set(room_ids)
+    return True
 
 
 class Hub:
@@ -97,7 +106,30 @@ class Hub:
                 room_ids = set(rows.scalars())
             for conn in conns:
                 conn.room_ids = set(room_ids)
+                conn.version += 1
                 self._offer(conn, {"type": "rooms_changed"})
+
+    async def _reload_all_rooms(self) -> None:
+        """Sau khi bus nối lại: nạp lại thành viên phòng của mọi kết nối (có thể đã lỡ sự kiện)."""
+        conns = self._all()
+        if not conns:
+            return
+        try:
+            async with self._session_factory() as session:
+                rows = await session.execute(
+                    select(RoomMember.user_id, RoomMember.room_id).where(
+                        RoomMember.user_id.in_({c.user_id for c in conns})
+                    )
+                )
+                by_user: dict[int, set[int]] = {}
+                for user_id, room_id in rows:
+                    by_user.setdefault(user_id, set()).add(room_id)
+        except Exception:
+            log.exception("failed to reload room membership after bus resubscribe")
+            return
+        for conn in conns:
+            conn.room_ids = set(by_user.get(conn.user_id, ()))
+            conn.version += 1
 
     async def run(self) -> None:
         """Nghe bus mãi mãi; khi bus lỗi thì báo client tải lại (`resync`) rồi nghe lại."""
@@ -109,6 +141,7 @@ class Hub:
                     async for event in events:
                         if event.scope == "system":
                             if had_subscription:
+                                await self._reload_all_rooms()
                                 self.broadcast({"type": "resync"})
                             had_subscription = True
                             delay = self._reconnect_delay

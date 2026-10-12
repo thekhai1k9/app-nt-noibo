@@ -172,7 +172,7 @@ async def live_server():
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
-    config = uvicorn.Config(create_app(), host="127.0.0.1", port=port, log_level="warning", lifespan="on")
+    config = uvicorn.Config(create_app(), host="127.0.0.1", port=port, log_level="warning", lifespan="on", ws_max_size=65536)
     server = uvicorn.Server(config)
     task = asyncio.create_task(server.serve())
     for _ in range(200):

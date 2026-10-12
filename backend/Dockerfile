@@ -7,4 +7,4 @@ COPY . .
 EXPOSE 8000
 # api chỉ được truy cập qua Caddy trong mạng compose (không publish cổng),
 # nên tin header X-Forwarded-For là hợp lý để rate limit theo IP thật.
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips '*'"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips '*' --ws-max-size 65536"]
