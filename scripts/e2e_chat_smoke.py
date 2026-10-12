@@ -13,6 +13,13 @@ import urllib.request
 from websockets.asyncio.client import connect
 
 
+def _parse(raw):
+    try:
+        return json.loads(raw) if raw else None
+    except ValueError:
+        raise AssertionError(f"response body is not JSON: {raw[:200]!r}") from None
+
+
 def http(base, method, path, token=None, body=None):
     request = urllib.request.Request(
         f"{base}/api{path}",
@@ -23,10 +30,9 @@ def http(base, method, path, token=None, body=None):
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             raw = response.read()
-            return response.status, json.loads(raw) if raw else None
+            return response.status, _parse(raw)
     except urllib.error.HTTPError as err:
-        raw = err.read()
-        return err.code, json.loads(raw) if raw else None
+        return err.code, _parse(err.read())
 
 
 def login(base, username, password):
@@ -79,7 +85,20 @@ async def main(args):
     assert status == 201, (status, room)
     room_id = room["id"]
 
-    alice, bob = await open_ws(base, tokens["e2e.alice"]), await open_ws(base, tokens["e2e.bob"])
+    sockets = []
+    try:
+        await run_chat_checks(base, admin, users, tokens, room_id, sockets)
+    finally:
+        for ws in sockets:
+            await ws.close()
+    print("OK")
+
+
+async def run_chat_checks(base, admin, users, tokens, room_id, sockets):
+    alice = await open_ws(base, tokens["e2e.alice"])
+    sockets.append(alice)
+    bob = await open_ws(base, tokens["e2e.bob"])
+    sockets.append(bob)
     await alice.send(json.dumps({"type": "send", "room_id": room_id, "body": "xin chào từ Alice", "client_id": "e2e-1"}))
     mine = json.loads(await asyncio.wait_for(alice.recv(), 5))
     theirs = json.loads(await asyncio.wait_for(bob.recv(), 5))
@@ -98,8 +117,6 @@ async def main(args):
     assert status == 200
     await asyncio.wait_for(alice.wait_closed(), 5)
     assert alice.protocol.close_code == 4403, alice.protocol.close_code
-    await bob.close()
-    print("OK")
 
 
 if __name__ == "__main__":
