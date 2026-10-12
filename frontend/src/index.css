@@ -195,3 +195,8 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
   .chat-shell:not([data-room='open']) .chat-main { display: none; }
   .msg-col { max-width: 82%; }
 }
+
+.chat-back { display: none; }
+@media (max-width: 760px) {
+  .chat-back { display: inline-flex; }
+}

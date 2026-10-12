@@ -4,7 +4,9 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { FullPageMessage } from './components/FullPageMessage'
 import { RequireAdmin, RequireAuth } from './components/guards'
 import { ChangePasswordPage } from './pages/ChangePasswordPage'
-import { HomePage } from './pages/HomePage'
+import { ConversationPane } from './components/chat/ConversationPane'
+import { ChatHome } from './pages/ChatHome'
+import { ChatLayout } from './pages/ChatLayout'
 import { LoginPage } from './pages/LoginPage'
 
 const AdminLayout = lazy(() => import('./pages/admin/AdminLayout').then((m) => ({ default: m.AdminLayout })))
@@ -26,13 +28,15 @@ export function AppRoutes() {
             }
           />
           <Route
-            path="/"
             element={
               <RequireAuth>
-                <HomePage />
+                <ChatLayout />
               </RequireAuth>
             }
-          />
+          >
+            <Route path="/" element={<ChatHome />} />
+            <Route path="/chat/:roomId" element={<ConversationPane />} />
+          </Route>
           <Route
             path="/admin"
             element={
