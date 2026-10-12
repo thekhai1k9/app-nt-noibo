@@ -1,14 +1,14 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import get_session
 from app.deps import get_current_user
 from app.models import RefreshToken, User
-from app.ratelimit import clear, is_blocked, register_failure
+from app.ratelimit import clear, register_attempt
 from app.redis_client import get_redis
 from app.schemas import ChangePasswordIn, LoginIn, TokenOut, UserOut
 from app.security import hash_password, hash_refresh_token, verify_password
@@ -33,13 +33,14 @@ async def login(
     client_ip = request.client.host if request.client else "unknown"
     key = f"login-fail:{username}:{client_ip}"
 
-    if await is_blocked(redis, key, settings.login_max_attempts):
+    # Đặt chỗ lượt thử trước khi kiểm tra, để loạt request song song không lọt qua.
+    count = await register_attempt(redis, key, settings.login_window_seconds)
+    if count > settings.login_max_attempts:
         raise HTTPException(status_code=429, detail="too_many_attempts")
 
     user = (await session.execute(select(User).where(User.username == username))).scalar_one_or_none()
     password_ok = verify_password(user.password_hash if user else _DUMMY_HASH, body.password)
     if user is None or not user.is_active or not password_ok:
-        await register_failure(redis, key, settings.login_window_seconds)
         raise HTTPException(status_code=401, detail="invalid_credentials")
 
     await clear(redis, key)
@@ -56,16 +57,26 @@ async def refresh(
     raw = request.cookies.get(COOKIE_NAME)
     if not raw:
         raise HTTPException(status_code=401, detail="invalid_refresh")
-    row = (
-        await session.execute(select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_token(raw)))
-    ).scalar_one_or_none()
     now = datetime.now(timezone.utc)
-    if row is None or row.revoked_at is not None or row.expires_at <= now:
+    # Xoay vòng nguyên tử: chỉ một request song song thu hồi được token này.
+    user_id = (
+        await session.execute(
+            update(RefreshToken)
+            .where(
+                RefreshToken.token_hash == hash_refresh_token(raw),
+                RefreshToken.revoked_at.is_(None),
+                RefreshToken.expires_at > now,
+            )
+            .values(revoked_at=now)
+            .returning(RefreshToken.user_id)
+        )
+    ).scalar_one_or_none()
+    if user_id is None:
         raise HTTPException(status_code=401, detail="invalid_refresh")
-    user = await session.get(User, row.user_id)
+    user = await session.get(User, user_id)
     if user is None or not user.is_active:
+        await session.commit()  # token đã bị thu hồi thì giữ nguyên trạng thái đó
         raise HTTPException(status_code=401, detail="invalid_refresh")
-    row.revoked_at = now  # xoay vòng: token cũ chết ngay khi cấp token mới
     return await issue_session(session, response, user)
 
 
@@ -83,7 +94,14 @@ async def logout(
         if row is not None and row.revoked_at is None:
             row.revoked_at = datetime.now(timezone.utc)
             await session.commit()
-    response.delete_cookie(COOKIE_NAME, path=COOKIE_PATH)
+    settings = get_settings()
+    response.delete_cookie(
+        COOKIE_NAME,
+        path=COOKIE_PATH,
+        secure=settings.cookie_secure,
+        httponly=True,
+        samesite=settings.cookie_samesite,
+    )
 
 
 @router.get("/me", response_model=UserOut)

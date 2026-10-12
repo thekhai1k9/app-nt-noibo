@@ -1,47 +1,41 @@
-from app.ratelimit import clear, is_blocked, register_failure
+from app.ratelimit import clear, register_attempt
 from app.redis_client import get_redis
 
 
-async def test_not_blocked_initially():
-    assert await is_blocked(get_redis(), "k1", 3) is False
-
-
-async def test_blocked_after_max_failures():
+async def test_attempt_counter_increments():
     redis = get_redis()
-    for _ in range(2):
-        await register_failure(redis, "k2", 60)
-    assert await is_blocked(redis, "k2", 3) is False
-    await register_failure(redis, "k2", 60)
-    assert await is_blocked(redis, "k2", 3) is True
+    assert await register_attempt(redis, "k1", 60) == 1
+    assert await register_attempt(redis, "k1", 60) == 2
+    assert await register_attempt(redis, "k1", 60) == 3
 
 
 async def test_clear_resets_counter():
     redis = get_redis()
     for _ in range(3):
-        await register_failure(redis, "k3", 60)
+        await register_attempt(redis, "k3", 60)
     await clear(redis, "k3")
-    assert await is_blocked(redis, "k3", 3) is False
+    assert await register_attempt(redis, "k3", 60) == 1
 
 
-async def test_failure_counter_expires():
+async def test_attempt_counter_expires():
     redis = get_redis()
-    await register_failure(redis, "k4", 60)
+    await register_attempt(redis, "k4", 60)
     ttl = await redis.ttl("k4")
     assert 0 < ttl <= 60
 
 
-async def test_register_failure_restores_missing_ttl():
+async def test_register_attempt_restores_missing_ttl():
     redis = get_redis()
     await redis.set("k5", 2)
     assert await redis.ttl("k5") == -1
-    await register_failure(redis, "k5", 60)
+    assert await register_attempt(redis, "k5", 60) == 3
     ttl = await redis.ttl("k5")
     assert 0 < ttl <= 60
 
 
-async def test_second_failure_does_not_extend_window():
+async def test_second_attempt_does_not_extend_window():
     redis = get_redis()
-    await register_failure(redis, "k6", 60)
+    await register_attempt(redis, "k6", 60)
     await redis.expire("k6", 30)
-    await register_failure(redis, "k6", 60)
+    await register_attempt(redis, "k6", 60)
     assert 0 < await redis.ttl("k6") <= 30

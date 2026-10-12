@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings
 
@@ -11,7 +12,7 @@ class Settings(BaseSettings):
     access_token_minutes: int = 15
     refresh_token_days: int = 14
     cookie_secure: bool = True
-    cookie_samesite: str = "lax"
+    cookie_samesite: Literal["lax", "strict"] = "lax"
     login_max_attempts: int = 5
     login_window_seconds: int = 300
     log_level: str = "INFO"
