@@ -8,6 +8,7 @@ from app.chat.bus import MessageBus, RedisMessageBus, publish_room_safely, publi
 from app.chat.schemas import MessageOut, MessagePage, RoomOut, to_message_out
 from app.db import get_session
 from app.deps import get_ready_user
+from app.ids import MessageId, MessageIdPath, MessageIdQuery, RoomIdPath, UserId
 from app.models import Branch, User
 from app.redis_client import get_redis
 
@@ -27,11 +28,11 @@ class DirectoryUser(BaseModel):
 
 
 class DirectRoomIn(BaseModel):
-    user_id: int
+    user_id: UserId
 
 
 class ReadIn(BaseModel):
-    message_id: int
+    message_id: MessageId
 
 
 class MessageEditIn(BaseModel):
@@ -91,10 +92,10 @@ async def open_direct_room(
 
 @router.get("/rooms/{room_id}/messages", response_model=MessagePage)
 async def get_messages(
-    room_id: int,
-    before: int | None = None,
-    after: int | None = None,
-    around: int | None = None,
+    room_id: RoomIdPath,
+    before: MessageIdQuery = None,
+    after: MessageIdQuery = None,
+    around: MessageIdQuery = None,
     limit: int = Query(50, ge=1, le=100),
     session: AsyncSession = Depends(get_session),
     user: User = Depends(get_ready_user),
@@ -105,7 +106,7 @@ async def get_messages(
 
 @router.post("/rooms/{room_id}/read", status_code=204)
 async def mark_read(
-    room_id: int,
+    room_id: RoomIdPath,
     body: ReadIn,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(get_ready_user),
@@ -115,7 +116,7 @@ async def mark_read(
 
 @router.patch("/messages/{message_id}", response_model=MessageOut)
 async def edit_message(
-    message_id: int,
+    message_id: MessageIdPath,
     body: MessageEditIn,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(get_ready_user),
@@ -129,7 +130,7 @@ async def edit_message(
 
 @router.delete("/messages/{message_id}", status_code=204)
 async def delete_message(
-    message_id: int,
+    message_id: MessageIdPath,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(get_ready_user),
     bus: MessageBus = Depends(get_bus),

@@ -477,3 +477,18 @@ async def test_concurrent_duplicate_send_stores_one_row():
 
 def test_escape_like_escapes_wildcards():
     assert service.escape_like("a_b%c\\d") == "a\\_b\\%c\\\\d"
+
+
+async def test_database_errors_never_leak_message_bodies():
+    from sqlalchemy.exc import IntegrityError
+
+    from app.db import SessionLocal
+    from app.models import Message
+
+    sender = await create_user("alice")
+    async with SessionLocal() as s:
+        s.add(Message(room_id=999_999, sender_id=sender, body="SECRET-BODY-123"))  # room không tồn tại: vi phạm FK
+        with pytest.raises(IntegrityError) as caught:
+            await s.commit()
+    assert "SECRET-BODY-123" not in str(caught.value)
+    assert "SECRET-BODY-123" not in repr(caught.value)

@@ -9,6 +9,7 @@ from app.chat import service
 from app.chat.bus import MessageBus, publish_user_safely
 from app.db import get_session
 from app.deps import require_admin
+from app.ids import BranchId, BranchIdQuery, RoomIdPath, UserId, UserIdPath
 from app.models import Branch, Message, Room, RoomMember, User
 from app.routers.chat import get_bus
 
@@ -38,8 +39,8 @@ class RoomCreateIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     name: str = Field(min_length=1, max_length=100)
-    branch_id: int | None = None
-    member_ids: list[int] = Field(default_factory=list, max_length=200)
+    branch_id: BranchId | None = None
+    member_ids: list[UserId] = Field(default_factory=list, max_length=200)
 
 
 class RoomRenameIn(BaseModel):
@@ -49,7 +50,7 @@ class RoomRenameIn(BaseModel):
 
 
 class MemberIn(BaseModel):
-    user_id: int
+    user_id: UserId
 
 
 async def _group_or_404(session: AsyncSession, room_id: int) -> Room:
@@ -99,7 +100,7 @@ async def _active_user_or_404(session: AsyncSession, user_id: int) -> User:
 
 @router.get("", response_model=list[AdminRoomOut])
 async def list_rooms(
-    q: str | None = None, branch_id: int | None = None, session: AsyncSession = Depends(get_session)
+    q: str | None = None, branch_id: BranchIdQuery = None, session: AsyncSession = Depends(get_session)
 ) -> list[AdminRoomOut]:
     counts = select(RoomMember.room_id, func.count().label("n")).group_by(RoomMember.room_id).subquery()
     query = (
@@ -142,13 +143,13 @@ async def create_room(
 
 
 @router.get("/{room_id}", response_model=AdminRoomDetail)
-async def get_room(room_id: int, session: AsyncSession = Depends(get_session)) -> AdminRoomDetail:
+async def get_room(room_id: RoomIdPath, session: AsyncSession = Depends(get_session)) -> AdminRoomDetail:
     return await _detail(session, await _group_or_404(session, room_id))
 
 
 @router.patch("/{room_id}", response_model=AdminRoomDetail)
 async def rename_room(
-    room_id: int, body: RoomRenameIn, session: AsyncSession = Depends(get_session)
+    room_id: RoomIdPath, body: RoomRenameIn, session: AsyncSession = Depends(get_session)
 ) -> AdminRoomDetail:
     room = await _group_or_404(session, room_id)
     room.name = body.name
@@ -158,7 +159,7 @@ async def rename_room(
 
 @router.delete("/{room_id}", status_code=204)
 async def delete_room(
-    room_id: int, session: AsyncSession = Depends(get_session), bus: MessageBus = Depends(get_bus)
+    room_id: RoomIdPath, session: AsyncSession = Depends(get_session), bus: MessageBus = Depends(get_bus)
 ) -> None:
     room = await _group_or_404(session, room_id)
     member_ids = await _member_ids(session, room.id)
@@ -169,7 +170,7 @@ async def delete_room(
 
 @router.post("/{room_id}/members", response_model=AdminRoomDetail)
 async def add_member(
-    room_id: int,
+    room_id: RoomIdPath,
     body: MemberIn,
     session: AsyncSession = Depends(get_session),
     bus: MessageBus = Depends(get_bus),
@@ -187,8 +188,8 @@ async def add_member(
 
 @router.delete("/{room_id}/members/{user_id}", response_model=AdminRoomDetail)
 async def remove_member(
-    room_id: int,
-    user_id: int,
+    room_id: RoomIdPath,
+    user_id: UserIdPath,
     session: AsyncSession = Depends(get_session),
     bus: MessageBus = Depends(get_bus),
 ) -> AdminRoomDetail:

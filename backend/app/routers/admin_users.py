@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.chat.bus import MessageBus, publish_user_safely
 from app.db import get_session
 from app.deps import require_admin
+from app.ids import BranchIdQuery, UserIdPath
 from app.models import Branch, User
 from app.routers.chat import get_bus
 from app.schemas import ResetPasswordOut, UserCreate, UserCreated, UserOut, UserUpdate
@@ -32,7 +33,7 @@ async def _ensure_branch(session: AsyncSession, branch_id: int) -> None:
 @router.get("", response_model=list[UserOut])
 async def list_users(
     q: str | None = None,
-    branch_id: int | None = None,
+    branch_id: BranchIdQuery = None,
     is_active: bool | None = None,
     session: AsyncSession = Depends(get_session),
     _admin: User = Depends(require_admin),
@@ -79,7 +80,7 @@ async def create_user(
 
 @router.patch("/{user_id}", response_model=UserOut)
 async def update_user(
-    user_id: int,
+    user_id: UserIdPath,
     body: UserUpdate,
     session: AsyncSession = Depends(get_session),
     admin: User = Depends(require_admin),
@@ -110,7 +111,7 @@ async def update_user(
 
 @router.post("/{user_id}/reset-password", response_model=ResetPasswordOut)
 async def reset_password(
-    user_id: int,
+    user_id: UserIdPath,
     session: AsyncSession = Depends(get_session),
     _admin: User = Depends(require_admin),
     bus: MessageBus = Depends(get_bus),

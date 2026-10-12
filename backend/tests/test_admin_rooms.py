@@ -157,3 +157,22 @@ async def test_re_adding_an_existing_member_keeps_their_read_position(client, ad
     assert await _unread(client, "bob", room) == 1
     await client.post(f"/api/admin/rooms/{room}/members", json={"user_id": b}, headers=admin_headers)
     assert await _unread(client, "bob", room) == 1
+
+
+async def test_deleting_a_group_leaves_other_rooms_messages_and_memberships_alone(client, admin_headers):
+    a, b = await create_user("alice"), await create_user("bob")
+    doomed = await create_room(name="Bỏ", member_ids=[a, b])
+    other_group = await create_room(name="Giữ", member_ids=[a, b])
+    direct = await create_direct(a, b)
+    await add_message(doomed, a, "sẽ mất")
+    kept = [await add_message(other_group, a, "nhóm khác"), await add_message(direct, b, "tin riêng")]
+
+    assert (await client.delete(f"/api/admin/rooms/{doomed}", headers=admin_headers)).status_code == 204
+
+    async with SessionLocal() as s:
+        remaining = (await s.execute(select(Message.id).order_by(Message.id))).scalars().all()
+        members = set((await s.execute(select(RoomMember.room_id, RoomMember.user_id))).all())
+        rooms = set((await s.execute(select(Room.id))).scalars())
+    assert list(remaining) == kept
+    assert rooms == {other_group, direct}
+    assert members == {(other_group, a), (other_group, b), (direct, a), (direct, b)}

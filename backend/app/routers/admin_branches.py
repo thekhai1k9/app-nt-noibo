@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.deps import require_admin
+from app.ids import BranchIdPath
 from app.models import Branch, User
 from app.schemas import BranchIn, BranchOut, BranchUpdate
 
@@ -61,7 +62,7 @@ async def create_branch(body: BranchIn, session: AsyncSession = Depends(get_sess
 
 @router.patch("/{branch_id}", response_model=BranchOut)
 async def update_branch(
-    branch_id: int, body: BranchUpdate, session: AsyncSession = Depends(get_session)
+    branch_id: BranchIdPath, body: BranchUpdate, session: AsyncSession = Depends(get_session)
 ) -> BranchOut:
     branch = await session.get(Branch, branch_id)
     if branch is None:
@@ -79,7 +80,7 @@ async def update_branch(
 
 
 @router.delete("/{branch_id}", status_code=204)
-async def delete_branch(branch_id: int, session: AsyncSession = Depends(get_session)) -> None:
+async def delete_branch(branch_id: BranchIdPath, session: AsyncSession = Depends(get_session)) -> None:
     branch = await session.get(Branch, branch_id)
     if branch is None:
         raise HTTPException(status_code=404, detail="branch_not_found")

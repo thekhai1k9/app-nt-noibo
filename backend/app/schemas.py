@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.ids import BranchId
+
 
 class LoginIn(BaseModel):
     username: str = Field(min_length=1, max_length=100)
@@ -62,7 +64,7 @@ class UserCreate(BaseModel):
 
     username: str = Field(pattern=r"^[a-z0-9._-]{3,50}$")
     full_name: str = Field(min_length=1, max_length=100)
-    branch_id: int
+    branch_id: BranchId
     role: Literal["admin", "member"] = "member"
 
     @field_validator("username", mode="before")
@@ -75,7 +77,7 @@ class UserUpdate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     full_name: str | None = Field(default=None, min_length=1, max_length=100)
-    branch_id: int | None = None
+    branch_id: BranchId | None = None
     role: Literal["admin", "member"] | None = None
     is_active: bool | None = None
 
