@@ -19,6 +19,7 @@ CLOSE_ACCOUNT_LOCKED = 4403
 CLOSE_SLOW_CONSUMER = 4408
 DISCONNECT_CODES = {CLOSE_UNAUTHENTICATED, CLOSE_ACCOUNT_LOCKED}
 RECONCILE_TIMEOUT_SECONDS = 10.0
+PRESENCE_OP_TIMEOUT_SECONDS = 1.0  # gioi han cho thao tac presence tren duong xu ly frame/ket noi
 
 
 class Connection:
@@ -33,7 +34,6 @@ class Connection:
         self.close_code: int | None = None
         self.version = 0  # tăng mỗi khi hub gán lại room_ids
         self.conn_id = uuid.uuid4().hex
-        self.presence_registered = False  # on_connected đã ghi presence thành công
 
     def offer(self, event: dict) -> bool:
         if self.close_code is not None:
@@ -75,8 +75,12 @@ class Hub:
         self._reconnect_delay = reconnect_delay
         self._conns: dict[int, set[Connection]] = {}
         self.presence = presence
-        self._last_online: set[int] | None = None  # None cho tới lượt quét đầu tiên
-        self._announce_tasks: set[asyncio.Task] = set()
+        self._announced: dict[int, bool] = {}  # trang thai presence da phat thanh cong gan nhat
+        self._dirty: set[int] = set()  # user can (phat lai) trang thai
+        self._wake = asyncio.Event()
+        self._announcing: int | None = None
+        self._announcer: asyncio.Task | None = None
+        self._baselined = False  # luot quet dau tien chi ghi nhan, khong phat
         self._closing = False
 
     def register(self, conn: Connection) -> None:
@@ -207,83 +211,137 @@ class Hub:
             delay = min(delay * 2, 30)
 
     # ---------- presence ----------
+    # Thong bao presence theo TRANG THAI (khong theo chuyen tiep): moi user co `_announced` (trang thai da phat thanh
+    # cong gan nhat) va co the nam trong `_dirty`. Mot tac vu announcer duy nhat lay tung user trong `_dirty`, tinh trang
+    # thai HIEN TAI tai thoi diem phat roi moi phat; loi thi tra user ve `_dirty` de luot quet sau thu lai.
 
-    def _spawn_announce(self, user_id: int, online: bool) -> None:
-        """Phát presence ở tác vụ nền để không chặn/ làm trễ `ready` hay việc đóng kết nối."""
+    def _is_registered(self, conn: Connection) -> bool:
+        return conn in self._conns.get(conn.user_id, ())
+
+    def _kick(self) -> None:
+        """Danh thuc announcer (tao luoi khi can). Khong lam gi sau close_all."""
         if self._closing:
             return
-        task = asyncio.create_task(self._announce(user_id, online))
-        self._announce_tasks.add(task)
-        task.add_done_callback(self._announce_tasks.discard)
+        if self._announcer is None or self._announcer.done():
+            self._announcer = asyncio.create_task(self._announcer_loop())
+        self._wake.set()
 
-    async def _announce(self, user_id: int, online: bool) -> None:
+    def _mark_dirty(self, user_id: int) -> None:
+        self._dirty.add(user_id)
+        self._kick()
+
+    async def _current_state(self, user_id: int) -> bool:
+        if any(c.close_code is None for c in self._conns.get(user_id, ())):
+            return True
+        if self.presence is None:
+            return False
+        return user_id in await self.presence.online_user_ids()
+
+    async def _publish(self, user_id: int, online: bool) -> None:
+        """Phat presence toi cac phong chua luu tru ma user la thanh vien; nem loi neu co phong khong phat duoc."""
+        async with self._session_factory() as session:
+            room_ids = await user_room_ids(session, user_id)
+        event = {"type": "presence", "user_id": user_id, "online": online}
+        failed = False
+        for room_id in sorted(room_ids):
+            if not await publish_room_safely(self.bus, room_id, event):
+                failed = True
+        if failed:
+            raise RuntimeError("presence publish failed")
+
+    async def _announce_user(self, user_id: int) -> None:
+        online = await self._current_state(user_id)
+        if self._announced.get(user_id) == online:
+            return
+        await self._publish(user_id, online)
+        self._announced[user_id] = online
+
+    async def _announcer_loop(self) -> None:
+        while True:
+            await self._wake.wait()
+            self._wake.clear()
+            for user_id in sorted(self._dirty):
+                self._dirty.discard(user_id)  # thay doi moi trong luc phat se danh dau lai
+                self._announcing = user_id
+                try:
+                    await self._announce_user(user_id)
+                except Exception:
+                    log.warning("presence announce failed; will retry on next sweep", exc_info=True)
+                    self._dirty.add(user_id)
+                finally:
+                    self._announcing = None
+
+    async def _remove_quietly(self, conn: Connection) -> None:
         try:
-            async with self._session_factory() as session:
-                room_ids = await user_room_ids(session, user_id)  # chỉ phòng chưa lưu trữ mà user là thành viên
-            event = {"type": "presence", "user_id": user_id, "online": online}
-            for room_id in room_ids:
-                await publish_room_safely(self.bus, room_id, event)
+            await self.presence.remove(conn.user_id, conn.conn_id)
         except Exception:
-            log.exception("failed to announce presence")
+            log.warning("presence remove failed", exc_info=True)
 
     async def on_connected(self, conn: Connection) -> None:
         if self.presence is None:
             return
         try:
-            was_online = await self.presence.touch(conn.user_id, conn.conn_id)
+            await asyncio.wait_for(self.presence.touch(conn.user_id, conn.conn_id), PRESENCE_OP_TIMEOUT_SECONDS)
         except Exception:
             log.warning("presence touch failed on connect", exc_info=True)
-            return
-        conn.presence_registered = True
-        if self._last_online is not None:
-            self._last_online.add(conn.user_id)
-        if not was_online:
-            self._spawn_announce(conn.user_id, True)
+        self._mark_dirty(conn.user_id)  # ke ca khi Redis loi: trang thai cuc bo da la online
 
     async def on_disconnected(self, conn: Connection) -> None:
-        if self.presence is None or not conn.presence_registered:
+        if self.presence is None:
             return
-        try:
-            await self.presence.remove(conn.user_id, conn.conn_id)
-            still_online = conn.user_id in await self.presence.online_user_ids()
-        except Exception:
-            log.warning("presence remove failed on disconnect", exc_info=True)
-            return  # phần tử sẽ hết hạn và bộ quét sẽ đối soát
-        if not still_online:
-            if self._last_online is not None:
-                self._last_online.discard(conn.user_id)
-            self._spawn_announce(conn.user_id, False)
+        await self._remove_quietly(conn)  # luon xoa, ke ca khi on_connected loi/bi huy; het han se don neu loi
+        self._mark_dirty(conn.user_id)
 
     async def refresh_presence(self, conn: Connection) -> None:
-        """Gia hạn kết nối khi client ping; lỗi Redis không ảnh hưởng kết nối."""
+        """Gia han ket noi khi client ping (mot ZADD, co gioi han thoi gian); loi Redis khong anh huong ket noi."""
         if self.presence is None:
             return
         try:
-            await self.presence.touch(conn.user_id, conn.conn_id)
+            await asyncio.wait_for(self.presence.touch(conn.user_id, conn.conn_id), PRESENCE_OP_TIMEOUT_SECONDS)
         except Exception:
             log.warning("presence refresh failed", exc_info=True)
+        if not self._is_registered(conn):
+            await self._remove_quietly(conn)  # dung de lan gia han muon hoan tac viec xoa khi ngat ket noi
 
-    async def sweep_presence(self) -> None:
-        """Một lượt: gia hạn kết nối cục bộ TRƯỚC, rồi đối soát tập online với lượt trước và phát thay đổi."""
-        if self.presence is None:
-            return
+    async def _collect_online(self) -> set[int]:
+        """Phan Redis cua mot luot quet: gia han ket noi cuc bo TRUOC roi doc tap online."""
         local = [c for c in self._all() if c.close_code is None]
         await self.presence.touch_many((c.user_id, c.conn_id) for c in local)
+        for conn in local:
+            if not self._is_registered(conn):  # da ngat ket noi trong luc gia han: hoan tac phan tu vua ghi
+                await self._remove_quietly(conn)
         online = await self.presence.online_user_ids()
-        online |= {c.user_id for c in self._all() if c.close_code is None}  # kết nối vừa đăng ký giữa chừng
-        previous, self._last_online = self._last_online, online
-        if previous is None:
+        return online | {c.user_id for c in self._all() if c.close_code is None}
+
+    def _reconcile_announced(self, online: set[int]) -> None:
+        if not self._baselined:
+            self._baselined = True  # luot dau: ghi nhan trang thai hien co, khong phat
+            for user_id in online:
+                if user_id not in self._dirty and user_id != self._announcing:  # đang chờ/đang phát thì để announcer lo
+                    self._announced.setdefault(user_id, True)
+        else:
+            for user_id in online | set(self._announced):
+                if self._announced.get(user_id, False) != (user_id in online):
+                    self._dirty.add(user_id)
+        if self._dirty:
+            self._kick()
+
+    async def sweep_presence(self) -> None:
+        if self.presence is None:
             return
-        for user_id in sorted(online - previous):
-            await self._announce(user_id, True)
-        for user_id in sorted(previous - online):
-            await self._announce(user_id, False)
+        self._reconcile_announced(await self._collect_online())
 
     async def _sweep_guarded(self) -> None:
-        try:
-            await asyncio.wait_for(self.sweep_presence(), timeout=RECONCILE_TIMEOUT_SECONDS)
+        if self.presence is None:
+            return
+        try:  # timeout chi bao phan Redis; viec phat nam o announcer nen khong bi mat khi qua han
+            online = await asyncio.wait_for(self._collect_online(), timeout=RECONCILE_TIMEOUT_SECONDS)
         except Exception:
             log.exception("presence sweep failed or timed out")
+            if self._dirty:
+                self._kick()  # thu lai cac thong bao con ton
+            return
+        self._reconcile_announced(online)
 
     async def run_presence_sweeper(self, interval: float) -> None:
         while True:
@@ -292,10 +350,9 @@ class Hub:
 
     async def close_all(self, code: int = 1001) -> None:
         self._closing = True
-        tasks = list(self._announce_tasks)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        announcer, self._announcer = self._announcer, None
+        if announcer is not None:
+            announcer.cancel()
+            await asyncio.gather(announcer, return_exceptions=True)
         for conn in self._all():
             conn.close(code)

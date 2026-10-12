@@ -53,9 +53,17 @@ async def recv_json(ws, timeout: float = 3, include_presence: bool = False):
             return event
 
 
-async def expect_silence(ws, seconds: float = 0.4):
+async def expect_silence(ws, seconds: float = 0.4, include_presence: bool = False):
+    """Khang dinh khong co su kien nao (mac dinh bo qua `presence`)."""
+
+    async def _next():
+        while True:
+            event = json.loads(await ws.recv())
+            if include_presence or not isinstance(event, dict) or event.get("type") != "presence":
+                return event
+
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(ws.recv(), seconds)
+        await asyncio.wait_for(_next(), seconds)
 
 
 async def wait_closed(ws, timeout: float = 3) -> int | None:

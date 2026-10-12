@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     bus_channel_prefix: str = "kn"
     max_message_length: int = 4000
     log_level: str = "INFO"
+
+
+    @model_validator(mode="after")
+    def _ttl_exceeds_sweep(self):
+        if self.presence_ttl_seconds <= self.presence_sweep_seconds:
+            raise ValueError("PRESENCE_TTL_SECONDS must be greater than PRESENCE_SWEEP_SECONDS")
+        return self
 
 
 @lru_cache

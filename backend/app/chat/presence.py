@@ -5,7 +5,11 @@ from redis.asyncio import Redis
 
 
 class Presence:
-    """Hiện diện online trong một ZSET Redis: phần tử `user_id:conn_id`, điểm = thời điểm hết hạn."""
+    """Hiện diện online trong một ZSET Redis: phần tử `user_id:conn_id`, điểm = thời điểm hết hạn.
+
+    Gia dinh: moi worker dung dong ho dong bo NTP (diem la thoi gian tuyet doi); lech dong ho lon giua cac worker
+    co the lam ket noi het han som/muon so voi TTL.
+    """
 
     def __init__(self, redis: Redis, prefix: str, ttl: float, clock: Callable[[], float] = time.time):
         self._redis = redis
@@ -21,15 +25,9 @@ class Presence:
     def _user_ids(members: Iterable[str]) -> set[int]:
         return {int(m.split(":", 1)[0]) for m in members}
 
-    async def touch(self, user_id: int, conn_id: str) -> bool:
-        """Gia hạn kết nối; trả True nếu trước đó user đã online (còn kết nối nào chưa hết hạn)."""
-        now = self._clock()
-        async with self._redis.pipeline(transaction=True) as pipe:
-            pipe.zremrangebyscore(self._key, "-inf", now)
-            pipe.zrange(self._key, 0, -1)
-            pipe.zadd(self._key, {self._member(user_id, conn_id): now + self._ttl})
-            _, members, _ = await pipe.execute()
-        return user_id in self._user_ids(members)
+    async def touch(self, user_id: int, conn_id: str) -> None:
+        """Dang ky/gia han mot ket noi: chi mot ZADD (viec don phan tu het han lam o online_user_ids)."""
+        await self._redis.zadd(self._key, {self._member(user_id, conn_id): self._clock() + self._ttl})
 
     async def touch_many(self, pairs: Iterable[tuple[int, str]]) -> None:
         pairs = list(pairs)
