@@ -30,6 +30,24 @@ npm test         # chạy test (Vitest)
 npm run build    # kiểm tra kiểu và build ra frontend/dist
 ```
 
+## API chat (tóm tắt)
+
+Tất cả dưới `/api`, cần `Authorization: Bearer <access token>` và đã đổi mật khẩu lần đầu.
+
+| Việc | Endpoint |
+|---|---|
+| Tìm đồng nghiệp để nhắn riêng | `GET /users/directory?q=` |
+| Danh sách phòng của tôi (kèm tin cuối, số chưa đọc) | `GET /rooms` |
+| Mở chat 1-1 | `POST /rooms/direct` `{"user_id": 3}` |
+| Lịch sử tin nhắn (con trỏ) | `GET /rooms/{id}/messages?before=&after=&around=&limit=` |
+| Đánh dấu đã đọc | `POST /rooms/{id}/read` `{"message_id": 10}` |
+| Sửa / xoá tin của mình | `PATCH` / `DELETE /messages/{id}` |
+| Admin quản lý nhóm | `/admin/rooms` (tạo, đổi tên, thêm/bớt thành viên, xoá) |
+
+Thời gian thực qua **WebSocket** `/api/ws`: mở kết nối rồi gửi ngay `{"type":"auth","token":"<access token>"}` (trong 5 giây). Sau khi nhận `{"type":"ready"}`, gửi tin bằng `{"type":"send","room_id":1,"body":"...","client_id":"<uuid>"}`; nhận `message`, `message_updated`, `message_deleted`, `rooms_changed`, `resync`, `error`. Mất kết nối thì kết nối lại và tải phần còn thiếu bằng `GET /rooms/{id}/messages?after=<id tin cuối đã có>`; khi nhận `resync` cũng làm như vậy.
+
+Kiểm tra nhanh toàn bộ luồng (cần stack đang chạy): xem đầu file `scripts/e2e_chat_smoke.py`.
+
 ## Tạo tài khoản quản trị đầu tiên
 
 ```bash
