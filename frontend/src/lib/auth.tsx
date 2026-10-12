@@ -68,7 +68,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (username: string, password: string) => {
     const token = await api<TokenOut>('/auth/login', { method: 'POST', json: { username, password } })
     setAccessToken(token.access_token)
-    setUser(await api<User>('/auth/me'))
+    try {
+      setUser(await api<User>('/auth/me'))
+    } catch (err) {
+      setAccessToken(null) // không để token trong bộ nhớ khi vẫn là anonymous
+      throw err
+    }
     setStatus('authenticated')
   }, [])
 
@@ -77,8 +82,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await waitForRefresh()
     try {
       await api('/auth/logout', { method: 'POST' })
-    } catch {
-      // vẫn đăng xuất phía trình duyệt dù máy chủ không phản hồi
+    } catch (err) {
+      // Máy chủ không phản hồi: cookie refresh vẫn còn hiệu lực, nên giữ phiên để người dùng thử lại.
+      if (err instanceof ApiError && (err.status === 0 || err.status >= 500)) throw err
     }
     setAccessToken(null)
     setUser(null)
@@ -92,8 +98,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       json: { current_password: current, new_password: next },
     })
     setAccessToken(token.access_token)
-    setUser(await api<User>('/auth/me'))
-  }, [])
+    try {
+      setUser(await api<User>('/auth/me'))
+    } catch (err) {
+      void bootstrap() // đồng bộ lại trạng thái vì mật khẩu đã đổi và token đã xoay
+      throw err
+    }
+  }, [bootstrap])
 
   const reload = useCallback(() => {
     void bootstrap()

@@ -13,10 +13,10 @@ export function RequireAuth({
   const { status, user, reload } = useAuth()
   const location = useLocation()
 
-  if (status === 'loading') return <FullPageMessage>Đang tải…</FullPageMessage>
+  if (status === 'loading') return <FullPageMessage role="status">Đang tải…</FullPageMessage>
   if (status === 'error') {
     return (
-      <FullPageMessage>
+      <FullPageMessage role="alert">
         <p>Không kết nối được máy chủ.</p>
         <button type="button" className="btn btn-primary" onClick={reload}>
           Thử lại

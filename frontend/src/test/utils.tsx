@@ -33,10 +33,12 @@ export const anonymousRoutes = {
   'POST /api/auth/refresh': { status: 401, json: { detail: 'invalid_refresh' } },
 }
 
-export function renderApp(path = '/') {
-  const client = new QueryClient({
+export function renderApp(
+  path = '/',
+  client: QueryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  })
+  }),
+) {
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[path]}>
