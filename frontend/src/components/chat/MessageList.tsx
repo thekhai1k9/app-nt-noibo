@@ -1,4 +1,4 @@
-import { Fragment, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ChatMessage } from '../../lib/chatStore'
 import { dayLabel, sameDay } from '../../lib/format'
 import { MessageItem } from './MessageItem'
@@ -28,12 +28,17 @@ function nearBottom(el: HTMLElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX
 }
 
+/**
+ * Phải được mount lại cho mỗi phòng (ConversationPane dùng `key={roomId}`): snapshot cuộn
+ * không được mang từ phòng này sang phòng khác.
+ */
 export function MessageList(props: Props) {
   const { items: allItems, hasMoreBefore, loaded, loadingOlder, error, meId, isGroup } = props
   // Tin được đệm khi chưa tải xong không được hiển thị như thể đã đầy đủ.
   const items = loaded ? allItems : EMPTY
   const listRef = useRef<HTMLDivElement>(null)
   const snapshot = useRef({ firstReal: null as number | null, lastReal: null as number | null, pending: 0, scrollHeight: 0, atBottom: true })
+  const innerRef = useRef<HTMLDivElement>(null)
   const [unseen, setUnseen] = useState(0)
 
   const real = items.filter((m) => !m.pending)
@@ -41,6 +46,8 @@ export function MessageList(props: Props) {
   const lastReal = real.at(-1)?.id ?? null
   const pendingCount = items.length - real.length
 
+  // Chạy sau mọi lần commit (không có danh sách phụ thuộc) để scrollHeight luôn mới;
+  // phần so sánh bên dưới dựa trên snapshot của lần commit TRƯỚC.
   useLayoutEffect(() => {
     const el = listRef.current
     if (!el) return
@@ -61,13 +68,26 @@ export function MessageList(props: Props) {
       scrollToBottom() // tin của chính mình luôn cuộn xuống
     } else if (newReal) {
       const incoming = real.filter((m) => m.id > (prev.lastReal ?? 0))
+      // Tin của chính mình từ thiết bị khác (sender_id === meId) cũng cuộn xuống: coi như đang tham gia hội thoại.
       const foreign = incoming.filter((m) => m.sender_id !== meId).length
       if (prev.atBottom || foreign === 0) scrollToBottom()
       else setUnseen((n) => n + foreign)
     }
     snapshot.current = { firstReal, lastReal, pending: pendingCount, scrollHeight: el.scrollHeight, atBottom: snapshot.current.atBottom }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firstReal, lastReal, pendingCount, items.length])
+  })
+
+  // Khi đang ở cuối, giữ ghim ở cuối nếu chiều cao nội dung đổi (ảnh/phông tải xong, đổi cỡ cửa sổ...).
+  useEffect(() => {
+    const el = listRef.current
+    const inner = innerRef.current
+    if (!el || !inner || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      if (snapshot.current.atBottom) el.scrollTop = el.scrollHeight
+      snapshot.current.scrollHeight = el.scrollHeight
+    })
+    observer.observe(inner)
+    return () => observer.disconnect()
+  }, [])
 
   function onScroll() {
     const el = listRef.current
@@ -90,6 +110,7 @@ export function MessageList(props: Props) {
   return (
     <div className="msg-list-wrap">
       <div className="msg-list" data-testid="message-list" ref={listRef} onScroll={onScroll}>
+        <div className="msg-list-inner" ref={innerRef}>
         {error && !loaded && (
           <div role="alert" className="alert-error stack" style={{ gap: 8 }}>
             <span>Không tải được tin nhắn.</span>
@@ -100,6 +121,13 @@ export function MessageList(props: Props) {
         )}
         {!loaded && !error && <div className="muted msg-note">Đang tải…</div>}
         {loadingOlder && <div className="muted msg-note">Đang tải tin cũ…</div>}
+        {loaded && hasMoreBefore && !loadingOlder && (
+          <div className="msg-note">
+            <button type="button" className="btn btn-ghost" onClick={props.onLoadOlder}>
+              Tải thêm tin cũ
+            </button>
+          </div>
+        )}
         {loaded && !hasMoreBefore && items.length > 0 && <div className="muted msg-note">Đầu cuộc trò chuyện</div>}
         {loaded && items.length === 0 && <div className="muted msg-note">Chưa có tin nhắn. Hãy gửi lời chào!</div>}
         {items.map((message, index) => {
@@ -125,6 +153,7 @@ export function MessageList(props: Props) {
             </Fragment>
           )
         })}
+        </div>
       </div>
       {unseen > 0 && (
         <button type="button" className="btn btn-primary msg-unseen" onClick={jumpToBottom}>

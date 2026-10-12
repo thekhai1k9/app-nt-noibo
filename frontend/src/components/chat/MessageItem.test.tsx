@@ -62,6 +62,7 @@ describe('MessageItem', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Huỷ' }))
     expect(onEdit).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Sửa tin nhắn' }))
+    await userEvent.type(screen.getByLabelText('Sửa nội dung tin nhắn'), ' thêm') // phải khác nội dung hiện tại
     await userEvent.click(screen.getByRole('button', { name: 'Lưu' }))
     expect(await screen.findByRole('alert')).toBeInTheDocument()
     expect(screen.getByLabelText('Sửa nội dung tin nhắn')).toBeInTheDocument()
@@ -91,7 +92,7 @@ describe('MessageItem', () => {
     )
     expect(screen.getByText(/Gửi lỗi/)).toBeInTheDocument()
     expect(screen.getByText('Bạn gửi quá nhanh. Hãy đợi vài giây rồi thử lại.')).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Thử lại' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Gửi lại tin nhắn' }))
     expect(onRetry).toHaveBeenCalledWith('c1')
   })
 
@@ -100,12 +101,37 @@ describe('MessageItem', () => {
     render(
       <MessageItem {...props} onDiscard={onDiscard} message={{ ...base, id: -1, sender_id: 1, client_id: 'c1', pending: 'failed', errorCode: 'network_error' }} mine />,
     )
-    await userEvent.click(screen.getByRole('button', { name: 'Bỏ' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Bỏ tin nhắn chưa gửi' }))
     expect(onDiscard).toHaveBeenCalledWith('c1')
   })
 
   it('shows no discard button without the prop', () => {
     render(<MessageItem {...props} message={{ ...base, id: -1, sender_id: 1, client_id: 'c1', pending: 'failed' }} mine />)
-    expect(screen.queryByRole('button', { name: 'Bỏ' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Bỏ tin nhắn chưa gửi' })).not.toBeInTheDocument()
+  })
+
+  it('does not call onEdit when the text is unchanged, and hints when it is empty', async () => {
+    const onEdit = vi.fn().mockResolvedValue(undefined)
+    render(<MessageItem {...props} onEdit={onEdit} message={{ ...base, sender_id: 1, body: 'gốc' }} mine />)
+    await userEvent.click(screen.getByRole('button', { name: 'Sửa tin nhắn' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Lưu' }))
+    expect(onEdit).not.toHaveBeenCalled()
+    expect(screen.queryByLabelText('Sửa nội dung tin nhắn')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Sửa tin nhắn' }))
+    await userEvent.clear(screen.getByLabelText('Sửa nội dung tin nhắn'))
+    await userEvent.click(screen.getByRole('button', { name: 'Lưu' }))
+    expect(onEdit).not.toHaveBeenCalled()
+    expect(screen.getByText('Tin nhắn đang trống.')).toBeInTheDocument()
+  })
+
+  it('disables Cancel while saving', async () => {
+    let finish: () => void = () => {}
+    const onEdit = vi.fn().mockReturnValue(new Promise<void>((resolve) => { finish = resolve }))
+    render(<MessageItem {...props} onEdit={onEdit} message={{ ...base, sender_id: 1, body: 'gốc' }} mine />)
+    await userEvent.click(screen.getByRole('button', { name: 'Sửa tin nhắn' }))
+    await userEvent.type(screen.getByLabelText('Sửa nội dung tin nhắn'), '!')
+    await userEvent.click(screen.getByRole('button', { name: 'Lưu' }))
+    expect(screen.getByRole('button', { name: 'Huỷ' })).toBeDisabled()
+    finish()
   })
 })

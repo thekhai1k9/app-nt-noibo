@@ -138,4 +138,25 @@ describe('MessageList', () => {
     expect(screen.queryByText('tin 1')).not.toBeInTheDocument()
     expect(screen.getByText('Đang tải…')).toBeInTheDocument()
   })
+
+  it('offers a button to load older messages when there are more and none is loading', async () => {
+    const onLoadOlder = vi.fn()
+    const { rerender } = render(<MessageList {...base} onLoadOlder={onLoadOlder} hasMoreBefore items={[m(5)]} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Tải thêm tin cũ' }))
+    expect(onLoadOlder).toHaveBeenCalledTimes(1)
+    rerender(<MessageList {...base} onLoadOlder={onLoadOlder} hasMoreBefore loadingOlder items={[m(5)]} />)
+    expect(screen.queryByRole('button', { name: 'Tải thêm tin cũ' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the previous height reference fresh when the height changes without item changes', () => {
+    const metrics = { scrollHeight: 500, clientHeight: 400, scrollTop: 0 }
+    const { rerender } = render(<MessageList {...base} hasMoreBefore items={[m(5), m(6)]} />)
+    mockMetrics(listOf(), metrics)
+    listOf().dispatchEvent(new Event('scroll'))
+    metrics.scrollHeight = 560 // ví dụ ghi chú "đang tải" xuất hiện, không có tin mới
+    rerender(<MessageList {...base} hasMoreBefore loadingOlder items={[m(5), m(6)]} />)
+    metrics.scrollHeight = 860 // tin cũ được thêm lên đầu (300px) và ghi chú biến mất
+    rerender(<MessageList {...base} hasMoreBefore items={[m(3), m(4), m(5), m(6)]} />)
+    expect(metrics.scrollTop).toBe(300)
+  })
 })

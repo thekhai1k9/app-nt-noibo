@@ -21,11 +21,19 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onE
   const [draft, setDraft] = useState(message.body)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
+  const [hint, setHint] = useState(false)
   const canAct = mine && !message.deleted && !message.pending
 
   async function save() {
     const body = draft.trim()
-    if (!body) return
+    if (!body) {
+      setHint(true)
+      return
+    }
+    if (body === message.body) {
+      setEditing(false) // không đổi gì: chỉ đóng, không gọi máy chủ
+      return
+    }
     setBusy(true)
     setError(null)
     try {
@@ -57,7 +65,7 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onE
       )}
       <div className="msg-col">
         {showSender && !mine && <div className="msg-sender">{message.sender_name}</div>}
-        <div className={`bubble${message.pending === 'failed' ? ' bubble-failed' : ''}`}>
+        <div className={`bubble${message.pending === 'failed' ? ' bubble-failed' : ''}${editing ? ' bubble-editing' : ''}`}>
           {message.deleted ? (
             <em>Tin nhắn đã bị xoá</em>
           ) : editing ? (
@@ -68,10 +76,11 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onE
                 rows={2}
                 maxLength={4000}
                 value={draft}
-                onChange={(event) => setDraft(event.target.value)}
+                onChange={(event) => { setDraft(event.target.value); setHint(false) }}
               />
+              {hint && <div className="muted" role="status">Tin nhắn đang trống.</div>}
               <div className="row">
-                <button type="button" className="btn" onClick={() => { setEditing(false); setDraft(message.body); setError(null) }}>
+                <button type="button" className="btn" disabled={busy} onClick={() => { setEditing(false); setDraft(message.body); setError(null); setHint(false) }}>
                   Huỷ
                 </button>
                 <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void save()}>
@@ -91,11 +100,11 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onE
             <>
               <span className="msg-failed">Gửi lỗi</span>
               <span>{errorMessage(new ApiError(0, message.errorCode ?? 'network_error'))}</span>
-              <button type="button" className="btn btn-ghost" onClick={() => message.client_id && onRetry(message.client_id)}>
+              <button type="button" className="btn btn-ghost" aria-label="Gửi lại tin nhắn" onClick={() => message.client_id && onRetry(message.client_id)}>
                 Thử lại
               </button>
               {onDiscard && (
-                <button type="button" className="btn btn-ghost" onClick={() => message.client_id && onDiscard(message.client_id)}>
+                <button type="button" className="btn btn-ghost" aria-label="Bỏ tin nhắn chưa gửi" onClick={() => message.client_id && onDiscard(message.client_id)}>
                   Bỏ
                 </button>
               )}
