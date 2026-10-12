@@ -1,0 +1,8 @@
+:80 {
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+	handle {
+		respond "Kết Nối: giao diện web chưa được cài đặt." 200
+	}
+}

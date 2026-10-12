@@ -1,0 +1,9 @@
+# Chỉ dùng khi phát triển: mở cổng DB/Redis ở localhost để chạy pytest.
+# Khi triển khai thật, dùng: docker compose -f docker-compose.yml up -d
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
