@@ -1,5 +1,5 @@
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState, type FormEvent } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useRef, useState, type FormEvent } from 'react'
 import { ErrorAlert } from '../../components/ErrorAlert'
 import { Field } from '../../components/Field'
 import { api } from '../../lib/api'
@@ -80,7 +80,7 @@ function CreateRoomForm({ branches, users }: { branches: Branch[]; users: User[]
         <input className="input" aria-label="Lọc người dùng" placeholder="Lọc theo tên" value={filter} onChange={(e) => setFilter(e.target.value)} />
         <div className="stack" style={{ gap: 4, maxHeight: 240, overflowY: 'auto' }}>
           {visible.map((u) => (
-            <label key={u.id} className="row" style={{ flexWrap: 'nowrap', minHeight: 36 }}>
+            <label key={u.id} className="row" style={{ flexWrap: 'nowrap', minHeight: 44 }}>
               <input type="checkbox" checked={picked.includes(u.id)} onChange={() => toggle(u.id)} />
               <span className="ellipsis">
                 {u.full_name} <span className="muted">({u.username})</span>
@@ -108,6 +108,7 @@ function RoomDetail({ roomId, users, onArchived }: { roomId: number; users: User
   const [typed, setTyped] = useState('')
   const [error, setError] = useState<unknown>(null)
   const [busy, setBusy] = useState(false)
+  const archiving = useRef(false)
   const room = detail.data
 
   async function run(action: () => Promise<unknown>, after?: () => void) {
@@ -158,16 +159,18 @@ function RoomDetail({ roomId, users, onArchived }: { roomId: number; users: User
   }
 
   async function archive() {
-    if (!room || typed !== room.name) return
+    if (!room || typed.normalize('NFC') !== room.name.normalize('NFC') || archiving.current) return
+    archiving.current = true
     setBusy(true)
     setError(null)
     try {
       await api(`/admin/rooms/${roomId}`, { method: 'DELETE' })
+      onArchived()
       queryClient.removeQueries({ queryKey: ['admin', 'room', roomId] })
       await queryClient.invalidateQueries({ queryKey: ['admin', 'rooms'] })
-      onArchived()
     } catch (err) {
       setError(err)
+      archiving.current = false
       setBusy(false)
     }
   }
@@ -249,7 +252,7 @@ function RoomDetail({ roomId, users, onArchived }: { roomId: number; users: User
             autoComplete="off"
           />
         </div>
-        <button type="button" className="btn btn-danger" disabled={busy || typed !== room.name} onClick={() => void archive()}>
+        <button type="button" className="btn btn-danger" disabled={busy || typed.normalize('NFC') !== room.name.normalize('NFC')} onClick={() => void archive()}>
           Lưu trữ nhóm
         </button>
       </div>
@@ -273,9 +276,10 @@ export function RoomsPage() {
   const queryString = params.toString()
 
   const rooms = useQuery({
-    queryKey: ['admin', 'rooms', queryString],
+    queryKey: ['admin', 'rooms', tab, queryString],
     queryFn: () => api<AdminRoom[]>(`/admin/rooms${queryString ? `?${queryString}` : ''}`),
-    placeholderData: keepPreviousData,
+    // Giữ danh sách cũ khi gõ lọc, nhưng không bao giờ mang hàng của tab khác sang (nút sai hành động).
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[2] === tab ? previous : undefined),
   })
   const branches = useQuery({ queryKey: ['admin', 'branches'], queryFn: () => api<Branch[]>('/admin/branches') })
   const users = useActiveUsers()

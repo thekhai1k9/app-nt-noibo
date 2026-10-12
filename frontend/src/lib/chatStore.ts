@@ -74,7 +74,13 @@ export class ChatStore {
     const merged = rooms.map((r) => {
       const cur = this.state.rooms.find((x) => x.id === r.id)
       if (cur?.last_message && (!r.last_message || cur.last_message.id > r.last_message.id)) {
-        return { ...r, last_message: cur.last_message, last_activity: cur.last_activity > r.last_activity ? cur.last_activity : r.last_activity }
+        // Bản chụp cũ: đã bỏ sót các tin mới nhận qua WebSocket nên không được đếm thiếu chưa đọc.
+        return {
+          ...r,
+          last_message: cur.last_message,
+          last_activity: cur.last_activity > r.last_activity ? cur.last_activity : r.last_activity,
+          unread_count: Math.max(r.unread_count, cur.unread_count),
+        }
       }
       return r
     })

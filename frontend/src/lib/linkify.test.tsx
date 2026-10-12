@@ -36,4 +36,10 @@ describe('linkify', () => {
   it('returns plain text unchanged', () => {
     expect(html('không có liên kết')).toBe('<p>không có liên kết</p>')
   })
+
+  it('keeps a closing parenthesis that balances one inside the URL', () => {
+    const { container } = render(<p>{linkify('xem https://en.wikipedia.org/wiki/Foo_(bar). và (https://b.vn/x_(y))')}</p>)
+    const hrefs = [...container.querySelectorAll('a')].map((a) => a.getAttribute('href'))
+    expect(hrefs).toEqual(['https://en.wikipedia.org/wiki/Foo_(bar)', 'https://b.vn/x_(y)'])
+  })
 })

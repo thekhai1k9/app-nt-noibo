@@ -30,7 +30,7 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onE
       setHint(true)
       return
     }
-    if (body === message.body) {
+    if (body === message.body.trim()) {
       setEditing(false) // không đổi gì: chỉ đóng, không gọi máy chủ
       return
     }

@@ -86,6 +86,7 @@ export function MessageList(props: Props) {
       snapshot.current.scrollHeight = el.scrollHeight
     })
     observer.observe(inner)
+    observer.observe(el) // ô soạn tin to ra / đổi cỡ cửa sổ làm đổi chiều cao khung cuộn
     return () => observer.disconnect()
   }, [])
 

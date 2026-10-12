@@ -170,6 +170,17 @@ describe('ChatStore reconciliation and buffering', () => {
     expect(store.getState().threads[1].error).toBe(false)
   })
 
+  it('setRooms keeps the higher unread count only when the store saw newer messages', () => {
+    const store = new ChatStore()
+    store.setRooms([room(1, { last_message: msg(10), unread_count: 3 })])
+    store.setRooms([room(1, { last_message: msg(8), unread_count: 1 })]) // snapshot older: store wins
+    expect(store.getState().rooms[0].unread_count).toBe(3)
+    store.setRooms([room(1, { last_message: msg(12), unread_count: 0 })]) // snapshot newer: read elsewhere
+    expect(store.getState().rooms[0].unread_count).toBe(0)
+    store.setRooms([room(1, { last_message: msg(12), unread_count: 5 })]) // same message: snapshot wins
+    expect(store.getState().rooms[0].unread_count).toBe(5)
+  })
+
   it('setRooms does not replace a newer preview with an older snapshot', () => {
     const store = new ChatStore()
     store.setRooms([room(1, { last_message: msg(10) })])

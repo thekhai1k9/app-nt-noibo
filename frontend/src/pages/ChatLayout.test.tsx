@@ -139,6 +139,77 @@ describe('chat layout', () => {
     expect(screen.getByRole('link', { name: /Trần Quốc Huy/ })).toBeInTheDocument()
   })
 
+  it('filters without diacritics or case and says so when nothing matches', async () => {
+    mockFetch(routes())
+    renderApp('/')
+    await screen.findByRole('link', { name: /Dự án kho/ })
+    const input = screen.getByLabelText('Lọc cuộc trò chuyện')
+    await userEvent.type(input, 'DU AN')
+    expect(screen.getByRole('link', { name: /Dự án kho/ })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Trần Quốc Huy/ })).not.toBeInTheDocument()
+    await userEvent.clear(input)
+    await userEvent.type(input, 'khoa')
+    expect(screen.getByText('Không có cuộc trò chuyện nào khớp.')).toBeInTheDocument()
+    await userEvent.clear(input)
+    await userEvent.type(input, 'tran quoc')
+    expect(screen.getByRole('link', { name: /Trần Quốc Huy/ })).toBeInTheDocument()
+  })
+
+  it('matches đ/Đ with d', async () => {
+    mockFetch({ ...routes(), 'GET /api/rooms': { json: [makeRoom({ id: 7, name: 'Đức Anh' })] } } as Parameters<typeof mockFetch>[0])
+    renderApp('/')
+    await screen.findByRole('link', { name: /Đức Anh/ })
+    await userEvent.type(screen.getByLabelText('Lọc cuộc trò chuyện'), 'duc')
+    expect(screen.getByRole('link', { name: /Đức Anh/ })).toBeInTheDocument()
+  })
+
+  it('ignores Escape, Đóng and backdrop while opening a chat, then returns focus to the trigger on close', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    const { fn } = mockFetch(
+      routes({
+        'GET /api/users/directory': { json: [{ id: 3, username: 'huy', full_name: 'Trần Quốc Huy', branch_id: 2, branch_name: 'TP.HCM' }] },
+        'POST /api/rooms/direct': { status: 200, json: makeRoom({ id: 2, type: 'direct', name: 'Trần Quốc Huy', peer_id: 3 }) },
+        'GET /api/rooms/2/messages': { json: { items: [], has_more_before: false, has_more_after: false } },
+      }),
+    )
+    const original = fn.getMockImplementation()!
+    fn.mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/rooms/direct')) await gate
+      return original(input, init)
+    })
+    renderApp('/')
+    const trigger = await screen.findByRole('button', { name: 'Cuộc trò chuyện mới' })
+    await userEvent.click(trigger)
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(await within(dialog).findByRole('button', { name: /Trần Quốc Huy/ }))
+    await userEvent.keyboard('{Escape}')
+    await userEvent.click(document.querySelector('.dialog-backdrop') as HTMLElement)
+    expect(within(dialog).getByRole('button', { name: 'Đóng' })).toBeDisabled()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    release()
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(trigger).toHaveFocus()
+  })
+
+  it('focuses the search box, keeps Tab inside the dialog and returns focus when closed', async () => {
+    mockFetch(routes({ 'GET /api/users/directory': { json: [] } }))
+    renderApp('/')
+    const trigger = await screen.findByRole('button', { name: 'Cuộc trò chuyện mới' })
+    await userEvent.click(trigger)
+    const search = await screen.findByLabelText('Tìm người')
+    expect(search).toHaveFocus()
+    const dialog = screen.getByRole('dialog')
+    for (let i = 0; i < 4; i++) {
+      await userEvent.tab()
+      expect(dialog.contains(document.activeElement)).toBe(true)
+    }
+    await userEvent.tab({ shift: true })
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    await userEvent.keyboard('{Escape}')
+    expect(trigger).toHaveFocus()
+  })
+
   it('starts a direct chat from the directory', async () => {
     const { calls } = mockFetch(
       routes({

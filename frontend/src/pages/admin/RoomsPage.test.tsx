@@ -266,6 +266,50 @@ describe('RoomsPage', () => {
     expect(await screen.findByText('Nhóm cũ')).toBeInTheDocument()
   })
 
+  it('never shows the other tab rows with the wrong actions while a tab is loading', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    const { fn } = mockFetch({
+      ...base(),
+      'GET /api/admin/rooms?archived=true': { json: [archivedRoom] },
+    })
+    const original = fn.getMockImplementation()!
+    fn.mockImplementation(async (input, init) => {
+      if (String(input).includes('archived=true')) await gate
+      return original(input, init)
+    })
+    await openPage()
+    await userEvent.click(screen.getByRole('tab', { name: 'Đã lưu trữ' }))
+    expect(screen.queryByText('Dự án kho')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Quản lý/ })).not.toBeInTheDocument()
+    release()
+    expect(await screen.findByText('Nhóm cũ')).toBeInTheDocument()
+    expect(screen.queryByText('Dự án kho')).not.toBeInTheDocument()
+  })
+
+  it('requests only active users for the member lists', async () => {
+    const { calls } = mockFetch(base())
+    await openPage()
+    expect(calls.some((c) => c.method === 'GET' && c.path === '/api/admin/users?is_active=true')).toBe(true)
+  })
+
+  it('fires a single DELETE on a double click and accepts a decomposed (NFD) typed name', async () => {
+    const { calls } = mockFetch({
+      ...base(),
+      'GET /api/admin/rooms/10': { json: detailOf(khoRoom, [2]) },
+      'DELETE /api/admin/rooms/10': { status: 204 },
+    })
+    await openPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Quản lý Dự án kho' }))
+    const confirm = await screen.findByLabelText('Gõ tên nhóm để xác nhận')
+    await userEvent.type(confirm, 'Dự án kho'.normalize('NFD'))
+    const archive = screen.getByRole('button', { name: 'Lưu trữ nhóm' })
+    expect(archive).toBeEnabled()
+    await userEvent.dblClick(archive)
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Tạo nhóm mới' })).toBeInTheDocument())
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1)
+  })
+
   it('shows an empty message when nothing is archived', async () => {
     mockFetch({ ...base(), 'GET /api/admin/rooms?archived=true': { json: [] } })
     await openPage()

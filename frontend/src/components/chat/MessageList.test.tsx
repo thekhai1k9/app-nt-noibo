@@ -172,4 +172,30 @@ describe('MessageList', () => {
     rerender(<MessageList {...base} hasMoreBefore items={[m(3), m(4), m(5), m(6)]} />)
     expect(metrics.scrollTop).toBe(300)
   })
+
+  it('re-pins to the bottom when the scroll container itself resizes while at the bottom', () => {
+    const callbacks: Array<() => void> = []
+    const observed: Element[] = []
+    class FakeRO {
+      constructor(cb: () => void) {
+        callbacks.push(cb)
+      }
+      observe(el: Element) {
+        observed.push(el)
+      }
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', FakeRO)
+    try {
+      const metrics = { scrollHeight: 500, clientHeight: 400, scrollTop: 100 }
+      render(<MessageList {...base} items={[m(5), m(6)]} />)
+      expect(observed).toContain(listOf())
+      mockMetrics(listOf(), metrics)
+      metrics.scrollHeight = 520
+      callbacks.forEach((cb) => cb())
+      expect(metrics.scrollTop).toBe(520)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })

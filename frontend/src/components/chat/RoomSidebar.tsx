@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link, NavLink } from 'react-router-dom'
 import { useAuth } from '../../lib/auth'
 import { initials, listTime } from '../../lib/format'
@@ -6,6 +6,15 @@ import { useRooms } from '../../lib/ChatProvider'
 import type { Room } from '../../lib/types'
 import { ErrorAlert } from '../ErrorAlert'
 import { NewChatDialog } from './NewChatDialog'
+
+/** Bỏ dấu tiếng Việt và chữ hoa/thường để lọc: "duc" khớp "Đức". */
+function fold(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[đĐ]/g, 'd')
+    .toLowerCase()
+}
 
 function preview(room: Room): string {
   const last = room.last_message
@@ -19,10 +28,12 @@ export function RoomSidebar() {
   const { rooms, loaded, error } = useRooms()
   const [filter, setFilter] = useState('')
   const [dialog, setDialog] = useState(false)
+  const newChatButton = useRef<HTMLButtonElement>(null)
   const [logoutError, setLogoutError] = useState<unknown>(null)
   const [pending, setPending] = useState(false)
 
-  const shown = rooms.filter((room) => (room.name ?? '').toLowerCase().includes(filter.trim().toLowerCase()))
+  const needle = fold(filter.trim())
+  const shown = rooms.filter((room) => fold(room.name ?? '').includes(needle))
 
   async function onLogout() {
     setLogoutError(null)
@@ -40,7 +51,7 @@ export function RoomSidebar() {
       <div className="chat-side-head">
         <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'nowrap' }}>
           <strong style={{ fontSize: 18 }}>Kết Nối</strong>
-          <button type="button" className="btn" aria-label="Cuộc trò chuyện mới" onClick={() => setDialog(true)}>
+          <button ref={newChatButton} type="button" className="btn" aria-label="Cuộc trò chuyện mới" onClick={() => setDialog(true)}>
             + Mới
           </button>
         </div>
@@ -49,6 +60,9 @@ export function RoomSidebar() {
       <nav className="chat-side-list" aria-label="Cuộc trò chuyện">
         {error && !loaded && <div className="alert-error">Không tải được danh sách. Đang thử lại khi có kết nối.</div>}
         {loaded && rooms.length === 0 && <div className="muted" style={{ padding: 12 }}>Chưa có cuộc trò chuyện nào. Bấm "+ Mới" để bắt đầu.</div>}
+        {loaded && rooms.length > 0 && shown.length === 0 && (
+          <div className="muted" style={{ padding: 12 }}>Không có cuộc trò chuyện nào khớp.</div>
+        )}
         {shown.map((room) => (
           <NavLink key={room.id} to={`/chat/${room.id}`} className="room-item">
             <span className={`room-avatar${room.type === 'direct' ? ' direct' : ''}`} aria-hidden="true">
@@ -84,7 +98,12 @@ export function RoomSidebar() {
         </div>
         <ErrorAlert error={logoutError} />
       </div>
-      {dialog && <NewChatDialog onClose={() => setDialog(false)} />}
+      {dialog && <NewChatDialog
+          onClose={() => {
+            setDialog(false)
+            newChatButton.current?.focus()
+          }}
+        />}
     </aside>
   )
 }

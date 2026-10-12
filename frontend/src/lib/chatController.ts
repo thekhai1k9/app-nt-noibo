@@ -142,8 +142,10 @@ export class ChatController {
   private transmit(clientId: string): void {
     const meta = this.pendingMeta.get(clientId)
     if (!meta) return
-    this.armTimeout(clientId)
-    this.deps.socket.send({ type: 'send', room_id: meta.roomId, body: meta.body, client_id: clientId })
+    // Chỉ hẹn giờ báo lỗi khi tin thực sự đã được gửi đi; khi offline tin nằm chờ và sẽ được gửi lại lúc `ready`.
+    if (this.deps.socket.send({ type: 'send', room_id: meta.roomId, body: meta.body, client_id: clientId })) {
+      this.armTimeout(clientId)
+    }
   }
 
   private armTimeout(clientId: string): void {

@@ -139,6 +139,7 @@ describe('ChatController: optimistic send', () => {
     const items = store.getState().threads[1].items
     expect(items.map((m) => m.id)).toEqual([1, 2, 3, 4])
     expect(items.some((m) => m.pending)).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
     vi.advanceTimersByTime(60_000) // hẹn giờ lỗi đã bị huỷ
     expect(store.getState().threads[1].items.some((m) => m.pending)).toBe(false)
   })
@@ -161,6 +162,34 @@ describe('ChatController: optimistic send', () => {
     const payloads = socket.send.mock.calls.map((c) => c[0])
     expect(payloads.filter((p) => p.client_id === 'cid-1').length).toBeGreaterThanOrEqual(2)
     expect(payloads.at(-1)).toEqual({ type: 'send', room_id: 1, body: 'gửi sau', client_id: 'cid-1' })
+  })
+
+  it('does not fail a message queued while offline for longer than the timeout; it is sent on ready', async () => {
+    const { controller, socket, setOpen, store } = setup({ open: false })
+    await controller.openRoom(1)
+    controller.send(1, 'chờ lâu')
+    expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(60_000)
+    expect(store.getState().threads[1].items.at(-1)!.pending).toBe('sending')
+    setOpen(true)
+    socket.send.mockClear()
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    await flush()
+    expect(socket.send).toHaveBeenCalledWith({ type: 'send', room_id: 1, body: 'chờ lâu', client_id: 'cid-1' })
+    controller.handleSocketEvent({ type: 'message', message: msg(4, { sender_id: 1, body: 'chờ lâu', client_id: 'cid-1' }) })
+    const items = store.getState().threads[1].items
+    expect(items.some((m) => m.pending)).toBe(false)
+    expect(items.at(-1)!.id).toBe(4)
+  })
+
+  it('still fails an online send after the timeout when no echo arrives', async () => {
+    const { controller, store } = setup()
+    await controller.openRoom(1)
+    controller.send(1, 'không echo')
+    vi.advanceTimersByTime(14_999)
+    expect(store.getState().threads[1].items.at(-1)!.pending).toBe('sending')
+    vi.advanceTimersByTime(1)
+    expect(store.getState().threads[1].items.at(-1)!.pending).toBe('failed')
   })
 
   it('marks a message as failed after the timeout, and retry resends it with the same client_id', async () => {
@@ -402,7 +431,7 @@ describe('ChatController: REST reconciliation, buffering, discard', () => {
   const one = (m: Message): MessagePage => ({ items: [m], has_more_before: false, has_more_after: false })
 
   it('a failed message is reconciled by catch-up when the server had stored it', async () => {
-    const { controller, api, store } = setup()
+    const { controller, api, store, socket } = setup()
     await controller.openRoom(1)
     controller.send(1, 'x')
     vi.advanceTimersByTime(15_000)
@@ -410,7 +439,9 @@ describe('ChatController: REST reconciliation, buffering, discard', () => {
     controller.handleSocketEvent({ type: 'ready', user_id: 1 })
     await flush()
     expect(store.getState().threads[1].items.map((m) => m.id)).toEqual([1, 2, 3, 4])
+    socket.send.mockClear()
     controller.retry('cid-1') // meta cleared: no-op
+    expect(socket.send).not.toHaveBeenCalled()
     expect(store.getState().threads[1].items).toHaveLength(4)
   })
 
@@ -432,9 +463,11 @@ describe('ChatController: REST reconciliation, buffering, discard', () => {
     const { controller, api, store } = setup()
     await controller.openRoom(1)
     controller.send(1, 'x')
+    expect(vi.getTimerCount()).toBe(1)
     api.messages.mockResolvedValueOnce(one(mineEcho(4, 'cid-1')))
     await controller.openRoom(1)
     expect(store.getState().threads[1].items.map((m) => m.id)).toEqual([1, 2, 3, 4])
+    expect(vi.getTimerCount()).toBe(0) // hẹn giờ lỗi đã bị huỷ, không chỉ là vô hại
     vi.advanceTimersByTime(60_000)
     controller.handleSocketEvent({ type: 'message', message: mineEcho(4, 'cid-1') })
     expect(store.getState().threads[1].items.map((m) => m.id)).toEqual([1, 2, 3, 4])

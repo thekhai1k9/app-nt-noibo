@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import type { ChatMessage } from '../../lib/chatStore'
@@ -132,6 +132,17 @@ describe('MessageItem', () => {
     await userEvent.type(screen.getByLabelText('Sửa nội dung tin nhắn'), '!')
     await userEvent.click(screen.getByRole('button', { name: 'Lưu' }))
     expect(screen.getByRole('button', { name: 'Huỷ' })).toBeDisabled()
-    finish()
+    await act(async () => {
+      finish()
+    })
+  })
+
+  it('treats an edit that only differs by surrounding whitespace as unchanged', async () => {
+    const onEdit = vi.fn()
+    render(<MessageItem {...props} onEdit={onEdit} message={{ ...base, sender_id: 1, body: 'gốc  ' }} mine />)
+    await userEvent.click(screen.getByRole('button', { name: 'Sửa tin nhắn' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Lưu' }))
+    expect(onEdit).not.toHaveBeenCalled()
+    expect(screen.queryByLabelText('Sửa nội dung tin nhắn')).not.toBeInTheDocument()
   })
 })

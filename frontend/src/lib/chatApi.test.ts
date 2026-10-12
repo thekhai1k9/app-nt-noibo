@@ -9,10 +9,12 @@ describe('chatApi', () => {
     await chatApi.messages(5, {})
     await chatApi.messages(5, { before: 10, limit: 20 })
     await chatApi.messages(5, { after: 7 })
+    await chatApi.messages(5, { around: 42, limit: 30 })
     expect(calls.map((c) => c.path)).toEqual([
       '/api/rooms/5/messages',
       '/api/rooms/5/messages?before=10&limit=20',
       '/api/rooms/5/messages?after=7',
+      '/api/rooms/5/messages?around=42&limit=30',
     ])
   })
 

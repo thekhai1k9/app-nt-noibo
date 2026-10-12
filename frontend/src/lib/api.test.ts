@@ -4,6 +4,7 @@ import {
   ApiError,
   api,
   getAccessToken,
+  handleAuthLost,
   refreshSession,
   resetApiState,
   setAccessToken,
@@ -231,5 +232,16 @@ describe('waitForRefresh', () => {
     pending[1]('new')
     await expect(joined).resolves.toBe('ok')
     await newer
+  })
+
+  it('handleAuthLost clears the token and notifies the registered handler', () => {
+    const handler = vi.fn()
+    setAccessToken('abc')
+    setAuthLostHandler(handler)
+    handleAuthLost()
+    expect(getAccessToken()).toBeNull()
+    expect(handler).toHaveBeenCalledTimes(1)
+    setAuthLostHandler(null)
+    expect(() => handleAuthLost()).not.toThrow()
   })
 })

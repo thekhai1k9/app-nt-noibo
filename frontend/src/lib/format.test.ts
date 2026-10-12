@@ -34,4 +34,26 @@ describe('format', () => {
     expect(sameDay(at(2026, 10, 15, 0, 1), at(2026, 10, 15, 23, 59))).toBe(true)
     expect(sameDay(at(2026, 10, 15), at(2026, 10, 16))).toBe(false)
   })
+
+  it('returns an empty string for invalid timestamps', () => {
+    for (const fn of [formatTime, formatDateTime, (v: string) => dayLabel(v, now), (v: string) => listTime(v, now)]) {
+      expect(fn('không phải ngày')).toBe('')
+      expect(fn('')).toBe('')
+    }
+  })
+
+  it('treats a timestamp a little in the future (client clock behind) as today', () => {
+    const early = new Date(2026, 9, 15, 11, 0)
+    const future = new Date(2026, 9, 16, 0, 5).toISOString() // 13h sau, sang ngày hôm sau
+    expect(dayLabel(future, early)).toBe('Hôm nay')
+    expect(listTime(future, early)).toBe('00:05')
+    expect(dayLabel(at(2026, 10, 20), now)).toBe('20/10/2026') // quá xa thì hiện ngày
+  })
+
+  it('counts calendar days across a month boundary', () => {
+    const first = new Date(2026, 9, 1, 0, 30)
+    expect(dayLabel(at(2026, 9, 30, 23, 30), first)).toBe('Hôm qua')
+    expect(listTime(at(2026, 9, 30, 23, 30), first)).toBe('Hôm qua')
+    expect(dayLabel(at(2026, 9, 29, 12, 0), first)).toBe('29/09/2026')
+  })
 })
