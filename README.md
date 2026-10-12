@@ -30,6 +30,38 @@ npm test         # chạy test (Vitest)
 npm run build    # kiểm tra kiểu và build ra frontend/dist
 ```
 
+## Giao diện chat
+
+**Bố cục.** Cột trái là danh sách cuộc trò chuyện (nhóm và nhắn riêng, xếp theo hoạt động mới nhất, kèm tin cuối và số chưa đọc), ô "Lọc theo tên" và nút **"+ Mới"** để tìm đồng nghiệp theo tên hoặc tên đăng nhập rồi nhắn riêng. Chân cột trái có lời chào, "Quản trị" (chỉ admin), "Đổi mật khẩu", "Đăng xuất". Cột phải là hội thoại đang mở với ô soạn tin ở dưới (Enter để gửi, Shift+Enter xuống dòng; Enter của bộ gõ tiếng Việt khi đang soạn chữ không gửi tin). Trên điện thoại (màn hình hẹp) chỉ hiện một trong hai: danh sách, hoặc hội thoại có nút "←" (Về danh sách).
+
+**Hành vi.**
+- Tin vừa gửi hiện ngay với trạng thái "Đang gửi…". Mất mạng thì tin chờ gửi và tự gửi lại khi kết nối có lại (mỗi tin có `client_id` nên không bao giờ bị lưu hai lần); quá 15 giây chưa gửi được thì hiện "Gửi lỗi" với nút "Thử lại"/"Bỏ". Trong lúc mất kết nối có dải "Đang kết nối lại…"; khi nối lại, tin bị lỡ được tải bù.
+- Số chưa đọc cập nhật trực tiếp, không cần tải lại trang; mở phòng thì được đánh dấu đã đọc. Nhóm mới, thành viên thay đổi hay phòng nhắn riêng mới hiện ra ngay (sự kiện `rooms_changed`).
+- Mở phòng thì nhảy tới tin mới nhất; cuộn lên đầu để tải thêm tin cũ (vị trí đang đọc giữ nguyên). Đang đọc tin cũ mà có tin mới thì hiện nút "↓ N tin mới" thay vì kéo xuống.
+- Sửa ("(đã sửa)") và xoá ("Tin nhắn đã bị xoá", nội dung bị bỏ với mọi người) được với tin của chính mình.
+- Tin nhắn chỉ là văn bản thuần: không hiển thị HTML; chỉ địa chỉ `http://` và `https://` được tự nhận thành liên kết (mở tab mới, `rel="noopener noreferrer nofollow"`).
+
+**Trang admin "Phòng và nhóm"** (`/admin/rooms`): tìm và lọc nhóm theo chi nhánh; tạo nhóm (tên, chi nhánh hoặc liên chi nhánh, chọn thành viên); đổi tên; thêm, gỡ thành viên. Admin không xem được nội dung tin nhắn. **"Xoá" nhóm là lưu trữ**: phải gõ lại đúng tên nhóm để xác nhận; nhóm biến mất ngay với mọi thành viên nhưng được giữ 3 ngày ở tab "Đã lưu trữ" (kèm thời điểm xoá) và có thể **"Khôi phục"** nguyên vẹn cùng tin nhắn trong thời gian đó; hết hạn thì tự động bị **xoá vĩnh viễn cùng toàn bộ tin nhắn**. Số ngày giữ đặt bằng `ROOM_ARCHIVE_RETENTION_DAYS` (mặc định 3), chu kỳ dọn bằng `ROOM_PURGE_INTERVAL_SECONDS` (xem `.env.example`).
+
+### Kiểm tra trên trình duyệt thật: `scripts/e2e_chat_ui.mjs`
+
+**Chỉ chạy trên stack thử nghiệm**: script tạo người dùng và nhóm, đổi mật khẩu admin, khoá một tài khoản. Nó điều khiển Chromium qua Playwright với hai người dùng song song và kiểm: gửi/nhận tức thì, chưa đọc, nhắn riêng mới, mất mạng rồi nối lại (bù tin, không trùng), gửi khi mất mạng, sửa/xoá, cuộn (đúng đáy khi mở, giữ vị trí khi tải tin cũ, "↓ N tin mới"), an toàn liên kết/HTML, token không nằm trong storage hay URL, giao diện điện thoại 390px, lưu trữ và khôi phục nhóm, khoá tài khoản, không có lỗi JavaScript.
+
+Playwright được cài **ngoài repo** (một lần):
+
+```bash
+mkdir /tmp/kn-e2e && cd /tmp/kn-e2e && npm init -y && npm i playwright@1.49.1 && npx playwright install chromium
+```
+
+Chạy (từ thư mục gốc repo, Node 22+, stack đã `docker compose up -d --build` và có admin mới tạo bằng `create-admin`):
+
+```bash
+PLAYWRIGHT_DIR=/tmp/kn-e2e BASE_URL=http://localhost ADMIN_USER=ui.admin ADMIN_TEMP_PASSWORD=<mật khẩu tạm> \
+  node scripts/e2e_chat_ui.mjs
+```
+
+Script in `PASS`/`FAIL` cho từng bước, tổng kết `N/M đạt` và thoát mã 1 nếu có bước hỏng. Tuỳ chọn: `SHOT_DIR=<thư mục>` để lưu ảnh chụp các trang khi một bước hỏng, `HEADED=1` để xem trình duyệt chạy. Tên người dùng và nhóm có hậu tố ngẫu nhiên nên chạy lại được trên cùng stack (admin đã đổi mật khẩu ở lần chạy trước vẫn dùng được).
+
 ## API chat (tóm tắt)
 
 Tất cả dưới `/api`, cần `Authorization: Bearer <access token>` và đã đổi mật khẩu lần đầu.
