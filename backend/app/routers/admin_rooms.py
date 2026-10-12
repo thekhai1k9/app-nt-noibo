@@ -7,8 +7,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat import service
-from app.config import get_settings
 from app.chat.bus import MessageBus, publish_user_safely
+from app.config import get_settings
 from app.db import get_session
 from app.deps import require_admin
 from app.ids import BranchId, BranchIdQuery, RoomIdPath, UserId, UserIdPath

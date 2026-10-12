@@ -68,6 +68,9 @@ async def test_migrations_match_models(scratch_alembic):
             indexdef = (
                 await conn.execute(text("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_messages_room_id_id'"))
             ).scalar_one()
+            rooms_idx = (
+                await conn.execute(text("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_rooms_archived_at'"))
+            ).scalar_one()
             uq = (
                 await conn.execute(text("SELECT conname FROM pg_constraint WHERE conname = 'uq_messages_room_sender_client'"))
             ).scalar_one()
@@ -75,6 +78,7 @@ async def test_migrations_match_models(scratch_alembic):
         await engine.dispose()
     assert "room_id" in indexdef and "id DESC" in indexdef, indexdef
     assert uq == "uq_messages_room_sender_client"
+    assert "archived_at" in rooms_idx and "WHERE (archived_at IS NOT NULL)" in rooms_idx, rooms_idx
 
 
 async def test_migrations_roundtrip(scratch_alembic):

@@ -2,9 +2,9 @@ import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
-from sqlalchemy import delete
+from sqlalchemy import delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Room
@@ -18,8 +18,8 @@ async def purge_archived_rooms(
     now: datetime | None = None,
 ) -> int:
     """Xoá cứng các nhóm đã lưu trữ quá hạn (tin nhắn, thành viên mất theo ON DELETE CASCADE). Trả số nhóm đã xoá."""
-    now = now or datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=retention_days)
+    # archived_at được đóng dấu bằng func.now() của DB nên mặc định so với đồng hồ DB (không lệch múi/đồng hồ app).
+    cutoff = func.now() - timedelta(days=retention_days) if now is None else now - timedelta(days=retention_days)
     async with session_factory() as session:
         result = await session.execute(
             delete(Room).where(Room.type == "group", Room.archived_at.is_not(None), Room.archived_at <= cutoff)
