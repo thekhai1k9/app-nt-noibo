@@ -56,21 +56,27 @@ async def get_or_create_direct(session: AsyncSession, me: User, other_id: int) -
     existing = (await session.execute(select(Room).where(Room.direct_key == key))).scalar_one_or_none()
     if existing is not None:
         return existing, False
-    room = Room(type="direct", direct_key=key, created_by=me.id)
-    session.add(room)
+    me_id = me.id
+    room = Room(type="direct", direct_key=key, created_by=me_id)
     try:
-        await session.flush()
+        # SAVEPOINT: nếu thua cuộc đua, chỉ việc chèn phòng bị huỷ; `me` vẫn dùng được.
+        async with session.begin_nested():
+            session.add(room)
+            await session.flush()
     except IntegrityError:
         # Người kia vừa tạo cùng lúc: ràng buộc unique đảm bảo chỉ một phòng.
-        await session.rollback()
-        existing = (await session.execute(select(Room).where(Room.direct_key == key))).scalar_one()
+        existing = (await session.execute(select(Room).where(Room.direct_key == key))).scalar_one_or_none()
+        if existing is None:
+            raise
         return existing, False
-    session.add_all([RoomMember(room_id=room.id, user_id=me.id), RoomMember(room_id=room.id, user_id=other_id)])
+    session.add_all([RoomMember(room_id=room.id, user_id=me_id), RoomMember(room_id=room.id, user_id=other_id)])
     await session.commit()
     return room, True
 
 
 def _clean_body(body: str) -> str:
+    if "\x00" in body:
+        raise ChatError(400, "invalid_message")
     body = body.strip()
     if not body:
         raise ChatError(400, "empty_message")
@@ -83,8 +89,11 @@ async def send_message(
     session: AsyncSession, user_id: int, room_id: int, body: str, client_id: str | None
 ) -> tuple[Message, str, bool]:
     body = _clean_body(body)
-    if client_id is not None and len(client_id) > MAX_CLIENT_ID:
-        raise ChatError(400, "invalid_client_id")
+    if client_id is not None:
+        if "\x00" in client_id:
+            raise ChatError(400, "invalid_message")
+        if client_id == "" or len(client_id) > MAX_CLIENT_ID:
+            raise ChatError(400, "invalid_client_id")
     user = await session.get(User, user_id)
     if user is None or not user.is_active:
         raise ChatError(401, "not_authenticated")
@@ -138,13 +147,18 @@ async def list_messages(
         target = (await session.execute(base.where(Message.id == around))).first()
         if target is None:
             raise ChatError(404, "message_not_found")
-        half = max(1, limit // 2)
+        before_count = (limit - 1) // 2
+        after_count = limit - 1 - before_count
         older = (
-            await session.execute(base.where(Message.id < around).order_by(Message.id.desc()).limit(half + 1))
+            await session.execute(base.where(Message.id < around).order_by(Message.id.desc()).limit(before_count + 1))
         ).all()
-        newer = (await session.execute(base.where(Message.id > around).order_by(Message.id).limit(half + 1))).all()
-        rows = list(reversed(older[:half])) + [target] + newer[:half]
-        return MessagePage(items=out(rows), has_more_before=len(older) > half, has_more_after=len(newer) > half)
+        newer = (
+            await session.execute(base.where(Message.id > around).order_by(Message.id).limit(after_count + 1))
+        ).all()
+        rows = list(reversed(older[:before_count])) + [target] + newer[:after_count]
+        return MessagePage(
+            items=out(rows), has_more_before=len(older) > before_count, has_more_after=len(newer) > after_count
+        )
 
     query = base if before is None else base.where(Message.id < before)
     rows = (await session.execute(query.order_by(Message.id.desc()).limit(limit + 1))).all()
@@ -226,7 +240,7 @@ async def list_rooms(session: AsyncSession, user_id: int) -> list[RoomOut]:
                 last_activity=last_message.created_at if last_message else room.created_at,
             )
         )
-    result.sort(key=lambda r: r.last_activity, reverse=True)
+    result.sort(key=lambda r: (r.last_activity, r.id), reverse=True)
     return result
 
 
@@ -245,9 +259,11 @@ async def mark_read(session: AsyncSession, room_id: int, user_id: int, message_i
 
 async def _own_message(session: AsyncSession, user_id: int, message_id: int) -> Message:
     message = await session.get(Message, message_id)
-    if message is None or message.deleted_at is not None:
+    if message is None:
         raise ChatError(404, "message_not_found")
     await require_member(session, message.room_id, user_id)
+    if message.deleted_at is not None:
+        raise ChatError(404, "message_not_found")
     if message.sender_id != user_id:
         raise ChatError(403, "forbidden")
     return message
