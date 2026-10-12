@@ -180,3 +180,39 @@ async def test_write_endpoints_require_admin(client, member_headers):
         member = await getattr(client, method)(url, headers=member_headers, **kwargs)
         assert member.status_code == 403, url
         assert member.json()["detail"] == "forbidden", url
+
+
+async def test_reactivated_user_old_refresh_cookie_stays_revoked(client, admin_headers):
+    # Kích hoạt lại không được làm sống lại refresh token cũ: việc thu hồi phải thật sự xảy ra khi khóa.
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import create_app
+
+    uid = await create_user("victim")
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as victim:
+        assert (await login(victim, "victim")).status_code == 200
+        old_cookie = victim.cookies.get("refresh_token")
+        url = f"/api/admin/users/{uid}"
+        assert (await client.patch(url, headers=admin_headers, json={"is_active": False})).status_code == 200
+        assert (await client.patch(url, headers=admin_headers, json={"is_active": True})).status_code == 200
+
+        r = await victim.post("/api/auth/refresh", headers={"cookie": f"refresh_token={old_cookie}"})
+        assert r.status_code == 401
+        assert r.json()["detail"] == "invalid_refresh"
+
+
+async def test_reset_password_revokes_old_refresh_cookie(client, admin_headers):
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import create_app
+
+    uid = await create_user("victim")
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as victim:
+        assert (await login(victim, "victim")).status_code == 200
+        old_cookie = victim.cookies.get("refresh_token")
+        reset = await client.post(f"/api/admin/users/{uid}/reset-password", headers=admin_headers)
+        assert reset.status_code == 200
+
+        r = await victim.post("/api/auth/refresh", headers={"cookie": f"refresh_token={old_cookie}"})
+        assert r.status_code == 401
+        assert r.json()["detail"] == "invalid_refresh"

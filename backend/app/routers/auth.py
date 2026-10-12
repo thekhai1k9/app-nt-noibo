@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -39,7 +40,9 @@ async def login(
         raise HTTPException(status_code=429, detail="too_many_attempts")
 
     user = (await session.execute(select(User).where(User.username == username))).scalar_one_or_none()
-    password_ok = verify_password(user.password_hash if user else _DUMMY_HASH, body.password)
+    password_ok = await asyncio.to_thread(
+        verify_password, user.password_hash if user else _DUMMY_HASH, body.password
+    )
     if user is None or not user.is_active or not password_ok:
         raise HTTPException(status_code=401, detail="invalid_credentials")
 
@@ -118,11 +121,11 @@ async def change_password(
 ) -> TokenOut:
     # get_current_user và endpoint này dùng chung một AsyncSession trong cùng request
     # (FastAPI cache dependency), nên `user` đã gắn với `session`.
-    if not verify_password(user.password_hash, body.current_password):
+    if not await asyncio.to_thread(verify_password, user.password_hash, body.current_password):
         raise HTTPException(status_code=400, detail="wrong_current_password")
     if body.new_password == body.current_password:
         raise HTTPException(status_code=400, detail="password_unchanged")
-    user.password_hash = hash_password(body.new_password)
+    user.password_hash = await asyncio.to_thread(hash_password, body.new_password)
     user.must_change_password = False
     await revoke_all_refresh_tokens(session, user.id)
     return await issue_session(session, response, user)

@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -60,7 +62,7 @@ async def create_user(
         full_name=body.full_name,
         branch_id=body.branch_id,
         role=body.role,
-        password_hash=hash_password(temp_password),
+        password_hash=await asyncio.to_thread(hash_password, temp_password),
         must_change_password=True,
     )
     session.add(user)
@@ -109,7 +111,7 @@ async def reset_password(
 ) -> ResetPasswordOut:
     user = await _get_user_or_404(session, user_id)
     temp_password = generate_temp_password()
-    user.password_hash = hash_password(temp_password)
+    user.password_hash = await asyncio.to_thread(hash_password, temp_password)
     user.must_change_password = True
     await revoke_all_refresh_tokens(session, user.id)
     await session.commit()
