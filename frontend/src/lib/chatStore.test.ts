@@ -71,10 +71,11 @@ describe('ChatStore threads', () => {
     expect(store.getState().threads[1].items.some((m) => m.pending)).toBe(false)
   })
 
-  it('upserts by id, keeping order, and ignores threads that were never loaded', () => {
+  it('upserts by id, keeping order, and buffers messages for threads that are not loaded yet', () => {
     const store = new ChatStore()
     store.upsertMessage(msg(9, { room_id: 2 }))
-    expect(store.getState().threads[2]).toBeUndefined()
+    expect(store.getState().threads[2].loaded).toBe(false)
+    expect(store.getState().threads[2].items.map((m) => m.id)).toEqual([9])
     store.applyLatest(1, page([5, 7]))
     store.upsertMessage(msg(6))
     store.upsertMessage(msg(7, { body: 'sửa' }))
@@ -130,6 +131,50 @@ describe('ChatStore threads', () => {
     expect(store.getState().rooms).toEqual([])
     expect(store.getState().threads).toEqual({})
     expect(store.getState().roomsLoaded).toBe(false)
+  })
+})
+
+describe('ChatStore reconciliation and buffering', () => {
+  it('drops a pending (failed or sending) message when a page contains the same client_id from the same sender', () => {
+    for (const apply of ['applyAfter', 'applyLatest', 'applyOlder'] as const) {
+      const store = new ChatStore()
+      store.applyLatest(1, page([5]))
+      store.addPending(1, { ...msg(-1, { client_id: 'c1', sender_id: 1 }), pending: 'failed' })
+      store.addPending(1, { ...msg(-2, { client_id: 'c2', sender_id: 1 }), pending: 'sending' })
+      store[apply](1, { items: [msg(6, { client_id: 'c1', sender_id: 1 })], has_more_before: false, has_more_after: false })
+      expect(ids(store)).toEqual(apply === 'applyLatest' ? [6, -2] : [5, 6, -2]) // applyLatest replaces the real items
+    }
+  })
+
+  it('keeps a pending message when the same client_id belongs to another sender', () => {
+    const store = new ChatStore()
+    store.addPending(1, { ...msg(-1, { client_id: 'c1', sender_id: 1 }), pending: 'sending' })
+    store.applyAfter(1, { items: [msg(6, { client_id: 'c1', sender_id: 2 })], has_more_before: false, has_more_after: false })
+    expect(ids(store)).toEqual([6, -1])
+  })
+
+  it('applyLatest keeps live messages newer than the page (arrived while loading)', () => {
+    const store = new ChatStore()
+    store.upsertMessage(msg(4))
+    store.applyLatest(1, page([1, 2, 3]))
+    expect(ids(store)).toEqual([1, 2, 3, 4])
+    expect(store.getState().threads[1].loaded).toBe(true)
+  })
+
+  it('a buffered message in an errored thread survives the retry', () => {
+    const store = new ChatStore()
+    store.setThreadError(1, true)
+    store.upsertMessage(msg(4))
+    store.applyLatest(1, page([1, 2, 3]))
+    expect(ids(store)).toEqual([1, 2, 3, 4])
+    expect(store.getState().threads[1].error).toBe(false)
+  })
+
+  it('setRooms does not replace a newer preview with an older snapshot', () => {
+    const store = new ChatStore()
+    store.setRooms([room(1, { last_message: msg(10) })])
+    store.setRooms([room(1, { last_message: msg(8) })])
+    expect(store.getState().rooms[0].last_message?.id).toBe(10)
   })
 })
 

@@ -39,7 +39,15 @@ export class ChatController {
     const seq = ++this.roomsSeq
     try {
       const rooms = await this.deps.api.rooms()
-      if (seq === this.roomsSeq) this.deps.store.setRooms(rooms)
+      if (seq === this.roomsSeq) {
+        this.deps.store.setRooms(rooms)
+        // Bản chụp cũ có thể khôi phục huy hiệu chưa đọc của phòng đã đánh dấu đọc.
+        for (const r of this.deps.store.getState().rooms) {
+          if (r.unread_count > 0 && r.last_message && (this.lastMarked.get(r.id) ?? 0) >= r.last_message.id) {
+            this.deps.store.clearUnread(r.id)
+          }
+        }
+      }
     } catch {
       if (seq === this.roomsSeq) this.deps.store.setRoomsError()
     }
@@ -54,7 +62,9 @@ export class ChatController {
 
   private async loadLatest(roomId: number): Promise<void> {
     try {
-      this.deps.store.applyLatest(roomId, await this.deps.api.messages(roomId, { limit: PAGE_SIZE }))
+      const page = await this.deps.api.messages(roomId, { limit: PAGE_SIZE })
+      this.deps.store.applyLatest(roomId, page)
+      this.confirmDelivered(page.items)
     } catch {
       this.deps.store.setThreadError(roomId, true)
     }
@@ -73,6 +83,7 @@ export class ChatController {
       for (let i = 0; i < CATCH_UP_MAX_PAGES; i++) {
         const page = await this.deps.api.messages(roomId, { after, limit: CATCH_UP_PAGE })
         this.deps.store.applyAfter(roomId, page)
+        this.confirmDelivered(page.items)
         if (!page.has_more_after || page.items.length === 0) return
         after = page.items[page.items.length - 1].id
       }
@@ -89,7 +100,9 @@ export class ChatController {
     if (items.length === 0) return
     this.deps.store.setThreadLoadingOlder(roomId, true)
     try {
-      this.deps.store.applyOlder(roomId, await this.deps.api.messages(roomId, { before: items[0].id, limit: PAGE_SIZE }))
+      const page = await this.deps.api.messages(roomId, { before: items[0].id, limit: PAGE_SIZE })
+      this.deps.store.applyOlder(roomId, page)
+      this.confirmDelivered(page.items)
     } catch {
       this.deps.store.setThreadLoadingOlder(roomId, false)
     }
@@ -150,6 +163,17 @@ export class ChatController {
     if (timer) clearTimeout(timer)
     this.timers.delete(clientId)
     this.pendingMeta.delete(clientId)
+  }
+
+  /** Tin của mình đã về qua REST (bù tin/tải lại): huỷ hẹn giờ và quên tin đang chờ tương ứng. */
+  private confirmDelivered(items: Message[]): void {
+    for (const m of items) if (m.sender_id === this.deps.meId && m.client_id) this.confirm(m.client_id)
+  }
+
+  /** Bỏ hẳn một tin gửi lỗi. */
+  discard(clientId: string): void {
+    this.confirm(clientId)
+    this.deps.store.removePending(clientId)
   }
 
   private resendPending(): void {

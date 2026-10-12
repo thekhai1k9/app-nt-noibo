@@ -32,7 +32,10 @@ function mergeReal(existing: ChatMessage[], incoming: Message[]): ChatMessage[] 
   for (const m of existing) if (!isPending(m)) byId.set(m.id, m)
   for (const m of incoming) byId.set(m.id, m)
   const real = [...byId.values()].sort((a, b) => a.id - b.id)
-  return [...real, ...existing.filter(isPending)]
+  // Tin đang chờ đã có bản thật (cùng client_id + người gửi) thì bỏ đi, bất kể đang sending hay failed.
+  const delivered = new Set(incoming.filter((m) => m.client_id).map((m) => `${m.sender_id}:${m.client_id}`))
+  const pending = existing.filter((m) => isPending(m) && !(m.client_id && delivered.has(`${m.sender_id}:${m.client_id}`)))
+  return [...real, ...pending]
 }
 
 function sortRooms(rooms: Room[]): Room[] {
@@ -67,7 +70,15 @@ export class ChatStore {
   }
 
   setRooms(rooms: Room[]): void {
-    this.set({ rooms: sortRooms(rooms), roomsLoaded: true, roomsError: false })
+    // Không để bản chụp danh sách cũ ghi đè xem trước mới hơn đã nhận qua WebSocket.
+    const merged = rooms.map((r) => {
+      const cur = this.state.rooms.find((x) => x.id === r.id)
+      if (cur?.last_message && (!r.last_message || cur.last_message.id > r.last_message.id)) {
+        return { ...r, last_message: cur.last_message, last_activity: cur.last_activity > r.last_activity ? cur.last_activity : r.last_activity }
+      }
+      return r
+    })
+    this.set({ rooms: sortRooms(merged), roomsLoaded: true, roomsError: false })
   }
 
   setRoomsError(): void {
@@ -80,13 +91,12 @@ export class ChatStore {
   }
 
   applyLatest(roomId: number, page: MessagePage): void {
-    this.updateThread(roomId, (t) => ({
-      ...t,
-      items: mergeReal(t.items.filter(isPending), page.items),
-      hasMoreBefore: page.has_more_before,
-      loaded: true,
-      error: false,
-    }))
+    this.updateThread(roomId, (t) => {
+      // Giữ tin thật mới hơn trang vừa tải (đến qua WebSocket trong lúc đang tải).
+      const maxId = page.items.reduce((acc, m) => Math.max(acc, m.id), 0)
+      const keep = t.items.filter((m) => isPending(m) || m.id > maxId)
+      return { ...t, items: mergeReal(keep, page.items), hasMoreBefore: page.has_more_before, loaded: true, error: false }
+    })
   }
 
   applyOlder(roomId: number, page: MessagePage): void {
@@ -112,8 +122,8 @@ export class ChatStore {
 
   /** Tin mới (từ WebSocket): cập nhật thread đã tải và thay thế tin lạc quan cùng client_id. */
   upsertMessage(message: Message): void {
-    const thread = this.state.threads[message.room_id]
-    if (!thread) return
+    // Thread chưa tải: đệm tin (loaded:false) để applyLatest gộp lại, không mất tin.
+    const thread = this.state.threads[message.room_id] ?? EMPTY_THREAD
     const items = message.client_id
       ? thread.items.filter((m) => !(isPending(m) && m.client_id === message.client_id))
       : thread.items

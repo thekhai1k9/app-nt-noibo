@@ -396,3 +396,94 @@ describe('ChatController: hazards', () => {
     expect(store.getState().rooms.find((r) => r.id === 2)!.unread_count).toBe(1)
   })
 })
+
+describe('ChatController: REST reconciliation, buffering, discard', () => {
+  const mineEcho = (id: number, cid: string) => msg(id, { sender_id: 1, body: 'x', client_id: cid })
+  const one = (m: Message): MessagePage => ({ items: [m], has_more_before: false, has_more_after: false })
+
+  it('a failed message is reconciled by catch-up when the server had stored it', async () => {
+    const { controller, api, store } = setup()
+    await controller.openRoom(1)
+    controller.send(1, 'x')
+    vi.advanceTimersByTime(15_000)
+    api.messages.mockResolvedValueOnce(one(mineEcho(4, 'cid-1')))
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    await flush()
+    expect(store.getState().threads[1].items.map((m) => m.id)).toEqual([1, 2, 3, 4])
+    controller.retry('cid-1') // meta cleared: no-op
+    expect(store.getState().threads[1].items).toHaveLength(4)
+  })
+
+  it('reopening (applyLatest) reconciles a pending message already stored by the server', async () => {
+    const { controller, api, store } = setup()
+    api.messages.mockRejectedValueOnce(new Error('x'))
+    await controller.openRoom(1) // thread errored, not loaded
+    controller.send(1, 'x')
+    vi.advanceTimersByTime(15_000)
+    expect(store.getState().threads[1].items[0].pending).toBe('failed')
+    api.messages.mockResolvedValueOnce({ items: [msg(1), mineEcho(4, 'cid-1')], has_more_before: false, has_more_after: false })
+    await controller.openRoom(1)
+    const items = store.getState().threads[1].items
+    expect(items.map((m) => m.id)).toEqual([1, 4])
+    expect(items.some((m) => m.pending)).toBe(false)
+  })
+
+  it('a sending message reconciled by catch-up cancels its failure timer', async () => {
+    const { controller, api, store } = setup()
+    await controller.openRoom(1)
+    controller.send(1, 'x')
+    api.messages.mockResolvedValueOnce(one(mineEcho(4, 'cid-1')))
+    await controller.openRoom(1)
+    expect(store.getState().threads[1].items.map((m) => m.id)).toEqual([1, 2, 3, 4])
+    vi.advanceTimersByTime(60_000)
+    controller.handleSocketEvent({ type: 'message', message: mineEcho(4, 'cid-1') })
+    expect(store.getState().threads[1].items.map((m) => m.id)).toEqual([1, 2, 3, 4])
+  })
+
+  it('does not lose a live message that arrives while the first page is loading', async () => {
+    const { controller, api, store } = setup()
+    await controller.loadRooms()
+    controller.setActiveRoom(1)
+    let resolve: (p: MessagePage) => void = () => {}
+    api.messages.mockImplementationOnce(() => new Promise<MessagePage>((r) => { resolve = r }))
+    const opening = controller.openRoom(1)
+    controller.handleSocketEvent({ type: 'message', message: msg(4) })
+    resolve(page([1, 2, 3]))
+    await opening
+    expect(store.getState().threads[1].items.map((m) => m.id)).toEqual([1, 2, 3, 4])
+    expect(store.getState().threads[1].loaded).toBe(true)
+    expect(api.markRead).toHaveBeenLastCalledWith(1, 4)
+  })
+
+  it('keeps a live message when an errored first load is retried', async () => {
+    const { controller, api, store } = setup()
+    api.messages.mockRejectedValueOnce(new Error('x'))
+    await controller.openRoom(1)
+    controller.handleSocketEvent({ type: 'message', message: msg(4) })
+    await controller.openRoom(1)
+    expect(store.getState().threads[1].items.map((m) => m.id)).toEqual([1, 2, 3, 4])
+  })
+
+  it('a stale rooms snapshot does not restore the unread badge of a room already marked read', async () => {
+    const { controller, api, store } = setup()
+    await controller.loadRooms()
+    controller.setActiveRoom(1)
+    await controller.openRoom(1)
+    controller.handleSocketEvent({ type: 'message', message: msg(10) })
+    expect(api.markRead).toHaveBeenLastCalledWith(1, 10)
+    api.rooms.mockResolvedValueOnce([room(1, { last_message: msg(10), unread_count: 1 }), room(2)])
+    await controller.loadRooms()
+    expect(store.getState().rooms.find((r) => r.id === 1)!.unread_count).toBe(0)
+  })
+
+  it('discard() cancels the timer and removes the pending message', async () => {
+    const { controller, store } = setup()
+    await controller.openRoom(1)
+    controller.send(1, 'x')
+    controller.discard('cid-1')
+    vi.advanceTimersByTime(60_000)
+    expect(store.getState().threads[1].items.map((m) => m.id)).toEqual([1, 2, 3])
+    controller.retry('cid-1')
+    expect(store.getState().threads[1].items).toHaveLength(3)
+  })
+})
