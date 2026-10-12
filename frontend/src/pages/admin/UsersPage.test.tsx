@@ -137,14 +137,72 @@ describe('UsersPage', () => {
     )
   })
 
-  it('shows the cannot_modify_self error', async () => {
+  it('disables reset and lock on the signed-in admin own row', async () => {
+    mockFetch(base())
+    await openPage()
+    const reset = screen.getByRole('button', { name: 'Đặt lại mật khẩu của long.pham' })
+    const lock = screen.getByRole('button', { name: 'Khoá long.pham' })
+    expect(reset).toBeDisabled()
+    expect(reset).toHaveAttribute('title', 'Dùng trang Đổi mật khẩu của bạn')
+    expect(lock).toBeDisabled()
+    expect(lock).toHaveAttribute('title', 'Bạn không thể tự khoá tài khoản của mình')
+    expect(screen.getByRole('button', { name: 'Khoá ha.le' })).toBeEnabled()
+  })
+
+  it('edits the branch and role of a user, sending only the changed fields', async () => {
+    const { calls } = mockFetch({
+      ...base(),
+      'PATCH /api/admin/users/2': { json: { ...users[1], branch_id: 1, role: 'admin' } },
+    })
+    await openPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Sửa ha.le' }))
+    expect(screen.getByRole('heading', { name: 'Sửa tài khoản' })).toBeInTheDocument()
+    expect(screen.getByText('ha.le', { selector: 'aside *' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Họ tên')).toHaveValue('Lê Thu Hà')
+    expect(screen.getByLabelText('Chi nhánh')).toHaveValue('2')
+    await userEvent.selectOptions(screen.getByLabelText('Chi nhánh'), '1')
+    await userEvent.selectOptions(screen.getByLabelText('Vai trò'), 'admin')
+    const branchGets = () => calls.filter((c) => c.method === 'GET' && c.path === '/api/admin/branches').length
+    const before = branchGets()
+    await userEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }))
+    await waitFor(() => {
+      const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/api/admin/users/2')
+      expect(patch?.body).toEqual({ branch_id: 1, role: 'admin' })
+    })
+    // Quay lại form tạo và tải lại số liệu chi nhánh.
+    expect(await screen.findByRole('heading', { name: 'Tạo tài khoản mới' })).toBeInTheDocument()
+    await waitFor(() => expect(branchGets()).toBeGreaterThan(before))
+  })
+
+  it('shows the cannot_modify_self error when the admin demotes themselves', async () => {
     mockFetch({
       ...base(),
       'PATCH /api/admin/users/1': { status: 409, json: { detail: 'cannot_modify_self' } },
     })
     await openPage()
-    await userEvent.click(screen.getByRole('button', { name: 'Khoá long.pham' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Sửa long.pham' }))
+    await userEvent.selectOptions(screen.getByLabelText('Vai trò'), 'member')
+    await userEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('không thể tự hạ quyền')
+    expect(screen.getByRole('heading', { name: 'Sửa tài khoản' })).toBeInTheDocument()
+  })
+
+  it('returns to the create form when editing is cancelled', async () => {
+    mockFetch(base())
+    await openPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Sửa ha.le' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Huỷ' }))
+    expect(screen.getByRole('heading', { name: 'Tạo tài khoản mới' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Sửa tài khoản' })).not.toBeInTheDocument()
+  })
+
+  it('closes the edit panel without a request when nothing changed', async () => {
+    const { calls } = mockFetch(base())
+    await openPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Sửa ha.le' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }))
+    expect(screen.getByRole('heading', { name: 'Tạo tài khoản mới' })).toBeInTheDocument()
+    expect(calls.some((c) => c.method === 'PATCH')).toBe(false)
   })
 
   it('resets a password after confirmation and shows the new temporary password', async () => {

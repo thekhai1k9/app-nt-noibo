@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react'
 import { ErrorAlert } from '../../components/ErrorAlert'
 import { Field } from '../../components/Field'
 import { api } from '../../lib/api'
+import { useAuth } from '../../lib/auth'
 import type { Branch, ResetPasswordOut, Role, User, UserCreated } from '../../lib/types'
 
 interface TempPassword {
@@ -93,7 +94,7 @@ function CreateUserForm({
           Người dùng phải đổi mật khẩu ở lần đăng nhập đầu.
         </p>
       </div>
-      <Field id="new-full-name" label="Họ tên" value={fullName} onChange={(e) => setFullName(e.target.value)} required />
+      <Field id="new-full-name" label="Họ tên" value={fullName} onChange={(e) => setFullName(e.target.value)} maxLength={100} required />
       <Field
         id="new-username"
         label="Tên đăng nhập"
@@ -133,13 +134,92 @@ function CreateUserForm({
   )
 }
 
+function EditUserForm({
+  user,
+  branches,
+  onDone,
+  onCancel,
+}: {
+  user: User
+  branches: Branch[]
+  onDone: () => void
+  onCancel: () => void
+}) {
+  const [fullName, setFullName] = useState(user.full_name)
+  const [branchId, setBranchId] = useState(String(user.branch_id))
+  const [role, setRole] = useState<Role>(user.role)
+  const [error, setError] = useState<unknown>(null)
+  const [busy, setBusy] = useState(false)
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    const changes: { full_name?: string; branch_id?: number; role?: Role } = {}
+    if (fullName.trim() !== user.full_name) changes.full_name = fullName.trim()
+    if (Number(branchId) !== user.branch_id) changes.branch_id = Number(branchId)
+    if (role !== user.role) changes.role = role
+    if (Object.keys(changes).length === 0) {
+      onCancel()
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      await api<User>(`/admin/users/${user.id}`, { method: 'PATCH', json: changes })
+      onDone()
+    } catch (err) {
+      setError(err)
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form className="card stack" onSubmit={submit}>
+      <div>
+        <h2 style={{ fontSize: 17 }}>Sửa tài khoản</h2>
+        <p className="muted" style={{ margin: '4px 0 0' }}>
+          Tên đăng nhập: <strong>{user.username}</strong>
+        </p>
+      </div>
+      <Field id="edit-full-name" label="Họ tên" value={fullName} onChange={(e) => setFullName(e.target.value)} maxLength={100} required />
+      <div className="field">
+        <label htmlFor="edit-branch">Chi nhánh</label>
+        <select id="edit-branch" className="input" value={branchId} onChange={(e) => setBranchId(e.target.value)} required>
+          {branches.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="field">
+        <label htmlFor="edit-role">Vai trò</label>
+        <select id="edit-role" className="input" value={role} onChange={(e) => setRole(e.target.value as Role)}>
+          <option value="member">Thành viên</option>
+          <option value="admin">Quản trị viên</option>
+        </select>
+      </div>
+      <ErrorAlert error={error} />
+      <div className="row">
+        <button type="submit" className="btn btn-primary" disabled={busy || branches.length === 0}>
+          Lưu thay đổi
+        </button>
+        <button type="button" className="btn" onClick={onCancel}>
+          Huỷ
+        </button>
+      </div>
+    </form>
+  )
+}
+
 export function UsersPage() {
+  const { user: me } = useAuth()
   const queryClient = useQueryClient()
   const [q, setQ] = useState('')
   const [branchId, setBranchId] = useState('')
   const [activeFilter, setActiveFilter] = useState('')
   const [notice, setNotice] = useState<TempPassword | null>(null)
   const [actionError, setActionError] = useState<unknown>(null)
+  const [editing, setEditing] = useState<User | null>(null)
 
   const params = new URLSearchParams()
   if (q.trim()) params.set('q', q.trim())
@@ -251,6 +331,7 @@ export function UsersPage() {
           </div>
           {list.map((user) => {
             const status = statusOf(user)
+            const isSelf = user.id === me?.id
             return (
               <div key={user.id} className="table-row users-grid">
                 <div className="row" style={{ flexWrap: 'nowrap', minWidth: 0 }}>
@@ -276,8 +357,18 @@ export function UsersPage() {
                     type="button"
                     className="btn btn-ghost"
                     style={{ padding: '0 10px' }}
+                    aria-label={`Sửa ${user.username}`}
+                    onClick={() => setEditing(user)}
+                  >
+                    Sửa
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ padding: '0 10px' }}
                     aria-label={`Đặt lại mật khẩu của ${user.username}`}
-                    disabled={notice !== null || resettingId === user.id}
+                    title={isSelf ? 'Dùng trang Đổi mật khẩu của bạn' : undefined}
+                    disabled={isSelf || notice !== null || resettingId === user.id}
                     onClick={() => confirmReset(user)}
                   >
                     Đặt lại mật khẩu
@@ -287,7 +378,8 @@ export function UsersPage() {
                     className="btn btn-ghost"
                     style={{ padding: '0 10px' }}
                     aria-label={`${user.is_active ? 'Khoá' : 'Mở khoá'} ${user.username}`}
-                    disabled={togglingId === user.id}
+                    title={isSelf ? 'Bạn không thể tự khoá tài khoản của mình' : undefined}
+                    disabled={isSelf || togglingId === user.id}
                     onClick={() => toggleActive.mutate(user)}
                   >
                     {user.is_active ? 'Khoá' : 'Mở khoá'}
@@ -299,17 +391,31 @@ export function UsersPage() {
         </div>
       </main>
 
-      <aside className="admin-aside" aria-label="Tạo tài khoản">
-        <CreateUserForm
-          branches={branches.data ?? []}
-          locked={notice !== null}
-          onCreated={(created) => {
-            setActionError(null)
-            setNotice({ title: `Đã tạo tài khoản ${created.username}`, password: created.temp_password })
-            void refreshUsers()
-            void queryClient.invalidateQueries({ queryKey: ['admin', 'branches'] })
-          }}
-        />
+      <aside className="admin-aside" aria-label={editing ? 'Sửa tài khoản' : 'Tạo tài khoản'}>
+        {editing ? (
+          <EditUserForm
+            key={editing.id}
+            user={editing}
+            branches={branches.data ?? []}
+            onCancel={() => setEditing(null)}
+            onDone={() => {
+              setEditing(null)
+              void refreshUsers()
+              void queryClient.invalidateQueries({ queryKey: ['admin', 'branches'] })
+            }}
+          />
+        ) : (
+          <CreateUserForm
+            branches={branches.data ?? []}
+            locked={notice !== null}
+            onCreated={(created) => {
+              setActionError(null)
+              setNotice({ title: `Đã tạo tài khoản ${created.username}`, password: created.temp_password })
+              void refreshUsers()
+              void queryClient.invalidateQueries({ queryKey: ['admin', 'branches'] })
+            }}
+          />
+        )}
       </aside>
     </>
   )
