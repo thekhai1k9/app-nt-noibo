@@ -401,3 +401,42 @@ async def test_client_id_of_64_chars_works_and_is_idempotent(live_server):
     assert (await recv_json(ws))["message"]["id"] == first["message"]["id"]
     assert len(await _messages_in(room)) == 1
     await ws.close()
+
+
+# ---------- thông tin đăng nhập đổi và đối soát định kỳ ----------
+
+async def test_changing_the_password_closes_the_websocket_with_4401(live_server):
+    await create_user("alice")
+    token = await _token(live_server, "alice")
+    ws, _ = await ws_open(live_server.ws, token)
+    async with AsyncClient(base_url=live_server.http) as http:
+        r = await http.post(
+            "/api/auth/change-password",
+            headers=auth_headers(token),
+            json={"current_password": "Passw0rd!", "new_password": "NewPassw0rd!"},
+        )
+        assert r.status_code == 200
+    assert await wait_closed(ws) == 4401
+
+
+async def test_resetting_a_password_closes_the_websocket_with_4401(live_server):
+    await create_user("root", role="admin")
+    victim = await create_user("victim")
+    ws, _ = await ws_open(live_server.ws, await _token(live_server, "victim"))
+    async with AsyncClient(base_url=live_server.http) as http:
+        admin = auth_headers(await _token(live_server, "root"))
+        r = await http.post(f"/api/admin/users/{victim}/reset-password", headers=admin)
+        assert r.status_code == 200
+    assert await wait_closed(ws) == 4401
+
+
+async def test_periodic_reconcile_closes_a_user_locked_without_any_bus_event(live_server):
+    from app.db import SessionLocal
+    from app.models import User
+
+    a = await create_user("alice")
+    ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
+    async with SessionLocal() as s:
+        (await s.get(User, a)).is_active = False
+        await s.commit()
+    assert await wait_closed(ws, timeout=3) == 4403  # WS_RECONCILE_SECONDS=0.3 trong conftest

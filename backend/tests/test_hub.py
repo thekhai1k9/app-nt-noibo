@@ -236,3 +236,103 @@ async def test_a_failing_membership_reload_does_not_kill_the_listener():
         assert drain(conn) == [{"type": "message", "n": 3}]
     finally:
         await stop(task)
+
+
+# ---------- reconcile ----------
+
+async def test_reconcile_heals_a_missed_rooms_changed():
+    alice = await create_user("alice")
+    room = await create_room(member_ids=[alice])
+    hub = Hub(InMemoryBus(), SessionLocal)
+    conn = Connection(alice, [room, 777])  # 777: phòng đã bị gỡ mà sự kiện rooms_changed bị lỡ
+    hub.register(conn)
+    async with SessionLocal() as s:
+        await s.delete(await s.get(RoomMember, (room, alice)))
+        await s.commit()
+    seen = conn.version
+    await hub.reconcile()
+    assert conn.room_ids == set()
+    assert conn.version == seen + 1
+    assert conn.close_code is None
+
+
+async def test_reconcile_closes_a_user_deactivated_in_the_database_with_4403():
+    from app.models import User
+
+    alice, bob = await create_user("alice"), await create_user("bob")
+    hub = Hub(InMemoryBus(), SessionLocal)
+    locked, other = Connection(alice, []), Connection(bob, [])
+    hub.register(locked)
+    hub.register(other)
+    async with SessionLocal() as s:
+        (await s.get(User, alice)).is_active = False
+        await s.commit()
+    await hub.reconcile()
+    assert locked.close_code == 4403
+    assert other.close_code is None
+
+
+async def test_reconcile_closes_a_user_who_must_change_the_password():
+    from app.models import User
+
+    alice = await create_user("alice")
+    hub = Hub(InMemoryBus(), SessionLocal)
+    conn = Connection(alice, [])
+    hub.register(conn)
+    async with SessionLocal() as s:
+        (await s.get(User, alice)).must_change_password = True
+        await s.commit()
+    await hub.reconcile()
+    assert conn.close_code == 4403
+
+
+async def test_reconcile_does_not_raise_when_the_database_fails():
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def broken_session():
+        raise ConnectionError("db down")
+        yield
+
+    hub = Hub(InMemoryBus(), broken_session)
+    conn = Connection(1, [10])
+    hub.register(conn)
+    await hub.reconcile()
+    assert conn.room_ids == {10} and conn.close_code is None
+
+
+async def test_periodic_reconciler_runs_repeatedly_and_stops_cleanly_on_cancel():
+    hub = Hub(InMemoryBus(), SessionLocal)
+    calls = 0
+
+    async def fake_reconcile():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("boom")  # một lần lỗi không được giết vòng lặp
+
+    hub.reconcile = fake_reconcile
+    task = asyncio.create_task(hub.run_reconciler(0.01))
+    for _ in range(100):
+        if calls >= 3:
+            break
+        await asyncio.sleep(0.02)
+    assert calls >= 3
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+    seen = calls
+    await asyncio.sleep(0.1)
+    assert calls == seen
+
+
+async def test_disconnect_event_honours_an_allowed_close_code_and_defaults_to_4403():
+    hub = Hub(InMemoryBus(), SessionLocal)
+    conns = {code: Connection(n, []) for n, code in enumerate([4401, 4403, 1000, "4401", None], start=1)}
+    for c in conns.values():
+        hub.register(c)
+    for n, code in enumerate([4401, 4403, 1000, "4401", None], start=1):
+        payload = {"type": "disconnect"} if code is None else {"type": "disconnect", "code": code}
+        await hub._dispatch(BusEvent("user", n, payload))
+    assert [c.close_code for c in conns.values()] == [4401, 4403, 4403, 4403, 4403]

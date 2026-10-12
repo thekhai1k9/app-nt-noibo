@@ -7,12 +7,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat.bus import BusEvent, MessageBus
-from app.models import RoomMember
+from app.models import RoomMember, User
 
 log = logging.getLogger(__name__)
 
+CLOSE_UNAUTHENTICATED = 4401
 CLOSE_ACCOUNT_LOCKED = 4403
 CLOSE_SLOW_CONSUMER = 4408
+DISCONNECT_CODES = {CLOSE_UNAUTHENTICATED, CLOSE_ACCOUNT_LOCKED}
+RECONCILE_TIMEOUT_SECONDS = 10.0
 
 
 class Connection:
@@ -98,8 +101,11 @@ class Hub:
         conns = list(self._conns.get(event.target_id, ()))
         kind = event.payload.get("type")
         if kind == "disconnect":
+            code = event.payload.get("code")
+            if type(code) is not int or code not in DISCONNECT_CODES:
+                code = CLOSE_ACCOUNT_LOCKED
             for conn in conns:
-                conn.close(CLOSE_ACCOUNT_LOCKED)
+                conn.close(code)
         elif kind == "rooms_changed" and conns:
             async with self._session_factory() as session:
                 rows = await session.execute(select(RoomMember.room_id).where(RoomMember.user_id == event.target_id))
@@ -109,27 +115,47 @@ class Hub:
                 conn.version += 1
                 self._offer(conn, {"type": "rooms_changed"})
 
-    async def _reload_all_rooms(self) -> None:
-        """Sau khi bus nối lại: nạp lại thành viên phòng của mọi kết nối (có thể đã lỡ sự kiện)."""
+    async def reconcile(self) -> None:
+        """Một lượt đối soát với DB: nạp lại room_ids của mọi kết nối và đóng (4403) kết nối của
+        user đã bị khoá hoặc phải đổi mật khẩu. Sự kiện bus có thể bị lỡ nên đây là lưới an toàn."""
         conns = self._all()
         if not conns:
             return
+        versions = {conn: conn.version for conn in conns}
+        user_ids = {conn.user_id for conn in conns}
         try:
             async with self._session_factory() as session:
                 rows = await session.execute(
-                    select(RoomMember.user_id, RoomMember.room_id).where(
-                        RoomMember.user_id.in_({c.user_id for c in conns})
-                    )
+                    select(User.id, User.is_active, User.must_change_password).where(User.id.in_(user_ids))
+                )
+                blocked = {uid for uid, active, must_change in rows if not active or must_change}
+                rows = await session.execute(
+                    select(RoomMember.user_id, RoomMember.room_id).where(RoomMember.user_id.in_(user_ids))
                 )
                 by_user: dict[int, set[int]] = {}
                 for user_id, room_id in rows:
                     by_user.setdefault(user_id, set()).add(room_id)
         except Exception:
-            log.exception("failed to reload room membership after bus resubscribe")
+            log.exception("failed to reconcile connections with the database")
             return
         for conn in conns:
-            conn.room_ids = set(by_user.get(conn.user_id, ()))
-            conn.version += 1
+            if conn.user_id in blocked:
+                conn.close(CLOSE_ACCOUNT_LOCKED)
+            elif conn.version == versions[conn]:  # chưa có sự kiện/snapshot mới hơn trong lúc đọc DB
+                conn.room_ids = set(by_user.get(conn.user_id, ()))
+                conn.version += 1
+
+    async def _reconcile_guarded(self) -> None:
+        try:
+            await asyncio.wait_for(self.reconcile(), timeout=RECONCILE_TIMEOUT_SECONDS)
+        except Exception:  # CancelledError là BaseException nên vẫn lan ra ngoài
+            log.exception("reconcile failed or timed out")
+
+    async def run_reconciler(self, interval: float) -> None:
+        """Chạy `reconcile` định kỳ mãi mãi; lỗi một lượt không làm dừng vòng lặp."""
+        while True:
+            await asyncio.sleep(interval)
+            await self._reconcile_guarded()
 
     async def run(self) -> None:
         """Nghe bus mãi mãi; khi bus lỗi thì báo client tải lại (`resync`) rồi nghe lại."""
@@ -141,7 +167,7 @@ class Hub:
                     async for event in events:
                         if event.scope == "system":
                             if had_subscription:
-                                await self._reload_all_rooms()
+                                await self._reconcile_guarded()
                                 self.broadcast({"type": "resync"})
                             had_subscription = True
                             delay = self._reconnect_delay

@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     ws_rate_limit_messages: int = 20
     ws_rate_limit_seconds: int = 10
     ws_auth_timeout_seconds: float = 5.0
+    ws_reconcile_seconds: float = 30.0
+    bus_channel_prefix: str = "kn"
     max_message_length: int = 4000
     log_level: str = "INFO"
 

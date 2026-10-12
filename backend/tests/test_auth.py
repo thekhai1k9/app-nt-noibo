@@ -273,3 +273,27 @@ async def test_concurrent_login_burst_is_capped(client):
     codes = [r.status_code for r in rs]
     assert codes.count(401) == 3
     assert codes.count(429) == 7
+
+
+async def test_change_password_publishes_a_4401_disconnect_for_that_user(client, bus):
+    uid = await create_user("alice")
+    token = (await login(client, "alice")).json()["access_token"]
+    r = await client.post(
+        "/api/auth/change-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"current_password": TEST_PASSWORD, "new_password": "NewPassw0rd!"},
+    )
+    assert r.status_code == 200
+    assert bus.published == [("user", uid, {"type": "disconnect", "code": 4401})]
+
+
+async def test_failed_change_password_publishes_nothing(client, bus):
+    await create_user("alice")
+    token = (await login(client, "alice")).json()["access_token"]
+    r = await client.post(
+        "/api/auth/change-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"current_password": "nope", "new_password": "NewPassw0rd!"},
+    )
+    assert r.status_code == 400
+    assert bus.published == []

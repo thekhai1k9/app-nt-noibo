@@ -34,12 +34,16 @@ async def lifespan(app: FastAPI):
     hub = Hub(RedisMessageBus(get_redis(), listen_redis), SessionLocal)
     app.state.hub = hub
     runner = asyncio.create_task(hub.run())
+    reconciler = asyncio.create_task(hub.run_reconciler(settings.ws_reconcile_seconds))
     try:
         yield
     finally:
         runner.cancel()
+        reconciler.cancel()
         with suppress(asyncio.CancelledError):
             await runner
+        with suppress(asyncio.CancelledError):
+            await reconciler
         await hub.close_all()
         await listen_redis.aclose()
 

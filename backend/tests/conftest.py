@@ -10,6 +10,7 @@ os.environ["COOKIE_SECURE"] = "false"
 os.environ["LOGIN_MAX_ATTEMPTS"] = "3"
 os.environ["WS_RATE_LIMIT_MESSAGES"] = "5"
 os.environ["WS_AUTH_TIMEOUT_SECONDS"] = "1"
+os.environ["WS_RECONCILE_SECONDS"] = "0.3"
 
 import asyncio
 import socket

@@ -241,4 +241,4 @@ async def test_resetting_a_password_disconnects_their_websockets(client, admin_h
     uid = await create_user("alice")
     r = await client.post(f"/api/admin/users/{uid}/reset-password", headers=admin_headers)
     assert r.status_code == 200
-    assert ("user", uid, {"type": "disconnect"}) in bus.published
+    assert ("user", uid, {"type": "disconnect", "code": 4401}) in bus.published

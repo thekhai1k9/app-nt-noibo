@@ -121,5 +121,5 @@ async def reset_password(
     user.must_change_password = True
     await revoke_all_refresh_tokens(session, user.id)
     await session.commit()
-    await publish_user_safely(bus, user.id, {"type": "disconnect"})
+    await publish_user_safely(bus, user.id, {"type": "disconnect", "code": 4401})
     return ResetPasswordOut(temp_password=temp_password)

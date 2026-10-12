@@ -5,10 +5,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.chat.bus import MessageBus, publish_user_safely
 from app.config import get_settings
 from app.db import get_session
 from app.deps import get_current_user
 from app.models import RefreshToken, User
+from app.routers.chat import get_bus
 from app.ratelimit import clear, register_attempt
 from app.redis_client import get_redis
 from app.schemas import ChangePasswordIn, LoginIn, TokenOut, UserOut
@@ -118,6 +120,7 @@ async def change_password(
     response: Response,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    bus: MessageBus = Depends(get_bus),
 ) -> TokenOut:
     # get_current_user và endpoint này dùng chung một AsyncSession trong cùng request
     # (FastAPI cache dependency), nên `user` đã gắn với `session`.
@@ -128,4 +131,7 @@ async def change_password(
     user.password_hash = await asyncio.to_thread(hash_password, body.new_password)
     user.must_change_password = False
     await revoke_all_refresh_tokens(session, user.id)
-    return await issue_session(session, response, user)
+    token = await issue_session(session, response, user)  # commit trong issue_session
+    # Mọi WebSocket đang mở (token cũ) phải kết nối lại bằng token mới.
+    await publish_user_safely(bus, user.id, {"type": "disconnect", "code": 4401})
+    return token
