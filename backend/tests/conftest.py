@@ -16,7 +16,7 @@ from sqlalchemy import text
 from app import models  # noqa: F401  (đăng ký các bảng vào Base.metadata)
 from app.db import Base, SessionLocal, engine
 from app.main import create_app
-from app.models import Branch, User
+from app.models import Branch, Message, Room, RoomMember, User
 from app.redis_client import get_redis
 from app.security import hash_password
 
@@ -37,7 +37,7 @@ async def _schema():
 @pytest_asyncio.fixture(autouse=True)
 async def _clean():
     async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE refresh_tokens, users, branches RESTART IDENTITY CASCADE"))
+        await conn.execute(text("TRUNCATE messages, room_members, rooms, refresh_tokens, users, branches RESTART IDENTITY CASCADE"))
     await get_redis().flushdb()
     yield
 
@@ -98,3 +98,47 @@ async def member_headers(client):
     await create_user("member1", role="member")
     r = await login(client, "member1")
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+async def create_room(
+    type_: str = "group",
+    name: str | None = "Phòng",
+    member_ids: tuple[int, ...] | list[int] = (),
+    branch_id: int | None = None,
+    created_by: int | None = None,
+) -> int:
+    async with SessionLocal() as s:
+        room = Room(type=type_, name=name if type_ == "group" else None, branch_id=branch_id, created_by=created_by)
+        s.add(room)
+        await s.flush()
+        s.add_all([RoomMember(room_id=room.id, user_id=uid) for uid in member_ids])
+        await s.commit()
+        return room.id
+
+
+async def create_direct(a: int, b: int) -> int:
+    async with SessionLocal() as s:
+        room = Room(type="direct", direct_key=f"{min(a, b)}:{max(a, b)}", created_by=a)
+        s.add(room)
+        await s.flush()
+        s.add_all([RoomMember(room_id=room.id, user_id=a), RoomMember(room_id=room.id, user_id=b)])
+        await s.commit()
+        return room.id
+
+
+async def add_message(room_id: int, sender_id: int, body: str = "xin chào", client_id: str | None = None) -> int:
+    async with SessionLocal() as s:
+        msg = Message(room_id=room_id, sender_id=sender_id, body=body, client_id=client_id)
+        s.add(msg)
+        await s.commit()
+        return msg.id
+
+
+async def token_for(client, username: str) -> str:
+    r = await login(client, username)
+    assert r.status_code == 200, r.text
+    return r.json()["access_token"]
+
+
+def auth_headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
