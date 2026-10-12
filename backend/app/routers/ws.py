@@ -118,6 +118,27 @@ async def _handle_send(conn: Connection, hub: Hub, data: dict, window: deque) ->
         conn.offer(event)  # bus lỗi: ít nhất người gửi thấy tin của mình; người khác tải lại khi nối lại
 
 
+async def _handle_typing(conn: Connection, hub: Hub, data: dict) -> None:
+    room_id = data.get("room_id")
+    if not isinstance(room_id, int) or isinstance(room_id, bool) or not (1 <= room_id <= MAX_ROOM_ID):
+        conn.offer({"type": "error", "code": "invalid_message", "client_id": None})
+        return
+    if room_id not in conn.room_ids:
+        return  # không phải thành viên (hoặc phòng đã lưu trữ): bỏ qua im lặng
+    now = time.monotonic()
+    for stale in [r for r in conn.typing_last if r not in conn.room_ids]:
+        del conn.typing_last[stale]  # không để bộ nhớ throttle phình ra khi rời phòng
+    last = conn.typing_last.get(room_id)
+    if last is not None and now - last < get_settings().ws_typing_interval_seconds:
+        return
+    conn.typing_last[room_id] = now
+    await publish_room_safely(
+        hub.bus,
+        room_id,
+        {"type": "typing", "room_id": room_id, "user_id": conn.user_id, "user_name": conn.user_name},
+    )
+
+
 async def _reader(websocket: WebSocket, conn: Connection, hub: Hub) -> None:
     window: deque[float] = deque()
     while True:
@@ -140,6 +161,8 @@ async def _reader(websocket: WebSocket, conn: Connection, hub: Hub) -> None:
             conn.offer({"type": "pong"})
         elif kind == "send":
             await _handle_send(conn, hub, data, window)
+        elif kind == "typing":
+            await _handle_typing(conn, hub, data)
         else:
             conn.offer({"type": "error", "code": "unknown_type", "client_id": None})
 
@@ -160,7 +183,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     user = await _authenticate(websocket)
     if user is None:
         return
-    conn = Connection(user.id)
+    conn = Connection(user.id, user_name=user.full_name)
     hub.register(conn)
     try:
         async with SessionLocal() as session:

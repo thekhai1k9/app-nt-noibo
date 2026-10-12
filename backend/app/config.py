@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     ws_rate_limit_messages: int = 20
     ws_rate_limit_seconds: int = 10
     ws_auth_timeout_seconds: float = 5.0
+    ws_typing_interval_seconds: float = Field(2.0, gt=0)
     ws_reconcile_seconds: float = Field(30.0, gt=0)
     room_archive_retention_days: int = Field(3, gt=0)
     room_purge_interval_seconds: float = Field(3600, gt=0)

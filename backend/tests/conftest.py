@@ -11,6 +11,7 @@ os.environ["LOGIN_MAX_ATTEMPTS"] = "3"
 os.environ["WS_RATE_LIMIT_MESSAGES"] = "5"
 os.environ["WS_AUTH_TIMEOUT_SECONDS"] = "1"
 os.environ["WS_RECONCILE_SECONDS"] = "0.3"
+os.environ["WS_TYPING_INTERVAL_SECONDS"] = "0.3"
 os.environ["BUS_CHANNEL_PREFIX"] = "kn-test"
 
 import asyncio

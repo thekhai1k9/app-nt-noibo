@@ -22,8 +22,10 @@ RECONCILE_TIMEOUT_SECONDS = 10.0
 class Connection:
     """Trạng thái của một WebSocket: hàng đợi gửi đi và tập phòng đang tham gia."""
 
-    def __init__(self, user_id: int, room_ids: Iterable[int] = (), queue_size: int = 100):
+    def __init__(self, user_id: int, room_ids: Iterable[int] = (), queue_size: int = 100, user_name: str = ""):
         self.user_id = user_id
+        self.user_name = user_name  # lấy từ tài khoản đã xác thực, không bao giờ từ frame
+        self.typing_last: dict[int, float] = {}  # phòng -> time.monotonic() lần gửi typing gần nhất
         self.room_ids: set[int] = set(room_ids)
         self.queue: asyncio.Queue[dict | None] = asyncio.Queue(maxsize=queue_size)
         self.close_code: int | None = None
