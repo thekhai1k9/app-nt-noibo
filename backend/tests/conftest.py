@@ -20,7 +20,9 @@ from app.db import Base, SessionLocal, engine
 from app.main import create_app
 from app.models import Branch, Message, Room, RoomMember, User
 from app.redis_client import get_redis
+from app.routers.chat import get_bus
 from app.security import hash_password
+from tests.helpers import InMemoryBus
 
 TEST_PASSWORD = "Passw0rd!"
 
@@ -45,8 +47,14 @@ async def _clean():
 
 
 @pytest_asyncio.fixture
-async def client():
+async def bus():
+    return InMemoryBus()
+
+
+@pytest_asyncio.fixture
+async def client(bus):
     app = create_app()
+    app.dependency_overrides[get_bus] = lambda: bus
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
 
