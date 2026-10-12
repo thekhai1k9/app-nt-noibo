@@ -7,7 +7,7 @@ const config = {
   plugins: [react()],
   server: {
     // Khi chạy `npm run dev`, API đi qua Caddy của docker compose ở cổng 80.
-    proxy: { '/api': 'http://localhost:80' },
+    proxy: { '/api': { target: 'http://localhost:80', ws: true } },
   },
   test: {
     environment: 'jsdom',

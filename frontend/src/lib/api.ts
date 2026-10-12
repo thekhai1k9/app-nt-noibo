@@ -37,6 +37,12 @@ export function resetApiState(): void {
   refreshInFlight = null
 }
 
+/** Phiên đã mất (WebSocket bị đóng 4403, refresh bị từ chối...): xoá token và báo cho AuthProvider. */
+export function handleAuthLost(): void {
+  accessToken = null
+  authLostHandler?.()
+}
+
 interface RequestOptions {
   method?: string
   json?: unknown

@@ -32,3 +32,72 @@ export interface UserCreated extends User {
 export interface ResetPasswordOut {
   temp_password: string
 }
+
+export interface Message {
+  id: number
+  room_id: number
+  sender_id: number
+  sender_name: string
+  body: string
+  kind: string
+  client_id: string | null
+  created_at: string
+  edited_at: string | null
+  deleted: boolean
+}
+
+export interface Room {
+  id: number
+  type: 'direct' | 'group'
+  name: string | null
+  branch_id: number | null
+  member_count: number
+  peer_id: number | null
+  last_message: Message | null
+  unread_count: number
+  last_activity: string
+}
+
+export interface MessagePage {
+  items: Message[]
+  has_more_before: boolean
+  has_more_after: boolean
+}
+
+export interface DirectoryUser {
+  id: number
+  username: string
+  full_name: string
+  branch_id: number
+  branch_name: string
+}
+
+export interface AdminRoom {
+  id: number
+  name: string
+  branch_id: number | null
+  member_count: number
+  created_at: string
+  archived_at: string | null
+  purge_at: string | null
+}
+
+export interface AdminRoomMember {
+  user_id: number
+  full_name: string
+  username: string
+  branch_id: number
+}
+
+export interface AdminRoomDetail extends AdminRoom {
+  members: AdminRoomMember[]
+}
+
+export type ServerEvent =
+  | { type: 'ready'; user_id: number }
+  | { type: 'message' | 'message_updated'; message: Message }
+  | { type: 'message_deleted'; room_id: number; message_id: number }
+  | { type: 'rooms_changed' }
+  | { type: 'resync' }
+  | { type: 'pong' }
+  | { type: 'error'; code: string; client_id: string | null }

@@ -15,3 +15,13 @@ it('falls back for unknown codes and non-ApiError values', () => {
 it('has a message for a network failure', () => {
   expect(errorMessage(new ApiError(0, 'network_error'))).toBe('Không kết nối được máy chủ.')
 })
+
+it('has Vietnamese messages for the chat error codes', () => {
+  for (const code of [
+    'room_not_found', 'message_not_found', 'empty_message', 'message_too_long', 'invalid_client_id',
+    'invalid_message', 'invalid_json', 'unknown_type', 'unsupported_frame', 'internal_error', 'rate_limited',
+    'cannot_chat_with_self', 'invalid_cursor', 'member_not_found',
+  ]) {
+    expect(errorMessage(new ApiError(400, code)), code).not.toBe('Có lỗi xảy ra. Vui lòng thử lại.')
+  }
+})
