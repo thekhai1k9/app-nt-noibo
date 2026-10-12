@@ -739,6 +739,8 @@ describe('ChatController: read receipts, typing, presence', () => {
     await controller.loadRooms()
     let resolve: (m: { user_id: number; full_name: string; last_read_message_id: number | null }[]) => void = () => {}
     api.members.mockImplementationOnce(() => new Promise((r) => { resolve = r }))
+    // the re-run scheduled by the in-flight read sees the server's up-to-date marker
+    api.members.mockResolvedValue([{ user_id: 2, full_name: 'Bob', last_read_message_id: 8 }])
     const p = controller.loadMembers(1)
     controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 2, message_id: 8 })
     resolve([{ user_id: 2, full_name: 'Bob', last_read_message_id: 3 }])
@@ -888,12 +890,14 @@ describe('ChatController: review follow-ups', () => {
     expect(store.getState().rooms.find((r) => r.id === 2)?.unread_count).toBe(1)
   })
 
-  it('a burst of rooms_changed makes at most two presence and rooms requests', async () => {
+  it('a burst of rooms_changed makes one or two presence and rooms requests', async () => {
     const { controller, api } = setup()
     for (let i = 0; i < 5; i++) controller.handleSocketEvent({ type: 'rooms_changed' })
     await flush()
-    expect(api.presence.mock.calls.length).toBeLessThanOrEqual(2)
-    expect(api.rooms.mock.calls.length).toBeLessThanOrEqual(2)
+    for (const calls of [api.presence.mock.calls.length, api.rooms.mock.calls.length]) {
+      expect(calls).toBeGreaterThanOrEqual(1)
+      expect(calls).toBeLessThanOrEqual(2)
+    }
   })
 
   it('a failed trailing presence refresh keeps the snapshot that already arrived', async () => {
@@ -930,15 +934,83 @@ describe('ChatController: review follow-ups', () => {
     controller.dispose()
   })
 
-  it('stale buffered reads expire on the next members load', async () => {
-    const { controller, store, advance } = setup()
-    await controller.loadRooms()
-    await controller.loadMembers(1)
-    controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 9, message_id: 4 })
+  it('stale buffered reads expire on the next members load (fresh ones are kept)', async () => {
+    const buffered = (c: ChatController) => (c as unknown as { pendingReads: Map<number, unknown> }).pendingReads
+    for (const expire of [true, false]) {
+      const { controller, store, api, advance } = setup()
+      await controller.loadRooms()
+      await controller.loadMembers(1)
+      controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 9, message_id: 4 })
+      await flush()
+      expect(buffered(controller).has(1)).toBe(true) // 9 is not a member yet
+      if (expire) advance(6 * 60_000)
+      await controller.loadMembers(1) // still no user 9
+      expect(buffered(controller).has(1)).toBe(!expire)
+      api.members.mockResolvedValue([
+        { user_id: 1, full_name: 'Tôi', last_read_message_id: null },
+        { user_id: 9, full_name: 'Newcomer', last_read_message_id: null },
+      ])
+      await controller.loadMembers(1)
+      expect(store.getState().members[1].find((x) => x.user_id === 9)?.last_read_message_id).toBe(expire ? null : 4)
+    }
+  })
+
+  it('a rooms_changed that arrives mid-load skips the stale snapshot and applies the trailing one', async () => {
+    const { controller, store, api } = setup()
+    let release!: (v: Room[]) => void
+    api.rooms.mockImplementationOnce(() => new Promise<Room[]>((r) => (release = r)))
+    api.rooms.mockResolvedValueOnce([room(1), room(2), room(3)])
+    controller.handleSocketEvent({ type: 'rooms_changed' })
+    controller.handleSocketEvent({ type: 'rooms_changed' })
+    release([room(1)])
     await flush()
-    advance(6 * 60_000)
-    await controller.loadMembers(1)
-    await controller.loadMembers(1)
-    expect(store.getState().members[1].some((x) => x.user_id === 9)).toBe(false)
+    expect(api.rooms).toHaveBeenCalledTimes(2)
+    expect(store.getState().rooms.map((r) => r.id).sort()).toEqual([1, 2, 3])
+  })
+
+  it('falls back to the skipped snapshot when the trailing rooms_changed reload fails', async () => {
+    const { controller, store, api } = setup()
+    let release!: (v: Room[]) => void
+    api.rooms.mockImplementationOnce(() => new Promise<Room[]>((r) => (release = r)))
+    api.rooms.mockRejectedValueOnce(new Error('x'))
+    controller.handleSocketEvent({ type: 'rooms_changed' })
+    controller.handleSocketEvent({ type: 'rooms_changed' })
+    release([room(7)])
+    await flush()
+    expect(store.getState().rooms.map((r) => r.id)).toEqual([7])
+  })
+
+  it('a rooms_changed after a finished burst starts a fresh reload', async () => {
+    const { controller, api } = setup()
+    controller.handleSocketEvent({ type: 'rooms_changed' })
+    await flush()
+    controller.handleSocketEvent({ type: 'rooms_changed' })
+    await flush()
+    expect(api.rooms).toHaveBeenCalledTimes(2)
+  })
+
+  it('a read that lands while the first members load is in flight is re-run and applied', async () => {
+    const { controller, store, api } = setup()
+    await controller.loadRooms()
+    let release!: (v: { user_id: number; full_name: string; last_read_message_id: number | null }[]) => void
+    api.members.mockImplementationOnce(() => new Promise((r) => (release = r)))
+    void controller.loadMembers(1)
+    controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 2, message_id: 3 })
+    release([
+      { user_id: 1, full_name: 'Tôi', last_read_message_id: null },
+      { user_id: 2, full_name: 'Bob', last_read_message_id: null },
+    ])
+    await flush()
+    expect(api.members.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(store.getState().members[1].find((x) => x.user_id === 2)?.last_read_message_id).toBe(3)
+  })
+
+  it('drops buffered reads of rooms that disappear from the list', async () => {
+    const { controller, api } = setup()
+    await controller.loadRooms()
+    controller.handleSocketEvent({ type: 'read', room_id: 2, user_id: 9, message_id: 4 })
+    api.rooms.mockResolvedValue([room(1)])
+    await controller.loadRooms()
+    expect((controller as unknown as { pendingReads: Map<number, unknown> }).pendingReads.has(2)).toBe(false)
   })
 })

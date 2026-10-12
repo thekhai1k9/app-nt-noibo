@@ -74,18 +74,20 @@ export class ChatController {
     const seq = ++this.roomsSeq
     try {
       const rooms = await this.deps.api.rooms()
-      if (seq === this.roomsSeq) {
-        this.deps.store.setRooms(rooms)
-        this.pruneRemovedRooms(new Set(rooms.map((r) => r.id)))
-        // Bản chụp cũ có thể khôi phục huy hiệu chưa đọc của phòng đã đánh dấu đọc.
-        for (const r of this.deps.store.getState().rooms) {
-          if (r.unread_count > 0 && r.last_message && (this.lastMarked.get(r.id) ?? 0) >= r.last_message.id) {
-            this.deps.store.clearUnread(r.id)
-          }
-        }
-      }
+      if (seq === this.roomsSeq) this.applyRooms(rooms)
     } catch {
       if (seq === this.roomsSeq) this.deps.store.setRoomsError()
+    }
+  }
+
+  private applyRooms(rooms: Room[]): void {
+    this.deps.store.setRooms(rooms)
+    this.pruneRemovedRooms(new Set(rooms.map((r) => r.id)))
+    // Bản chụp cũ có thể khôi phục huy hiệu chưa đọc của phòng đã đánh dấu đọc.
+    for (const r of this.deps.store.getState().rooms) {
+      if (r.unread_count > 0 && r.last_message && (this.lastMarked.get(r.id) ?? 0) >= r.last_message.id) {
+        this.deps.store.clearUnread(r.id)
+      }
     }
   }
 
@@ -103,7 +105,7 @@ export class ChatController {
     const state = this.deps.store.getState()
     const threads = state.threads
     // Không bỏ phòng đang xem hay thread còn tin chờ gửi; bản chụp sau sẽ dọn nếu phòng thật sự đã mất.
-    const known = new Set([...Object.keys(threads), ...Object.keys(state.members), ...Object.keys(state.typing)].map(Number))
+    const known = new Set([...Object.keys(threads), ...Object.keys(state.members), ...Object.keys(state.typing), ...this.pendingReads.keys(), ...this.membersInFlight.keys()].map(Number))
     const gone = [...known].filter((id) => !alive.has(id) && id !== this.activeRoom && !threads[id]?.items.some((m) => m.pending))
     if (gone.length === 0) return
     for (const id of gone) {
@@ -343,14 +345,38 @@ export class ChatController {
       this.roomsAgain = true
       return this.roomsRun
     }
-    const run = (async () => {
-      do {
-        this.roomsAgain = false
-        await this.loadRooms()
-      } while (this.roomsAgain && !this.disposed)
-    })().finally(() => {
-      if (this.roomsRun === run) this.roomsRun = null
-    })
+    let run!: Promise<void>
+    run = (async () => {
+      try {
+        // Bản chụp bị bỏ qua vì đã có rooms_changed mới hơn; chỉ áp dụng nếu lần chạy kế tiếp lỗi.
+        let held: Room[] | null = null
+        do {
+          this.roomsAgain = false
+          const seq = ++this.roomsSeq
+          let rooms: Room[] | null = null
+          try {
+            rooms = await this.deps.api.rooms()
+          } catch {
+            rooms = null
+          }
+          if (seq !== this.roomsSeq) continue // đã có loadRooms khác thay thế
+          const again = this.roomsAgain && !this.disposed
+          if (rooms) {
+            if (again) held = rooms
+            else {
+              this.applyRooms(rooms)
+              held = null
+            }
+          } else if (!again) {
+            if (held) this.applyRooms(held)
+            else this.deps.store.setRoomsError()
+            held = null
+          }
+        } while (this.roomsAgain && !this.disposed)
+      } finally {
+        if (this.roomsRun === run) this.roomsRun = null
+      }
+    })()
     this.roomsRun = run
     return run
   }
@@ -427,7 +453,7 @@ export class ChatController {
       const pending = this.pendingReads.get(roomId) ?? new Map<number, { id: number; at: number }>()
       pending.set(userId, { id: Math.max(pending.get(userId)?.id ?? 0, messageId), at: this.now() })
       this.pendingReads.set(roomId, pending)
-      if (list) void this.loadMembers(roomId)
+      if (list || this.membersInFlight.has(roomId)) void this.loadMembers(roomId)
     }
     if (userId === this.deps.meId) {
       // Đồng bộ đa tab; không xoá nếu có tin của người khác mới hơn mốc (tin đến trước sự kiện này).
@@ -443,14 +469,17 @@ export class ChatController {
       this.presenceAgain = true
       return this.presenceRun
     }
-    const run = (async () => {
-      do {
-        this.presenceAgain = false
-        await this.presenceOnce()
-      } while (this.presenceAgain && !this.disposed)
-    })().finally(() => {
-      if (this.presenceRun === run) this.presenceRun = null
-    })
+    let run!: Promise<void>
+    run = (async () => {
+      try {
+        do {
+          this.presenceAgain = false
+          await this.presenceOnce()
+        } while (this.presenceAgain && !this.disposed)
+      } finally {
+        if (this.presenceRun === run) this.presenceRun = null
+      }
+    })()
     this.presenceRun = run
     return run
   }
@@ -590,6 +619,7 @@ export class ChatController {
     this.pendingReads.clear()
     this.membersAgain.clear()
     this.presenceAgain = false
+    this.presenceLiveAt.clear()
     this.roomsAgain = false
     this.deps.store.pruneTyping(Infinity) // store có thể sống lâu hơn controller
     this.disposed = true

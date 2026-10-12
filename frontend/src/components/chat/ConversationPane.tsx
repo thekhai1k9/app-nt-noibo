@@ -48,7 +48,7 @@ function Conversation({ roomId }: { roomId: number }) {
     if (!last) return null
     const others = members.filter((m) => m.user_id !== meId)
     const seenBy = others.filter((m) => m.last_read_message_id !== null && m.last_read_message_id >= last.id).map((m) => m.full_name)
-    return { messageId: last.id, label: <SeenLabel seenBy={seenBy} total={others.length} isGroup={isGroup} /> }
+    return { messageId: last.id, label: <SeenLabel seenBy={seenBy} isGroup={isGroup} /> }
   }, [thread.loaded, thread.items, members, meId, isGroup])
 
   useEffect(() => {
@@ -68,10 +68,14 @@ function Conversation({ roomId }: { roomId: number }) {
         <div style={{ minWidth: 0 }}>
           <h2 style={{ fontSize: 17 }} className="ellipsis">{room?.name ?? ''}</h2>
           {room?.type === 'group' && <div className="muted" style={{ fontSize: 12 }}>{room.member_count} thành viên</div>}
-          {room?.type === 'direct' && peerOnline && (
+          {room?.type === 'direct' && (
             <div className="muted presence-line" style={{ fontSize: 12 }}>
-              <PresenceDot online={peerOnline} />
-              <span>Đang hoạt động</span>
+              {peerOnline && (
+                <>
+                  <PresenceDot online decorative />
+                  <span>Đang hoạt động</span>
+                </>
+              )}
             </div>
           )}
         </div>

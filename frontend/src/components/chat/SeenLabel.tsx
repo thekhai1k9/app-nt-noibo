@@ -1,4 +1,4 @@
-export function SeenLabel({ seenBy, isGroup }: { seenBy: string[]; total: number; isGroup: boolean }) {
+export function SeenLabel({ seenBy, isGroup }: { seenBy: string[]; isGroup: boolean }) {
   if (seenBy.length === 0) return null
   if (!isGroup) return <div className="seen-label">Đã xem</div>
   return (

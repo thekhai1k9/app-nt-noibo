@@ -118,15 +118,20 @@ describe('chat layout', () => {
     await screen.findByText('chào cả nhà')
     const ws = await connect()
     expect(screen.queryByText(/Đang kết nối lại/)).not.toBeInTheDocument()
+    vi.useFakeTimers({ shouldAdvanceTime: true }) // trước khi đóng để hẹn giờ backoff dùng đồng hồ giả
     await act(async () => ws.serverClose(1006))
     expect(await screen.findByText(/Đang kết nối lại/)).toBeInTheDocument()
     const catchUp = routes({
       'GET /api/rooms/1/messages': { json: { items: [makeMessage({ id: 6, body: 'tin lỡ' })], has_more_before: false, has_more_after: false } },
     })
     mockFetch(catchUp)
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 1300)) // chờ backoff 1s (+ jitter) rồi kết nối lại
-    })
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1300) // backoff 1s (+ jitter) rồi kết nối lại
+      })
+    } finally {
+      vi.useRealTimers()
+    }
     const ws2 = await connect()
     expect(ws2).not.toBe(ws)
     expect(await screen.findByText('tin lỡ')).toBeInTheDocument()
@@ -352,6 +357,37 @@ describe('realtime status UI', () => {
     expect(await screen.findAllByText('Đã xem bởi 1 người')).toHaveLength(1)
   })
 
+  it('puts the seen label on the last delivered own message, ignoring deleted/pending/failed ones and the viewer own read', async () => {
+    mockFetch(
+      routes({
+        'GET /api/rooms/1/messages': {
+          json: {
+            items: [
+              makeMessage({ id: 4, sender_id: 1, sender_name: 'Phạm Đức Long', body: 'tin thật' }),
+              makeMessage({ id: 5, sender_id: 1, sender_name: 'Phạm Đức Long', body: '', deleted: true }),
+            ],
+            has_more_before: false,
+            has_more_after: false,
+          },
+        },
+        'GET /api/rooms/1/members': { json: membersOf(4) }, // người xem (id 1) đã đọc 99 nhưng không được tính
+      }),
+    )
+    renderApp('/chat/1')
+    await screen.findByText('tin thật')
+    const label = await screen.findByText('Đã xem bởi 1 người') // chỉ Hà, không tính người xem
+    expect(label).toHaveAttribute('title', 'Lê Thu Hà')
+    const msgOf = () => document.querySelector('.seen-row')?.previousElementSibling?.getAttribute('data-message-id')
+    expect(msgOf()).toBe('4')
+    const ws = await connect()
+    await userEvent.type(screen.getByLabelText('Nhập tin nhắn'), 'đang gửi{Enter}')
+    expect(msgOf()).toBe('4') // tin đang gửi không nhận nhãn
+    const sent = ws.sentJson.filter((m) => m.type === 'send').at(-1)!
+    await act(async () => ws.receive({ type: 'error', code: 'rate_limited', client_id: sent.client_id as string }))
+    expect(await screen.findByText("Gửi lỗi")).toBeInTheDocument()
+    expect(msgOf()).toBe('4') // tin gửi lỗi cũng không
+  })
+
   it('shows and clears the typing line (5 s expiry, and when the typer sends a message)', async () => {
     mockFetch(routes())
     renderApp('/chat/1')
@@ -384,7 +420,7 @@ describe('realtime status UI', () => {
     await act(async () => ws.receive({ type: 'presence', user_id: 3, online: true }))
     expect(within(link).getByLabelText('Đang hoạt động')).toBeInTheDocument()
     expect(screen.getAllByText('Đang hoạt động').length).toBeGreaterThan(0)
-    expect(screen.getAllByLabelText('Đang hoạt động')).toHaveLength(2)
+    expect(screen.getAllByLabelText('Đang hoạt động')).toHaveLength(1) // chấm ở tiêu đề chỉ để trang trí
     await act(async () => ws.receive({ type: 'presence', user_id: 3, online: false }))
     expect(screen.queryByLabelText('Đang hoạt động')).not.toBeInTheDocument()
     expect(screen.queryByText('Đang hoạt động')).not.toBeInTheDocument()
@@ -398,10 +434,15 @@ describe('realtime status UI', () => {
     const count = (path: string) => calls.filter((c) => c.path === path).length
     await waitFor(() => expect(count('/api/presence')).toBeGreaterThan(0))
     const before = { p: count('/api/presence'), m: count('/api/rooms/1/members') }
+    vi.useFakeTimers({ shouldAdvanceTime: true })
     await act(async () => ws.serverClose(1006))
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 1300))
-    })
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1300)
+      })
+    } finally {
+      vi.useRealTimers()
+    }
     await connect()
     await waitFor(() => expect(count('/api/presence')).toBeGreaterThan(before.p))
     await waitFor(() => expect(count('/api/rooms/1/members')).toBeGreaterThan(before.m))
