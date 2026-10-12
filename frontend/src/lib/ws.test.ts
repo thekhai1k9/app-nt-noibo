@@ -264,4 +264,109 @@ describe('ChatSocket', () => {
     vi.advanceTimersByTime(60_000)
     expect(FakeWebSocket.instances).toHaveLength(2)
   })
+
+  function deferred() {
+    let resolve!: (r: RefreshResult) => void
+    const promise = new Promise<RefreshResult>((res) => {
+      resolve = res
+    })
+    return { promise, resolve }
+  }
+  const openSockets = () => FakeWebSocket.instances.filter((w) => w.readyState !== 3)
+
+  it('ignores a refresh that resolves after stop()', async () => {
+    const d = deferred()
+    const { socket, onAuthLost } = setup({ getToken: () => null, refresh: () => d.promise })
+    socket.start()
+    socket.stop()
+    d.resolve('denied')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(onAuthLost).not.toHaveBeenCalled()
+  })
+
+  it('start/stop/start with a pending refresh creates exactly one socket', async () => {
+    const d = deferred()
+    let token: string | null = null
+    const { socket } = setup({ getToken: () => token, refresh: () => d.promise })
+    socket.start()
+    socket.stop()
+    socket.start()
+    token = 'tok-new'
+    d.resolve('ok')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(openSockets()).toHaveLength(1)
+  })
+
+  it('start/stop/start with a pending refresh denied does not log out the new session', async () => {
+    const d = deferred()
+    const { socket, onAuthLost } = setup({ getToken: () => null, refresh: () => d.promise })
+    socket.start()
+    socket.stop()
+    socket.start()
+    d.resolve('denied')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(onAuthLost).toHaveBeenCalledTimes(1) // chỉ phiên mới (cùng promise) báo một lần
+  })
+
+  it('reconnectNow() during a pending 4401 refresh does nothing', async () => {
+    const d = deferred()
+    const { socket } = setup({ refresh: () => d.promise })
+    socket.start()
+    FakeWebSocket.last.serverClose(4401)
+    expect(socket.getStatus()).toBe('connecting')
+    socket.reconnectNow()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    d.resolve('ok')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(openSockets()).toHaveLength(1)
+  })
+
+  it('treats a rejected refresh as unavailable and backs off', async () => {
+    const refresh = vi.fn<() => Promise<RefreshResult>>().mockRejectedValue(new Error('x'))
+    const { socket, onAuthLost } = setup({ getToken: () => null, refresh })
+    socket.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(refresh).toHaveBeenCalledTimes(2)
+    expect(onAuthLost).not.toHaveBeenCalled()
+  })
+
+  it("backs off when refresh is 'ok' but there is still no token", async () => {
+    const refresh = vi.fn<() => Promise<RefreshResult>>().mockResolvedValue('ok')
+    const { socket } = setup({ getToken: () => null, refresh })
+    socket.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(999)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
+
+  it('stop() clears a pending backoff timer', () => {
+    const { socket } = setup()
+    socket.start()
+    FakeWebSocket.last.serverClose(1006)
+    socket.stop()
+    vi.advanceTimersByTime(60_000)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('4401, then 1006, then 4401 with no ready in between gives up', async () => {
+    const { socket, onAuthLost } = setup()
+    socket.start()
+    FakeWebSocket.last.serverClose(4401)
+    await vi.advanceTimersByTimeAsync(0)
+    FakeWebSocket.last.serverClose(1006)
+    await vi.advanceTimersByTimeAsync(1000)
+    FakeWebSocket.last.serverClose(4401)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(onAuthLost).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(FakeWebSocket.instances).toHaveLength(3)
+  })
 })

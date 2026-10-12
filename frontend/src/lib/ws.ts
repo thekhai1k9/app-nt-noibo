@@ -29,6 +29,8 @@ export class ChatSocket {
   private stopped = true
   private attempt = 0
   private authFailures = 0
+  private generation = 0
+  private refreshing = false
   private timer: ReturnType<typeof setTimeout> | null = null
   private readonly eventListeners = new Set<(event: ServerEvent) => void>()
   private readonly statusListeners = new Set<(status: SocketStatus) => void>()
@@ -52,6 +54,8 @@ export class ChatSocket {
   start(): void {
     if (!this.stopped) return
     this.stopped = false
+    this.generation += 1
+    this.refreshing = false
     this.attempt = 0
     this.authFailures = 0
     this.connect()
@@ -59,17 +63,10 @@ export class ChatSocket {
 
   stop(): void {
     this.stopped = true
+    this.generation += 1
+    this.refreshing = false
     this.clearTimer()
-    const ws = this.ws
-    this.ws = null
-    if (ws) {
-      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null
-      try {
-        ws.close(1000)
-      } catch {
-        // đã đóng
-      }
-    }
+    this.detach()
     this.setStatus('offline')
   }
 
@@ -85,9 +82,22 @@ export class ChatSocket {
 
   /** Dùng khi mạng có lại hoặc tab hiển thị lại: không chờ hết thời gian backoff. */
   reconnectNow(): void {
-    if (this.stopped || this.status !== 'offline') return
+    if (this.stopped || this.refreshing || this.status !== 'offline') return
     this.clearTimer()
     this.connect()
+  }
+
+  private detach(): void {
+    const ws = this.ws
+    this.ws = null
+    if (ws) {
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null
+      try {
+        ws.close(1000)
+      } catch {
+        // đã đóng
+      }
+    }
   }
 
   private setStatus(status: SocketStatus): void {
@@ -104,7 +114,9 @@ export class ChatSocket {
   }
 
   private connect(): void {
-    if (this.stopped) return
+    if (this.stopped || this.refreshing) return
+    this.clearTimer()
+    this.detach()
     this.setStatus('connecting')
     const token = this.opts.getToken()
     if (!token) {
@@ -166,8 +178,18 @@ export class ChatSocket {
 
   /** Chỉ lỗi 4401 liên tiếp mới tính vào bộ đếm; thiếu token hay refresh không khả dụng thì backoff. */
   private async refreshThenConnect(): Promise<void> {
-    const result = await this.opts.refresh()
-    if (this.stopped) return
+    const generation = this.generation
+    this.refreshing = true
+    this.clearTimer()
+    this.setStatus('connecting')
+    let result: RefreshResult
+    try {
+      result = await this.opts.refresh()
+    } catch {
+      result = 'unavailable'
+    }
+    if (generation !== this.generation || this.stopped) return
+    this.refreshing = false
     if (result === 'ok' && this.opts.getToken()) this.connect()
     else if (result === 'denied') this.giveUp()
     else this.scheduleReconnect()
