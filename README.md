@@ -5,7 +5,7 @@ Thiết kế: `docs/superpowers/specs/2026-10-12-internal-messaging-design.md`
 ## Chạy lần đầu (dev hoặc server Ubuntu)
 
 ```bash
-cp .env.example .env          # sửa mật khẩu DB và JWT_SECRET (openssl rand -hex 32)
+cp .env.example .env          # BẮT BUỘC sửa JWT_SECRET (openssl rand -hex 32) và mật khẩu DB (nên dùng openssl rand -hex 32)
 docker compose up -d --build  # dev: tự dùng thêm docker-compose.override.yml (mở cổng DB/Redis ở localhost)
 docker compose ps             # đợi các service healthy
 ```
@@ -24,7 +24,7 @@ docker compose exec api python -m app.cli create-admin \
   --branch-name "Hà Nội" --branch-code HN
 ```
 
-Lệnh in mật khẩu tạm một lần. Người dùng phải đổi mật khẩu khi đăng nhập lần đầu.
+Lệnh in mật khẩu tạm một lần duy nhất và không thể xem lại sau đó, hãy sao chép ngay. Người dùng phải đổi mật khẩu khi đăng nhập lần đầu.
 
 ## Chạy test backend
 
@@ -32,7 +32,7 @@ Lệnh in mật khẩu tạm một lần. Người dùng phải đổi mật kh�
 bash scripts/test.sh -v
 ```
 
-Lệnh này chạy pytest trong container python:3.12 nối vào mạng compose, không cần cài Python trên máy. Script tự khởi động db/redis và tự tạo database `messaging_test` nếu chưa có.
+Lệnh này chỉ dành cho máy phát triển: nó khởi động db/redis cùng `docker-compose.override.yml` (mở cổng ở localhost), chạy pytest trong container python:3.12 nối vào mạng compose, không cần cài Python trên máy. Script đọc `POSTGRES_USER`/`POSTGRES_PASSWORD` từ `.env` và tự tạo database `messaging_test` nếu chưa có. Nên đặt `POSTGRES_PASSWORD` bằng `openssl rand -hex 32` (chuỗi hex an toàn trong `DATABASE_URL`; mật khẩu base64 có thể làm hỏng URL).
 
 Nếu máy đã có Python 3.12 (cần Python 3.12), có thể chạy trực tiếp:
 
@@ -45,6 +45,10 @@ pip install -r requirements-dev.txt
 pytest -v
 ```
 
-## Lưu ý khi chưa có HTTPS
+## Cấu hình môi trường: `APP_ENV` và `COOKIE_SECURE`
 
-Giai đoạn này Caddy chỉ nghe cổng 80 (HTTP). Giữ `COOKIE_SECURE=false` trong `.env`, nếu không trình duyệt sẽ không lưu cookie đăng nhập. Khi bật HTTPS (Plan 6), đổi thành `COOKIE_SECURE=true` và `APP_ENV=prod`.
+Hai biến này độc lập với nhau.
+
+- `APP_ENV` (`dev` | `test` | `prod`, mặc định trong `.env.example` là `prod`). Ở `prod`, api từ chối khởi động nếu `JWT_SECRET` là giá trị mẫu hoặc ngắn hơn 32 ký tự (xem `docker compose logs api`), và `/api/docs` bị tắt. Đặt `dev` khi phát triển cục bộ. Giá trị khác ba giá trị trên bị từ chối.
+- Phải đặt `JWT_SECRET` thật (`openssl rand -hex 32`) trước lần khởi động đầu tiên. Giá trị mẫu trong `.env.example` cố ý bị từ chối ở `prod` để quên đổi thì lỗi ngay.
+- `COOKIE_SECURE` điều khiển cờ `Secure` của cookie đăng nhập, không phụ thuộc `APP_ENV`. Khi chưa có HTTPS, Caddy chỉ nghe cổng 80 (HTTP), nên giữ `COOKIE_SECURE=false`, nếu không trình duyệt sẽ không lưu cookie. Khi bật HTTPS, đổi thành `COOKIE_SECURE=true`.

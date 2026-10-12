@@ -8,6 +8,14 @@ ROOT="$(pwd)"
 
 [ -f .env ] || cp .env.example .env
 
+# Đọc thông tin DB từ .env (mặc định messaging nếu thiếu).
+set -a
+# shellcheck disable=SC1091
+source ./.env
+set +a
+PG_USER="${POSTGRES_USER:-messaging}"
+PG_PASS="${POSTGRES_PASSWORD:-messaging}"
+
 docker compose up -d db redis
 
 # Chờ db và redis healthy.
@@ -45,6 +53,6 @@ NET="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"
 # Tắt chuyển đổi đường dẫn của Git Bash/MSYS trên Windows.
 MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker run --rm --network "$NET" \
   -v "$ROOT/backend:/srv" -w /srv \
-  -e TEST_DATABASE_URL=postgresql+asyncpg://messaging:messaging@db:5432/messaging_test \
+  -e TEST_DATABASE_URL=postgresql+asyncpg://${PG_USER}:${PG_PASS}@db:5432/messaging_test \
   -e TEST_REDIS_URL=redis://redis:6379/1 \
   kn-backend-dev pytest "$@"
