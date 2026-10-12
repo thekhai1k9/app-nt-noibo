@@ -631,6 +631,20 @@ describe('ChatController: resync cursor and room pruning', () => {
     expect(api.messages).toHaveBeenLastCalledWith(1, { after: 60, limit: 100 })
   })
 
+  it('never asks the server for after=0: an empty room reloads its latest page and recovers messages missed while offline', async () => {
+    const { controller, api, store } = await loadedTo50()
+    api.messages.mockResolvedValueOnce({ items: [], has_more_before: false, has_more_after: false })
+    await controller.openRoom(2) // phòng trống: mốc 0
+    controller.handleSocketEvent({ type: 'message', message: msg(1, { room_id: 2 }) })
+    api.messages.mockClear()
+    api.messages.mockResolvedValue({ items: range(1, 40).map((i) => msg(i, { room_id: 2 })), has_more_before: false, has_more_after: false })
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    await flush()
+    for (const call of api.messages.mock.calls) expect(call[1].after).not.toBe(0)
+    expect(api.messages).toHaveBeenCalledWith(2, { limit: 50 })
+    expect(store.getState().threads[2].items.map((m) => m.id)).toEqual(range(1, 40))
+  })
+
   it('runs one more catch-up after the running one instead of starting a duplicate', async () => {
     const { controller, api } = await loadedTo50()
     let resolveFirst: (p: MessagePage) => void = () => {}

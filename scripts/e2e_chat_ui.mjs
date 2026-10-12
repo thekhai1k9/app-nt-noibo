@@ -645,7 +645,7 @@ await step('13. Admin: thấy nhóm, tạo "UI nhóm 2", lưu trữ (gõ đúng 
     await admin.getByRole('tab', { name: 'Đã lưu trữ' }).click()
     const archivedRow = admin.locator('.table-row', { hasText: GROUP2 })
     await archivedRow.waitFor({ timeout: 10000 })
-    const purge = await archivedRow.getByText(/Xoá vĩnh viễn vào/).innerText()
+    const purge = await archivedRow.getByText(/Xoá vĩnh viễn sau/).innerText()
     const archivedApi = await must('GET', `/admin/rooms?archived=true&q=${encodeURIComponent(GROUP2)}`, adminToken)
     const purgeAt = new Date(archivedApi[0]?.purge_at)
     const days = (purgeAt - Date.now()) / 86400000

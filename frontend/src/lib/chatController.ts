@@ -126,8 +126,11 @@ export class ChatController {
   }
 
   private async catchUpOnce(roomId: number): Promise<void> {
-    let after = this.syncedThrough.get(roomId) ?? this.lastRealId(roomId)
-    if (after === null) return this.loadLatest(roomId)
+    // Mốc 0 (phòng trống lúc mở) hoặc chưa có mốc nghĩa là chưa có gì để bù từ đó: tải lại trang mới nhất
+    // (server từ chối after=0, và không được lấy lastRealId vì tin trực tiếp có thể đã vượt khoảng thiếu).
+    const mark = this.syncedThrough.get(roomId)
+    let after = mark !== undefined ? mark : this.lastRealId(roomId)
+    if (!after) return this.loadLatest(roomId)
     try {
       for (let i = 0; i < CATCH_UP_MAX_PAGES; i++) {
         const page = await this.deps.api.messages(roomId, { after, limit: CATCH_UP_PAGE })
