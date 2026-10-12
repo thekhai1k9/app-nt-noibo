@@ -7,3 +7,6 @@ Caddyfile text eol=lf
 *.md text eol=lf
 *.ini text eol=lf
 *.txt text eol=lf
+.env.example text eol=lf
+.gitignore text eol=lf
+.dockerignore text eol=lf

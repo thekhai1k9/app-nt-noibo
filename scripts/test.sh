@@ -13,13 +13,18 @@ docker compose up -d db redis
 # Chờ db và redis healthy.
 for svc in db redis; do
   cid="$(docker compose ps -q "$svc")"
+  if [ -z "$cid" ]; then
+    echo "Service $svc has no container (docker compose up failed?)" >&2
+    exit 1
+  fi
+  status=""
   for _ in $(seq 1 60); do
-    status="$(docker inspect -f '{{.State.Health.Status}}' "$cid")"
+    status="$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || true)"
     [ "$status" = "healthy" ] && break
     sleep 2
   done
   if [ "$status" != "healthy" ]; then
-    echo "Service $svc is not healthy (status: $status)" >&2
+    echo "Service $svc is not healthy (status: ${status:-unknown})" >&2
     exit 1
   fi
 done
