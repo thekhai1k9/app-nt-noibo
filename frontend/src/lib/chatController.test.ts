@@ -1,5 +1,5 @@
 import { vi } from 'vitest'
-import { ChatController } from './chatController'
+import { ChatController, type ChatControllerDeps } from './chatController'
 import { ChatStore } from './chatStore'
 import type { Message, MessagePage, Room } from './types'
 
@@ -25,7 +25,7 @@ const room = (id: number, over: Partial<Room> = {}): Room => ({
   last_message: null, unread_count: 0, unread_mentions: 0, last_activity: '2026-10-15T08:00:00.000Z', my_role: 'member', ...over,
 })
 
-function setup(opts: { visible?: boolean; open?: boolean } = {}) {
+function setup(opts: { visible?: boolean; open?: boolean; onIncoming?: ChatControllerDeps['onIncoming'] } = {}) {
   const store = new ChatStore()
   const api = {
     rooms: vi.fn().mockResolvedValue([room(1), room(2)]),
@@ -65,6 +65,7 @@ function setup(opts: { visible?: boolean; open?: boolean } = {}) {
     isVisible: () => opts.visible ?? true,
     sendTimeoutMs: 15_000,
     now: () => nowMs,
+    onIncoming: opts.onIncoming,
   })
   return { store, api, socket, controller, setOpen: (v: boolean) => { isOpen = v }, advance: (ms: number) => { nowMs += ms } }
 }
@@ -1528,5 +1529,59 @@ describe('ChatController: replies and mentions', () => {
     await controller.loadRooms()
     controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 1, message_id: 5 })
     expect(store.getState().rooms.find((r) => r.id === 1)).toMatchObject({ unread_count: 0, unread_mentions: 0 })
+  })
+})
+
+describe('ChatController: onIncoming', () => {
+  it('fires once for a new websocket message from another user, with the room', async () => {
+    const onIncoming = vi.fn()
+    const { controller } = setup({ onIncoming })
+    await controller.loadRooms()
+    controller.handleSocketEvent({ type: 'message', message: msg(10, { room_id: 2 }) })
+    expect(onIncoming).toHaveBeenCalledTimes(1)
+    expect(onIncoming.mock.calls[0][0]).toMatchObject({ live: true, message: { id: 10 }, room: { id: 2 }, activeRoomId: null })
+  })
+
+  it('does not fire for duplicates, own messages or unknown rooms', async () => {
+    const onIncoming = vi.fn()
+    const { controller } = setup({ onIncoming })
+    await controller.loadRooms()
+    controller.handleSocketEvent({ type: 'message', message: msg(10, { room_id: 2 }) })
+    controller.handleSocketEvent({ type: 'message', message: msg(10, { room_id: 2 }) })
+    controller.handleSocketEvent({ type: 'message', message: msg(11, { room_id: 2, sender_id: 1 }) })
+    controller.handleSocketEvent({ type: 'message', message: msg(12, { room_id: 99 }) })
+    expect(onIncoming).toHaveBeenCalledTimes(1)
+  })
+
+  it('never fires for messages loaded over REST (open, catch-up, resync)', async () => {
+    const onIncoming = vi.fn()
+    const { controller, api } = setup({ onIncoming })
+    await controller.loadRooms()
+    await controller.openRoom(1)
+    api.messages.mockResolvedValue(page([4, 5]))
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    await flush()
+    await controller.openRoom(1)
+    expect(onIncoming).not.toHaveBeenCalled()
+  })
+
+  it('does not fire for a live message already delivered by REST', async () => {
+    const onIncoming = vi.fn()
+    const { controller } = setup({ onIncoming })
+    await controller.loadRooms()
+    await controller.openRoom(1)
+    controller.handleSocketEvent({ type: 'message', message: msg(3) })
+    expect(onIncoming).not.toHaveBeenCalled()
+  })
+
+  it('survives a throwing handler', async () => {
+    const { controller, store } = setup({
+      onIncoming: () => {
+        throw new Error('boom')
+      },
+    })
+    await controller.loadRooms()
+    controller.handleSocketEvent({ type: 'message', message: msg(10, { room_id: 2 }) })
+    expect(store.getState().rooms.find((r) => r.id === 2)!.unread_count).toBe(1)
   })
 })

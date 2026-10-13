@@ -14,6 +14,15 @@ export interface ChatControllerDeps {
   isVisible?: () => boolean
   sendTimeoutMs?: number
   now?: () => number
+  /** Chỉ gọi cho tin MỚI đến từ WebSocket (sự kiện `message`) của người khác; không bao giờ cho tin tải qua REST/bù tin. */
+  onIncoming?: (event: IncomingEvent) => void
+}
+
+export interface IncomingEvent {
+  message: Message
+  room: Room
+  live: true
+  activeRoomId: number | null
 }
 
 const PAGE_SIZE = 50
@@ -494,11 +503,25 @@ export class ChatController {
     if (mine && message.client_id) this.confirm(message.client_id)
     const viewing = this.isViewing(message.room_id)
     this.clearTypingEntry(message.room_id, message.sender_id)
+    const state = this.deps.store.getState()
+    const isNew =
+      !(state.threads[message.room_id]?.items.some((m) => m.id === message.id) ?? false) &&
+      state.rooms.find((r) => r.id === message.room_id)?.last_message?.id !== message.id
     this.deps.store.upsertMessage(message)
     const mentionsMe = message.mention_all || message.mentions.some((m) => m.user_id === this.deps.meId)
     const known = this.deps.store.bumpRoom(message, !mine && !viewing, mentionsMe)
     if (!known) void this.loadRooms()
     if (!mine && viewing) this.markReadIfViewing(message.room_id)
+    if (!mine && isNew && known && !this.disposed && this.deps.onIncoming) {
+      const room = this.deps.store.getState().rooms.find((r) => r.id === message.room_id)
+      if (room) {
+        try {
+          this.deps.onIncoming({ message, room, live: true, activeRoomId: this.activeRoom })
+        } catch {
+          // thông báo hỏng không được làm hỏng luồng nhận tin
+        }
+      }
+    }
   }
 
   // ---- đã xem, đang soạn, online ----

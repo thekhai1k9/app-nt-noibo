@@ -1,9 +1,21 @@
-import { createContext, useContext, useEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useSyncExternalStore, type MutableRefObject, type ReactNode } from 'react'
+import { useInRouterContext, useNavigate } from 'react-router-dom'
 import { getAccessToken, handleAuthLost, refreshSession } from './api'
 import { useAuth } from './auth'
 import { chatApi } from './chatApi'
-import { ChatController } from './chatController'
+import { ChatController, type IncomingEvent } from './chatController'
 import { ChatStore, EMPTY_THREAD, type ChatState, type Thread } from './chatStore'
+import {
+  armAudioUnlock,
+  loadSettings,
+  notificationBody,
+  playBeep,
+  restoreTitle,
+  shouldNotify,
+  showNotification,
+  unreadTotal,
+  updateTitle,
+} from './notifications'
 import type { Room, RoomMember } from './types'
 import { ChatSocket, type SocketStatus } from './ws'
 
@@ -12,15 +24,29 @@ export interface ChatContextValue {
   controller: ChatController
 }
 
+const noopSubscribe = () => () => undefined
+
 export const ChatContext = createContext<ChatContextValue | null>(null)
 
-function build(userId: number, userName: string): { socket: ChatSocket } & ChatContextValue {
+function build(userId: number, userName: string, onIncoming: (event: IncomingEvent) => void): { socket: ChatSocket } & ChatContextValue {
   const store = new ChatStore()
   const socket = new ChatSocket({ getToken: getAccessToken, refresh: refreshSession, onAuthLost: handleAuthLost })
-  const controller = new ChatController({ store, api: chatApi, socket, meId: userId, meName: userName })
+  const controller = new ChatController({ store, api: chatApi, socket, meId: userId, meName: userName, onIncoming })
   socket.onStatus((status) => store.setStatus(status))
   socket.onEvent((event) => controller.handleSocketEvent(event))
   return { store, controller, socket }
+}
+
+/** Cầu nối: lấy `navigate` của router (nếu có) để bấm thông báo mở đúng phòng. */
+function NavigateBridge({ target }: { target: MutableRefObject<((path: string) => void) | null> }) {
+  const navigate = useNavigate()
+  useEffect(() => {
+    target.current = (path) => navigate(path)
+    return () => {
+      target.current = null
+    }
+  }, [navigate, target])
+  return null
 }
 
 /**
@@ -35,7 +61,49 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const mustChange = user?.must_change_password ?? false
   // Một instance cho mỗi người dùng; effect bên dưới start/stop được (an toàn với StrictMode).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const instance = useMemo(() => (userId !== undefined ? build(userId, userName) : null), [userId])
+  const navigateRef = useRef<((path: string) => void) | null>(null)
+  const inRouter = useInRouterContext()
+  const instance = useMemo(
+    () =>
+      userId !== undefined
+        ? build(userId, userName, (event) => {
+            const settings = loadSettings()
+            const visible = document.visibilityState === 'visible'
+            const result = shouldNotify({
+              message: event.message,
+              room: event.room,
+              meId: userId,
+              settings,
+              windowVisible: visible,
+              windowFocused: visible && (typeof document.hasFocus === 'function' ? document.hasFocus() : true),
+              activeRoomId: event.activeRoomId,
+              now: Date.now(),
+            })
+            if (!result.notify) return
+            const roomId = event.room.id
+            showNotification({
+              title: event.room.name ?? event.message.sender_name,
+              body: notificationBody(event.message, settings.showPreview),
+              tag: `kn-room-${roomId}`,
+              onClick: () => navigateRef.current?.(`/chat/${roomId}`),
+            })
+            if (settings.sound) playBeep()
+          })
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [userId],
+  )
+
+  const unread = useSyncExternalStore(
+    instance ? instance.store.subscribe : noopSubscribe,
+    () => (instance ? unreadTotal(instance.store.getState().rooms) : 0),
+  )
+  useEffect(() => {
+    if (!instance) return
+    updateTitle(unread)
+  }, [instance, unread])
+  useEffect(() => restoreTitle, [])
+  useEffect(() => armAudioUnlock(), [])
 
   useEffect(() => {
     if (!instance || mustChange) return
@@ -61,7 +129,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [instance, mustChange])
 
   if (!instance) return null
-  return <ChatContext.Provider value={{ store: instance.store, controller: instance.controller }}>{children}</ChatContext.Provider>
+  return (
+    <ChatContext.Provider value={{ store: instance.store, controller: instance.controller }}>
+      {inRouter && <NavigateBridge target={navigateRef} />}
+      {children}
+    </ChatContext.Provider>
+  )
 }
 
 function useChatContext(): ChatContextValue {

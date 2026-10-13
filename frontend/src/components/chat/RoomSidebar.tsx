@@ -5,6 +5,7 @@ import { initials, listTime } from '../../lib/format'
 import { useChatState, useRooms } from '../../lib/ChatProvider'
 import type { Room } from '../../lib/types'
 import { ErrorAlert } from '../ErrorAlert'
+import { NotificationSettings } from '../NotificationSettings'
 import { NewChatDialog } from './NewChatDialog'
 import { PresenceDot } from './PresenceDot'
 
@@ -31,6 +32,8 @@ export function RoomSidebar() {
   const [filter, setFilter] = useState('')
   const [dialog, setDialog] = useState(false)
   const newChatButton = useRef<HTMLButtonElement>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsButton = useRef<HTMLButtonElement>(null)
   const [logoutError, setLogoutError] = useState<unknown>(null)
   const [pending, setPending] = useState(false)
 
@@ -101,6 +104,9 @@ export function RoomSidebar() {
               Quản trị
             </Link>
           )}
+          <button ref={settingsButton} type="button" className="btn" aria-label="Cài đặt thông báo" onClick={() => setSettingsOpen(true)}>
+            Thông báo
+          </button>
           <Link to="/change-password" className="btn">
             Đổi mật khẩu
           </Link>
@@ -110,6 +116,14 @@ export function RoomSidebar() {
         </div>
         <ErrorAlert error={logoutError} />
       </div>
+      {settingsOpen && (
+        <NotificationSettings
+          onClose={() => {
+            setSettingsOpen(false)
+            settingsButton.current?.focus()
+          }}
+        />
+      )}
       {dialog && <NewChatDialog
           onClose={() => {
             setDialog(false)
