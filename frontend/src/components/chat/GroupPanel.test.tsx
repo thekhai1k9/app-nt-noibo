@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { vi } from 'vitest'
 import { chatApi } from '../../lib/chatApi'
 import { ChatContext, useRooms } from '../../lib/ChatProvider'
@@ -44,7 +44,8 @@ function setup(room: Room, handlers: Record<string, MockHandler> = {}, members: 
       <MemoryRouter initialEntries={['/chat/1']}>
         <Routes>
           <Route path="/chat/:id" element={<Live roomId={room.id} onClose={onClose} />} />
-          <Route path="/" element={<div>trang chủ</div>} />
+          <Route path="/" element={<div>trang chủ <Link to="/other">sang phòng khác</Link></div>} />
+          <Route path="/other" element={<div>phòng khác</div>} />
         </Routes>
       </MemoryRouter>
     </ChatContext.Provider>,
@@ -129,7 +130,28 @@ describe('GroupPanel', () => {
     await waitFor(() => expect(within(dialog).queryByRole('button', { name: /Trần Quốc Huy · / })).not.toBeInTheDocument())
   })
 
-  it('debounces the member search and ignores stale responses', async () => {
+  it('ignores an earlier directory response that resolves after a later one', async () => {
+    const pending: Array<{ q: string; resolve: (v: typeof people) => void }> = []
+    vi.spyOn(chatApi, 'directory').mockImplementation(
+      (q: string) =>
+        q === '' ? Promise.resolve(people) : new Promise((resolve) => pending.push({ q, resolve: resolve as (v: typeof people) => void })),
+    )
+    setup(owner())
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByRole('button', { name: /Trần Quốc Huy/ })
+    const input = within(dialog).getByLabelText('Thêm thành viên')
+    await userEvent.type(input, 'a')
+    await waitFor(() => expect(pending).toHaveLength(1))
+    await userEvent.type(input, 'n')
+    await waitFor(() => expect(pending).toHaveLength(2))
+    await act(async () => pending[1].resolve([people[1]]))
+    await within(dialog).findByRole('button', { name: /Vũ Minh An/ })
+    await act(async () => pending[0].resolve(people)) // phản hồi cũ đến muộn
+    expect(within(dialog).queryByRole('button', { name: /Trần Quốc Huy/ })).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: /Vũ Minh An/ })).toBeInTheDocument()
+  })
+
+  it('debounces the member search to one request per typed burst', async () => {
     const { calls } = setup(owner(), {
       'GET /api/users/directory': (req) => ({ json: req.path.includes('q=an') ? [people[1]] : people }),
     })
@@ -230,6 +252,83 @@ describe('GroupPanel', () => {
     expect(await within(dialog).findByLabelText('Thêm thành viên')).toBeInTheDocument()
     act(() => store.upsertRoom(makeRoom({ id: 1, my_role: 'member' })))
     await waitFor(() => expect(within(dialog).queryByLabelText('Thêm thành viên')).not.toBeInTheDocument())
+  })
+
+  it('keeps focus inside the dialog after removing a member by keyboard, and Tab from body re-enters it', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    let list = ownerMembers
+    setup(owner(), {
+      'DELETE /api/rooms/1/members/2': () => ((list = [ownerMembers[0]]), { json: list }),
+      'GET /api/rooms/1/members': () => ({ json: list }),
+    })
+    const dialog = await screen.findByRole('dialog')
+    const button = await within(dialog).findByRole('button', { name: 'Gỡ Lê Thu Hà khỏi nhóm' })
+    button.focus()
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(within(dialog).queryByRole('button', { name: 'Gỡ Lê Thu Hà khỏi nhóm' })).not.toBeInTheDocument())
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+    expect(within(dialog).getByLabelText('Thêm thành viên')).toHaveFocus()
+    ;(document.activeElement as HTMLElement).blur()
+    expect(document.body).toHaveFocus()
+    await userEvent.tab()
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    ;(document.activeElement as HTMLElement).blur()
+    await userEvent.tab({ shift: true })
+    expect(dialog.contains(document.activeElement)).toBe(true)
+  })
+
+  it('navigates home immediately on leave even if the rooms reconcile is slow, and never redirects later', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    let release!: () => void
+    setup(owner(), { 'POST /api/rooms/1/leave': { status: 204 } })
+    vi.spyOn(chatApi, 'rooms').mockImplementation(() => new Promise((resolve) => (release = () => resolve([]))))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Rời nhóm' }))
+    expect(await screen.findByText(/trang chủ/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('link', { name: 'sang phòng khác' }))
+    expect(screen.getByText('phòng khác')).toBeInTheDocument()
+    await act(async () => release())
+    expect(screen.getByText('phòng khác')).toBeInTheDocument()
+  })
+
+  it('shows a loading state until the member list first resolves', async () => {
+    let release!: (v: RoomMember[]) => void
+    vi.spyOn(chatApi, 'members').mockImplementation(() => new Promise((resolve) => (release = resolve)))
+    setup(owner())
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getAllByText('Đang tải…').length).toBeGreaterThan(0)
+    await act(async () => release(ownerMembers))
+    expect(await within(dialog).findByText('Lê Thu Hà')).toBeInTheDocument()
+    expect(within(dialog).getByText('Thành viên').parentElement).not.toHaveTextContent('Đang tải…')
+  })
+
+  it('limits the name to 100 code points, rejects NUL and reloads rooms after a failed rename', async () => {
+    const { calls } = setup(owner(), { 'PATCH /api/rooms/1': { status: 403, json: { detail: 'forbidden' } } })
+    const dialog = await screen.findByRole('dialog')
+    const input = within(dialog).getByLabelText('Tên nhóm') as HTMLInputElement
+    await userEvent.clear(input)
+    await userEvent.type(input, '😀'.repeat(100))
+    expect([...input.value]).toHaveLength(100)
+    await userEvent.type(input, 'x')
+    expect([...input.value]).toHaveLength(100)
+    await userEvent.clear(input)
+    await userEvent.type(input, 'Kho mới')
+    await userEvent.paste('\u0000')
+    expect(input.value).toBe('Kho mới')
+    const before = calls.filter((c) => c.method === 'GET' && c.path === '/api/rooms').length
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Lưu tên' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Bạn không có quyền')
+    await waitFor(() => expect(calls.filter((c) => c.method === 'GET' && c.path === '/api/rooms').length).toBeGreaterThan(before))
+    expect(input.value).toBe('Kho mới') // bản nháp vẫn sửa được
+    expect(within(dialog).getByRole('heading', { name: 'Dự án kho' })).toBeInTheDocument()
+  })
+
+  it('keeps the tags in non-shrinking elements so only the name is ellipsized', async () => {
+    setup(owner())
+    const dialog = await screen.findByRole('dialog')
+    const tag = await within(dialog).findByText('· Chủ nhóm')
+    expect(tag).toHaveClass('member-tag')
+    expect(within(dialog).getByText('Phạm Đức Long')).toHaveClass('ellipsis')
   })
 
   it('closes with Escape and Đóng', async () => {

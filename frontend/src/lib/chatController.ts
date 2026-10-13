@@ -726,16 +726,19 @@ export class ChatController {
     if (this.membersInFlight.has(roomId)) this.membersAgain.add(roomId)
   }
 
-  leaveGroup(roomId: number): Promise<void> {
+  /** onGone chạy ngay khi server xác nhận, trước khi bỏ phòng khỏi store và trước khi đối soát danh sách phòng. */
+  leaveGroup(roomId: number, onGone?: () => void): Promise<void> {
     return this.groupOp(`leave:${roomId}`, async () => {
       await this.deps.api.leaveGroup(roomId)
+      onGone?.()
       await this.afterRoomGone(roomId)
     })
   }
 
-  dissolveGroup(roomId: number): Promise<void> {
+  dissolveGroup(roomId: number, onGone?: () => void): Promise<void> {
     return this.groupOp(`dissolve:${roomId}`, async () => {
       await this.deps.api.dissolveGroup(roomId)
+      onGone?.()
       await this.afterRoomGone(roomId)
     })
   }

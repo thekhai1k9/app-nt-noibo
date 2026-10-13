@@ -222,3 +222,5 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
 .member-row { display: flex; align-items: center; gap: 8px; min-height: 44px; }
 .danger-zone { border-top: 1px solid var(--line); padding-top: 12px; }
 .chat-info { margin-left: auto; min-width: 44px; padding: 0 10px; font-size: 18px; }
+.member-name { flex: 1; min-width: 0; }
+.member-tag { flex: none; white-space: nowrap; }

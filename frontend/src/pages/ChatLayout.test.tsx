@@ -717,3 +717,38 @@ describe('group info panel', () => {
     expect(screen.getByRole('link', { name: /Trần Quốc Huy/ })).toBeInTheDocument()
   })
 })
+
+describe('focus safety', () => {
+  const people = [{ id: 3, username: 'huy', full_name: 'Trần Quốc Huy', branch_id: 2, branch_name: 'TP.HCM' }]
+
+  it('keeps focus in the new-chat dialog after removing a chip, and Tab from body re-enters it', async () => {
+    mockFetch(routes({ 'GET /api/users/directory': { json: people } }))
+    renderApp('/')
+    await userEvent.click(await screen.findByRole('button', { name: 'Cuộc trò chuyện mới' }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('tab', { name: 'Tạo nhóm' }))
+    await userEvent.click(await within(dialog).findByRole('checkbox'))
+    const chipRemove = within(dialog).getByRole('button', { name: 'Bỏ Trần Quốc Huy' })
+    chipRemove.focus()
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(within(dialog).queryByRole('button', { name: 'Bỏ Trần Quốc Huy' })).not.toBeInTheDocument())
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+    ;(document.activeElement as HTMLElement).blur()
+    await userEvent.tab()
+    expect(dialog.contains(document.activeElement)).toBe(true)
+  })
+
+  it('moves focus to the back link when the opener disappears with the room', async () => {
+    let current = [{ ...rooms[0], my_role: 'owner' as const }, rooms[1]]
+    mockFetch(routes({ 'GET /api/rooms': () => ({ json: current }), 'GET /api/users/directory': { json: [] } }))
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const ws = await connect()
+    await userEvent.click(screen.getByRole('button', { name: 'Thông tin nhóm' }))
+    await screen.findByRole('dialog')
+    current = [rooms[1]]
+    await act(async () => ws.receive({ type: 'rooms_changed' }))
+    const link = await screen.findByRole('link', { name: 'Về danh sách' })
+    await waitFor(() => expect(link).toHaveFocus())
+  })
+})

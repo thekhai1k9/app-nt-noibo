@@ -11,11 +11,17 @@ import { SeenLabel } from './SeenLabel'
 import { TypingIndicator } from './TypingIndicator'
 
 function NotFound() {
+  const linkRef = useRef<HTMLAnchorElement>(null)
+  // Nút đã mở bảng vừa biến mất: không để focus rơi ra <body>.
+  useEffect(() => {
+    const active = document.activeElement
+    if (!active || active === document.body) linkRef.current?.focus()
+  }, [])
   return (
     <div className="center-screen">
       <div className="card stack" style={{ maxWidth: 420 }}>
         <p>Cuộc trò chuyện không tồn tại hoặc bạn không còn trong đó.</p>
-        <Link to="/" className="btn btn-primary">
+        <Link ref={linkRef} to="/" className="btn btn-primary">
           Về danh sách
         </Link>
       </div>

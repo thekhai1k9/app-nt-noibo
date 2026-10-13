@@ -1,20 +1,25 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { chatApi } from '../../lib/chatApi'
-import { useChatController, useMembers } from '../../lib/ChatProvider'
+import { useChatController, useChatState, useMembers } from '../../lib/ChatProvider'
 import type { DirectoryUser, Room } from '../../lib/types'
 import { ErrorAlert } from '../ErrorAlert'
+import { acceptableGroupNameInput, useModalFocus } from './dialogFocus'
 
 const SEARCH_DELAY_MS = 250
 
 /** Giống quy tắc của server: sau khi cắt khoảng trắng phải còn ít nhất một ký tự nhìn thấy được. */
 const hasVisibleChar = (text: string) => /[^\p{Cc}\p{Cf}\p{Zs}]/u.test(text.trim())
 
+type FocusPref = 'name' | 'search' | 'close'
+
 export function GroupPanel({ room, onClose }: { room: Room; onClose: () => void }) {
   const controller = useChatController()
   const navigate = useNavigate()
   const roomId = room.id
   const members = useMembers(roomId)
+  const hasMembers = useChatState((s) => s.members[roomId] !== undefined)
+  const [membersSettled, setMembersSettled] = useState(false)
   const meId = controller.meId
   // Quyền lấy từ phòng "sống" trong danh sách phòng: đổi chủ khi bảng đang mở thì giao diện đổi ngay.
   const isOwner = room.my_role === 'owner'
@@ -30,6 +35,9 @@ export function GroupPanel({ room, onClose }: { room: Room; onClose: () => void 
   const busyRef = useRef(false)
   const dialogRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
+  const nameRef = useRef<HTMLInputElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const prefRef = useRef<FocusPref>('close')
   const mounted = useRef(true)
 
   useEffect(() => {
@@ -41,8 +49,19 @@ export function GroupPanel({ room, onClose }: { room: Room; onClose: () => void 
 
   useEffect(() => {
     closeRef.current?.focus()
-    void controller.loadMembers(roomId)
+    let alive = true
+    void controller.loadMembers(roomId).finally(() => alive && setMembersSettled(true))
+    return () => {
+      alive = false
+    }
   }, [controller, roomId])
+
+  // Focus rơi ra ngoài (nút bị gỡ khỏi danh sách, nút bị tắt...) thì quay về ô phù hợp với thao tác vừa làm.
+  useModalFocus(dialogRef, () => {
+    const order: FocusPref[] = prefRef.current === 'name' ? ['name', 'search', 'close'] : prefRef.current === 'search' ? ['search', 'name', 'close'] : ['close']
+    const els = { name: nameRef.current, search: searchRef.current, close: closeRef.current }
+    return order.map((k) => els[k]).find((el) => el && !el.disabled)
+  })
 
   const close = () => {
     if (!busyRef.current) onClose()
@@ -72,26 +91,11 @@ export function GroupPanel({ room, onClose }: { room: Room; onClose: () => void 
     }
   }, [term, isOwner])
 
-  function trapTab(event: ReactKeyboardEvent) {
-    if (event.key !== 'Tab' || !dialogRef.current) return
-    const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), [href], select:not([disabled])'))
-    if (focusable.length === 0) return
-    const first = focusable[0]
-    const last = focusable[focusable.length - 1]
-    const active = document.activeElement
-    if (event.shiftKey && (active === first || !dialogRef.current.contains(active))) {
-      event.preventDefault()
-      last.focus()
-    } else if (!event.shiftKey && (active === last || !dialogRef.current.contains(active))) {
-      event.preventDefault()
-      first.focus()
-    }
-  }
-
   /** Một thao tác tại một thời điểm; luôn tải lại thành viên sau đó (kể cả lỗi) để giao diện không lệch. */
-  async function run(action: () => Promise<unknown>, options: { after?: () => void; reload?: boolean } = {}) {
+  async function run(action: () => Promise<unknown>, options: { after?: () => void; reload?: boolean; focus?: FocusPref; onError?: () => void } = {}) {
     if (busyRef.current) return
     busyRef.current = true
+    prefRef.current = options.focus ?? 'close'
     setBusy(true)
     setActionError(null)
     let ok = false
@@ -100,6 +104,7 @@ export function GroupPanel({ room, onClose }: { room: Room; onClose: () => void 
       ok = true
     } catch (err) {
       if (mounted.current) setActionError(err)
+      options.onError?.()
     }
     busyRef.current = false
     if (mounted.current) setBusy(false)
@@ -112,19 +117,26 @@ export function GroupPanel({ room, onClose }: { room: Room; onClose: () => void 
 
   function saveName() {
     if (!nameChanged) return
-    void run(() => controller.renameGroup(roomId, trimmedDraft), { after: () => setNameDraft(null) })
+    void run(() => controller.renameGroup(roomId, trimmedDraft), {
+      focus: 'name',
+      after: () => setNameDraft(null),
+      // Bản nháp không được thành "sự thật" hiển thị: tải lại tên thật của phòng (bản nháp vẫn sửa được).
+      onError: () => void controller.loadRooms(),
+    })
   }
 
   function add(user: DirectoryUser) {
-    void run(() => controller.addMember(roomId, user.id))
+    void run(() => controller.addMember(roomId, user.id), { focus: 'search' })
   }
 
   function remove(userId: number, name: string) {
     if (busyRef.current) return
     if (!window.confirm(`Gỡ ${name} khỏi nhóm "${roomName}"? Người này sẽ không còn xem được nhóm.`)) return
-    void run(() => controller.removeMember(roomId, userId))
+    void run(() => controller.removeMember(roomId, userId), { focus: isOwner ? 'search' : 'close' })
   }
 
+  // Điều hướng ngay khi server xác nhận (trước khi đối soát danh sách phòng): không nháy thông báo "không còn",
+  // và không bao giờ điều hướng muộn đè lên lựa chọn khác của người dùng.
   function gone() {
     onClose()
     navigate('/')
@@ -136,7 +148,7 @@ export function GroupPanel({ room, onClose }: { room: Room; onClose: () => void 
       ? `Bạn là chủ nhóm "${roomName}". Nếu rời nhóm, quyền chủ nhóm sẽ chuyển cho người vào nhóm sớm nhất; nếu bạn là người cuối cùng thì nhóm sẽ được lưu trữ. Bạn vẫn muốn rời nhóm?`
       : `Rời nhóm "${roomName}"? Bạn sẽ không còn nhận tin nhắn của nhóm này.`
     if (!window.confirm(text)) return
-    void run(() => controller.leaveGroup(roomId), { reload: false, after: gone })
+    void run(() => controller.leaveGroup(roomId, gone), { reload: false })
   }
 
   // So khớp NFC, phân biệt hoa thường, không cắt khoảng trắng (như trang quản trị).
@@ -144,15 +156,16 @@ export function GroupPanel({ room, onClose }: { room: Room; onClose: () => void 
 
   function dissolve() {
     if (busyRef.current || !confirmed) return
-    void run(() => controller.dissolveGroup(roomId), { reload: false, after: gone })
+    void run(() => controller.dissolveGroup(roomId, gone), { reload: false })
   }
 
   const memberIds = new Set(members.map((m) => m.user_id))
   const candidates = users?.filter((u) => !memberIds.has(u.id) && u.id !== meId)
+  const loadingMembers = !hasMembers && !membersSettled
 
   return (
     <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && close()}>
-      <div ref={dialogRef} onKeyDown={trapTab} className="card dialog stack" role="dialog" aria-modal="true" aria-label="Thông tin nhóm">
+      <div ref={dialogRef} className="card dialog stack" role="dialog" aria-modal="true" aria-label="Thông tin nhóm">
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <div style={{ minWidth: 0 }}>
             <h2 style={{ fontSize: 17 }} className="ellipsis">{roomName}</h2>
@@ -171,12 +184,12 @@ export function GroupPanel({ room, onClose }: { room: Room; onClose: () => void 
             <div className="row" style={{ gap: 8 }}>
               <input
                 id="group-name-input"
+                ref={nameRef}
                 className="input"
                 style={{ flex: 1, minWidth: 0 }}
-                maxLength={100}
                 value={nameDraft ?? roomName}
                 disabled={busy}
-                onChange={(event) => setNameDraft(event.target.value)}
+                onChange={(event) => acceptableGroupNameInput(event.target.value) && setNameDraft(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.keyCode !== 229) {
                     event.preventDefault()
@@ -193,14 +206,13 @@ export function GroupPanel({ room, onClose }: { room: Room; onClose: () => void 
 
         <div className="stack" style={{ gap: 4 }}>
           <div style={{ fontWeight: 600 }}>Thành viên</div>
+          {loadingMembers && <div className="muted">Đang tải…</div>}
           <ul className="member-list" aria-label="Danh sách thành viên">
             {members.map((m) => (
               <li key={m.user_id} className="member-row">
-                <span className="ellipsis" style={{ flex: 1, minWidth: 0 }}>
-                  {m.full_name}
-                  {m.user_id === meId && <span className="muted"> · Bạn</span>}
-                  {m.role === 'owner' && <span className="muted"> · Chủ nhóm</span>}
-                </span>
+                <span className="ellipsis member-name">{m.full_name}</span>
+                {m.user_id === meId && <span className="muted member-tag">· Bạn</span>}
+                {m.role === 'owner' && <span className="muted member-tag">· Chủ nhóm</span>}
                 {isOwner && m.user_id !== meId && (
                   <button type="button" className="btn btn-ghost" aria-label={`Gỡ ${m.full_name} khỏi nhóm`} disabled={busy} onClick={() => remove(m.user_id, m.full_name)}>
                     Gỡ
@@ -214,6 +226,7 @@ export function GroupPanel({ room, onClose }: { room: Room; onClose: () => void 
         {isOwner && (
           <div className="stack" style={{ gap: 6 }}>
             <input
+              ref={searchRef}
               className="input"
               aria-label="Thêm thành viên"
               placeholder="Tìm người để thêm"
