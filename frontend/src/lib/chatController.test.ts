@@ -610,6 +610,62 @@ describe('ChatController: resync cursor and room pruning', () => {
     expect(keys).toEqual([2, 3])
   })
 
+  it('prunes a pending thread once the room is absent from two consecutive snapshots, and stops resending to it', async () => {
+    const { controller, api, store, socket } = setup()
+    api.rooms.mockResolvedValue([room(1), room(2)])
+    await controller.loadRooms()
+    await controller.openRoom(2)
+    controller.setActiveRoom(1)
+    controller.send(2, 'đang chờ')
+    api.rooms.mockResolvedValue([room(1)])
+    await controller.loadRooms() // một bản chụp cũ: chưa đủ để xoá
+    expect(store.getState().threads[2]).toBeDefined()
+    await controller.loadRooms() // bản thứ hai vẫn vắng: bỏ
+    expect(store.getState().threads[2]).toBeUndefined()
+    socket.send.mockClear()
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    await flush()
+    expect(socket.send.mock.calls.some(([p]) => p.room_id === 2)).toBe(false)
+  })
+
+  it('a snapshot that includes the room again resets the absence count (stale snapshot cannot delete it)', async () => {
+    const { controller, api, store } = setup()
+    api.rooms.mockResolvedValue([room(1), room(2)])
+    await controller.loadRooms()
+    await controller.openRoom(2)
+    controller.setActiveRoom(1)
+    controller.send(2, 'x')
+    api.rooms.mockResolvedValue([room(1)])
+    await controller.loadRooms()
+    api.rooms.mockResolvedValue([room(1), room(2)])
+    await controller.loadRooms()
+    api.rooms.mockResolvedValue([room(1)])
+    await controller.loadRooms()
+    expect(store.getState().threads[2]?.items.some((m) => m.pending)).toBe(true)
+  })
+
+  it('for the active room that is gone, fails pending messages with room_not_found and stops resending', async () => {
+    const { controller, api, store, socket } = setup()
+    api.rooms.mockResolvedValue([room(1), room(2)])
+    await controller.loadRooms()
+    await controller.openRoom(1)
+    controller.setActiveRoom(1)
+    controller.send(1, 'xin chào')
+    api.rooms.mockResolvedValue([room(2)])
+    await controller.loadRooms()
+    await controller.loadRooms()
+    const item = store.getState().threads[1].items.find((m) => m.pending)
+    expect(item).toMatchObject({ pending: 'failed', errorCode: 'room_not_found' })
+    socket.send.mockClear()
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    await flush()
+    expect(socket.send).not.toHaveBeenCalled()
+    controller.retry(item!.client_id!) // không còn gì để gửi lại
+    expect(socket.send).not.toHaveBeenCalled()
+    controller.leaveRoom(1)
+    expect(store.getState().threads[1]).toBeUndefined()
+  })
+
   it('does not GET messages for a pruned room on the next ready', async () => {
     const { controller, api } = setup()
     await controller.loadRooms()

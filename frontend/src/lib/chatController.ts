@@ -47,6 +47,8 @@ export class ChatController {
   /** Sự kiện read đến khi danh sách thành viên chưa tải: áp lại sau khi tải để bản REST cũ không làm lùi mốc. */
   private readonly pendingReads = new Map<number, Map<number, { id: number; at: number }>>()
   private readonly membersAgain = new Set<number>()
+  /** Số bản chụp /rooms liên tiếp không có phòng này. */
+  private readonly absentRuns = new Map<number, number>()
   private readonly groupOps = new Map<string, Promise<unknown>>()
   private presenceRun: Promise<void> | null = null
   private presenceAgain = false
@@ -110,13 +112,26 @@ export class ChatController {
   private pruneRemovedRooms(alive: Set<number>): void {
     const state = this.deps.store.getState()
     const threads = state.threads
-    // Không bỏ phòng đang xem hay thread còn tin chờ gửi; bản chụp sau sẽ dọn nếu phòng thật sự đã mất.
+    // Thread còn tin chờ gửi chỉ bị bỏ khi phòng vắng mặt trong HAI bản chụp liên tiếp (bản chụp cũ không được
+    // xoá phòng vừa tạo). Phòng đang xem thì giữ lại, nhưng tin chờ chuyển sang lỗi room_not_found và không gửi lại nữa.
     const known = new Set([...Object.keys(threads), ...Object.keys(state.members), ...Object.keys(state.typing), ...this.pendingReads.keys(), ...this.membersInFlight.keys()].map(Number))
-    const gone = [...known].filter((id) => !alive.has(id) && id !== this.activeRoom && !threads[id]?.items.some((m) => m.pending))
+    for (const id of [...this.absentRuns.keys()]) if (alive.has(id) || !known.has(id)) this.absentRuns.delete(id)
+    for (const id of known) if (!alive.has(id)) this.absentRuns.set(id, (this.absentRuns.get(id) ?? 0) + 1)
+    const confirmedAbsent = (id: number) => (this.absentRuns.get(id) ?? 0) >= 2
+    const hasPending = (id: number) => !!threads[id]?.items.some((m) => m.pending)
+    if (this.activeRoom !== null && !alive.has(this.activeRoom) && confirmedAbsent(this.activeRoom)) {
+      for (const m of threads[this.activeRoom]?.items ?? []) {
+        if (!m.pending || !m.client_id) continue
+        this.confirm(m.client_id) // không gửi lại nữa; bong bóng lỗi ở lại cho tới khi rời màn hình
+        this.deps.store.setPendingState(m.client_id, 'failed', 'room_not_found')
+      }
+    }
+    const gone = [...known].filter((id) => !alive.has(id) && id !== this.activeRoom && (!hasPending(id) || confirmedAbsent(id)))
     if (gone.length === 0) return
     for (const id of gone) {
       this.lastMarked.delete(id)
       this.syncedThrough.delete(id)
+      this.absentRuns.delete(id)
     }
     this.forgetRooms(gone)
     this.deps.store.removeThreads(gone)
@@ -584,6 +599,15 @@ export class ChatController {
   leaveRoom(roomId: number): void {
     this.flushRead(roomId)
     if (this.activeRoom === roomId) this.activeRoom = null
+    // Phòng đã mất mà người dùng vừa rời màn hình (còn bong bóng lỗi room_not_found): dọn ngay.
+    const state = this.deps.store.getState()
+    if (state.roomsLoaded && !state.rooms.some((r) => r.id === roomId) && (this.absentRuns.get(roomId) ?? 0) >= 2) {
+      this.lastMarked.delete(roomId)
+      this.syncedThrough.delete(roomId)
+      this.absentRuns.delete(roomId)
+      this.forgetRooms([roomId])
+      this.deps.store.removeThreads([roomId])
+    }
   }
 
   onVisible(): void {
