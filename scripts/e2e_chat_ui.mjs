@@ -2,6 +2,8 @@
 //
 // CHỈ DÙNG TRÊN STACK THỬ NGHIỆM: script tạo người dùng, nhóm, đổi mật khẩu admin và khoá một tài khoản.
 //
+// Stack thử nghiệm phải chạy với MAX_OWNED_GROUPS=3 trong .env (bước giới hạn số nhóm làm chủ).
+//
 // Playwright được cài NGOÀI repo (ví dụ một thư mục tạm):
 //   mkdir <dir> && cd <dir> && npm init -y && npm i playwright@1.49.1 && npx playwright install chromium
 // Chạy (từ thư mục gốc repo, Node 22+):
@@ -36,6 +38,8 @@ const ADMIN_PW = process.env.E2E_ADMIN_NEW_PASSWORD || `Ui-${randomBytes(9).toSt
 if (!process.env.E2E_ADMIN_NEW_PASSWORD) console.log(`Mật khẩu admin mới cho lần chạy này: ${ADMIN_PW} (đặt E2E_ADMIN_NEW_PASSWORD để chạy lại)`)
 const ALICE_PW = 'UiAlicePassw0rd!'
 const BOB_PW = 'UiBobPassw0rd!'
+const CAROL_PW = 'UiCarolPassw0rd!'
+const DAVE_PW = 'UiDavePassw0rd!'
 const TAG = Date.now().toString(36).slice(-6)
 const ALICE = { username: `ui.alice.${TAG}`, fullName: `Lê Thu Hà ${TAG}` }
 const BOB = { username: `ui.bob.${TAG}`, fullName: `Trần Quốc Huy ${TAG}` }
@@ -44,6 +48,9 @@ const DAVE = { username: `ui.dave.${TAG}`, fullName: `Người Ngoài ${TAG}` } 
 const GROUP = `UI nhóm ${TAG}`
 const GROUP2 = `UI nhóm 2 ${TAG}`
 const GROUP_DAVE = `UI nhóm Dave ${TAG}` // chỉ Bob và Dave
+const UGROUP = `Nhóm liên chi nhánh ${TAG}` // nhóm do Alice (người dùng thường) tạo qua giao diện
+const UGROUP2 = `Liên chi nhánh đổi tên ${TAG}`
+const BRANCH_B = { name: `UI chi nhánh B ${TAG}`, code: `B${TAG}` } // Bob ở chi nhánh khác Alice
 
 // ---------------- REST ----------------
 
@@ -93,9 +100,11 @@ async function openBot(token) {
     readyResolve = resolve
     setTimeout(() => reject(new Error('bot: không nhận được ready')), 10000)
   })
+  const frames = [] // mọi frame nhận được (kiểm "không nhận được gì")
   ws.onopen = () => ws.send(JSON.stringify({ type: 'auth', token }))
   ws.onmessage = (event) => {
     const data = JSON.parse(event.data)
+    frames.push({ at: Date.now(), data })
     if (data.type === 'ready') readyResolve()
     const cid = data.message?.client_id ?? data.client_id
     if (cid && waiters.has(cid)) {
@@ -105,18 +114,25 @@ async function openBot(token) {
   }
   await ready
   let n = 0
-  return {
-    send(roomId, body) {
-      const clientId = `bot-${TAG}-${Date.now()}-${n++}`
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('bot: gửi quá hạn')), 10000)
-        waiters.set(clientId, (data) => {
-          clearTimeout(timer)
-          if (data.type !== 'message') reject(new Error('bot: lỗi ' + JSON.stringify(data)))
-          else resolve(data.message)
-        })
-        ws.send(JSON.stringify({ type: 'send', room_id: roomId, body, client_id: clientId }))
+  /** Gửi một tin; trả frame phản hồi (`message` hoặc `error`) cho đúng client_id. */
+  const attempt = (roomId, body) => {
+    const clientId = `bot-${TAG}-${Date.now()}-${n++}`
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('bot: gửi quá hạn')), 10000)
+      waiters.set(clientId, (data) => {
+        clearTimeout(timer)
+        resolve(data)
       })
+      ws.send(JSON.stringify({ type: 'send', room_id: roomId, body, client_id: clientId }))
+    })
+  }
+  return {
+    frames,
+    attempt,
+    async send(roomId, body) {
+      const data = await attempt(roomId, body)
+      if (data.type !== 'message') throw new Error('bot: lỗi ' + JSON.stringify(data))
+      return data.message
     },
     close: () => ws.close(),
   }
@@ -264,18 +280,20 @@ const adminToken = await restReady(ADMIN_USER, ADMIN_TEMP_PASSWORD, ADMIN_PW)
 const branches = await must('GET', '/admin/branches', adminToken)
 if (!branches.length) throw new Error('chưa có chi nhánh nào')
 const branchId = branches[0].id
+const branchB = await must('POST', '/admin/branches', adminToken, BRANCH_B)
 const created = {}
 for (const u of [ALICE, BOB, CAROL, DAVE]) {
-  created[u.username] = await must('POST', '/admin/users', adminToken, { username: u.username, full_name: u.fullName, branch_id: branchId, role: 'member' })
+  const userBranch = u === BOB ? branchB.id : branchId
+  created[u.username] = await must('POST', '/admin/users', adminToken, { username: u.username, full_name: u.fullName, branch_id: userBranch, role: 'member' })
 }
 const aliceId = created[ALICE.username].id
 const bobId = created[BOB.username].id
 const carolId = created[CAROL.username].id
 const daveId = created[DAVE.username].id
 const group = await must('POST', '/admin/rooms', adminToken, { name: GROUP, branch_id: branchId, member_ids: [aliceId, bobId, carolId] })
-const carolToken = await restReady(CAROL.username, created[CAROL.username].temp_password, 'UiCarolPassw0rd!')
+const carolToken = await restReady(CAROL.username, created[CAROL.username].temp_password, CAROL_PW)
 const groupDave = await must('POST', '/admin/rooms', adminToken, { name: GROUP_DAVE, branch_id: branchId, member_ids: [bobId, daveId] })
-const daveToken = await restReady(DAVE.username, created[DAVE.username].temp_password, 'UiDavePassw0rd!')
+const daveToken = await restReady(DAVE.username, created[DAVE.username].temp_password, DAVE_PW)
 
 // ---------------- trình duyệt ----------------
 
@@ -332,12 +350,17 @@ pages.bob = bob
 
 const pageErrors = []
 const unexpectedDialogs = []
+const acceptedConfirms = []
 const aliceRequests = []
+// Hộp xác nhận mà các bước cố ý kích hoạt (xoá tin, gỡ thành viên, rời nhóm); mọi hộp thoại khác là lỗi.
+const EXPECTED_CONFIRMS = [/^Xoá tin nhắn/, /^Gỡ .+ khỏi nhóm "/, /^Bạn là chủ nhóm "/, /^Rời nhóm "/]
 function watch(page, who) {
   page.on('pageerror', (err) => pageErrors.push(`${who}: ${err.message}`))
   page.on('dialog', async (dialog) => {
-    if (dialog.type() === 'confirm' && dialog.message().startsWith('Xoá tin nhắn')) await dialog.accept()
-    else {
+    if (dialog.type() === 'confirm' && EXPECTED_CONFIRMS.some((re) => re.test(dialog.message()))) {
+      acceptedConfirms.push(`${who}: ${dialog.message()}`)
+      await dialog.accept()
+    } else {
       unexpectedDialogs.push(`${who}: ${dialog.type()} ${dialog.message()}`)
       await dialog.dismiss()
     }
@@ -900,7 +923,338 @@ await step('18. Riêng tư: Dave (không chung phòng với Alice) online; Bob t
   }
 })
 
-await step('19. Khoá ui.bob: trang của Bob về đăng nhập trong ~40 giây, không vòng lặp kết nối lại', async () => {
+// ---------------- nhóm do người dùng thường tạo và quản lý ----------------
+
+const groupPanel = (page) => page.getByRole('dialog', { name: 'Thông tin nhóm' })
+const panelMembers = (page) => groupPanel(page).getByRole('list', { name: 'Danh sách thành viên' }).locator('li')
+const NOT_IN_ROOM = 'Cuộc trò chuyện không tồn tại hoặc bạn không còn trong đó.'
+const extraContexts = []
+let carol = null
+let dave = null
+let ugroupId = 0
+
+/** Trang trình duyệt riêng (context riêng) cho một người dùng đã đổi mật khẩu. */
+async function openUserPage(who, u, password) {
+  const ctx = await browser.newContext(desktop)
+  extraContexts.push(ctx)
+  const page = await ctx.newPage()
+  watch(page, who)
+  pages[who] = page
+  await login(page, u.username, password)
+  await page.getByText(`Xin chào, ${u.fullName}`).waitFor({ timeout: 10000 })
+  return page
+}
+
+/** Đánh dấu trang; còn dấu nghĩa là trang chưa bị tải lại. */
+const markPage = (page) => page.evaluate(() => (window.__e2eNoReload = true))
+async function notReloaded(page, who) {
+  if (!(await page.evaluate(() => window.__e2eNoReload === true))) throw new Error(`trang của ${who} đã bị tải lại`)
+}
+
+/** Phòng `id` trong GET /rooms của người giữ `token` (undefined nếu không có). */
+async function myRoom(token, id) {
+  const rooms = await must('GET', '/rooms', token)
+  return rooms.find((r) => r.id === id)
+}
+
+/** Tên các thành viên đang hiện trong bảng "Thông tin nhóm". */
+const panelNames = (page) => panelMembers(page).locator('.member-name').allInnerTexts()
+
+async function openPanel(page) {
+  await page.getByRole('button', { name: 'Thông tin nhóm' }).click()
+  await groupPanel(page).waitFor({ timeout: 5000 })
+}
+
+/** Số điều khiển chỉ chủ nhóm có, trong bảng đang mở. */
+async function managerControls(page) {
+  const panel = groupPanel(page)
+  return {
+    name: await panel.getByLabel('Tên nhóm', { exact: true }).count(),
+    save: await panel.getByRole('button', { name: 'Lưu tên' }).count(),
+    add: await panel.getByLabel('Thêm thành viên').count(),
+    remove: await panel.getByRole('button', { name: /^Gỡ .+ khỏi nhóm$/ }).count(),
+    dissolve: await panel.getByRole('button', { name: 'Giải tán nhóm' }).count(),
+  }
+}
+
+async function expectStatus(method, urlPath, token, body, status, detail, what) {
+  const r = await http(method, urlPath, token, body)
+  if (r.status !== status || r.data?.detail !== detail) throw new Error(`${what}: ${method} ${urlPath} -> ${r.status} ${JSON.stringify(r.data)} (mong đợi ${status} ${detail})`)
+}
+
+await step('19. Alice (chi nhánh A) tạo nhóm qua "Tạo nhóm" với Bob (chi nhánh B) và Carol; Bob/Carol thấy nhóm không cần tải lại; tin tới cả hai', async () => {
+  carol = await openUserPage('carol', CAROL, CAROL_PW)
+  await roomItem(carol, GROUP).waitFor({ timeout: 10000 })
+  await roomItem(bob, GROUP).waitFor({ timeout: 10000 })
+  if ((await roomItem(bob, UGROUP).count()) || (await roomItem(carol, UGROUP).count())) throw new Error('nhóm đã có trước khi tạo?')
+  await markPage(bob)
+  await markPage(carol)
+
+  await alice.getByRole('button', { name: 'Cuộc trò chuyện mới' }).click()
+  const dialog = alice.getByRole('dialog', { name: 'Cuộc trò chuyện mới' })
+  await dialog.getByRole('tab', { name: 'Tạo nhóm' }).click()
+  await dialog.getByLabel('Tên nhóm').fill(UGROUP)
+  const search = dialog.getByLabel('Tìm người để thêm')
+  for (const [u, branchName] of [[BOB, BRANCH_B.name], [CAROL, branches[0].name]]) {
+    await search.fill(u.fullName)
+    const row = dialog.locator('label.pick-row', { hasText: u.fullName })
+    await row.waitFor({ timeout: 5000 })
+    const text = await row.innerText()
+    if (!text.includes(branchName)) throw new Error(`dòng "${text}" không ghi chi nhánh ${branchName}`)
+    await row.getByRole('checkbox').check()
+    await dialog.getByRole('button', { name: `Bỏ ${u.fullName}` }).waitFor({ timeout: 3000 })
+  }
+  await dialog.getByRole('button', { name: 'Tạo nhóm', exact: true }).click()
+  await alice.waitForURL(/\/chat\/\d+$/, { timeout: 10000 })
+  await alice.locator('.chat-head h2', { hasText: new RegExp(`^${escapeRe(UGROUP)}$`) }).waitFor({ timeout: 10000 })
+  if (await dialog.count()) throw new Error('hộp thoại vẫn mở sau khi tạo nhóm')
+  ugroupId = Number(new URL(alice.url()).pathname.split('/').pop())
+
+  const mine = await myRoom(aliceToken, ugroupId)
+  if (mine?.type !== 'group' || mine.my_role !== 'owner' || mine.branch_id !== null || mine.member_count !== 3) throw new Error('GET /rooms của Alice: ' + JSON.stringify(mine))
+  const members = await must('GET', `/rooms/${ugroupId}/members`, aliceToken)
+  const roles = Object.fromEntries(members.map((m) => [m.user_id, m.role]))
+  if (members.length !== 3 || roles[aliceId] !== 'owner' || roles[bobId] !== 'member' || roles[carolId] !== 'member') throw new Error('vai trò: ' + JSON.stringify(roles))
+
+  await roomItem(bob, UGROUP).waitFor({ timeout: 10000 })
+  await roomItem(carol, UGROUP).waitFor({ timeout: 10000 })
+  await notReloaded(bob, 'Bob')
+  await notReloaded(carol, 'Carol')
+  if ((await myRoom(bobToken, ugroupId))?.my_role !== 'member') throw new Error('my_role của Bob không phải member')
+
+  await openRoom(carol, UGROUP)
+  await send(alice, 'chào nhóm liên chi nhánh')
+  await confirmedId(alice, 'chào nhóm liên chi nhánh')
+  await bubbles(carol, 'chào nhóm liên chi nhánh').waitFor({ timeout: 5000 })
+  const badge = roomItem(bob, UGROUP).locator('.unread-badge')
+  await waitUntil(async () => (await badge.count()) === 1 && (await badge.innerText()).trim() === '1', 10000, 'Bob thấy huy hiệu "1" ở nhóm mới')
+  await openRoom(bob, UGROUP)
+  await bubbles(bob, 'chào nhóm liên chi nhánh').waitFor({ timeout: 5000 })
+  return `nhóm #${ugroupId}`
+})
+
+let carolBot = null
+await step('20. Chủ nhóm Alice: đổi tên (Bob thấy ngay), thêm Dave (thấy lịch sử, không chưa đọc), gỡ Carol bằng bàn phím (focus ở lại hộp thoại; Carol mất nhóm ngay, REST 404, WS không gửi/nhận)', async () => {
+  await openRoom(alice, UGROUP)
+  await openPanel(alice)
+  await waitUntil(async () => (await panelMembers(alice).count()) === 3, 5000, 'bảng có 3 thành viên')
+  const c = await managerControls(alice)
+  if (c.name !== 1 || c.add !== 1 || c.remove !== 2 || c.dissolve !== 1) throw new Error('chủ nhóm thiếu điều khiển: ' + JSON.stringify(c))
+
+  // Đổi tên.
+  await groupPanel(alice).getByLabel('Tên nhóm', { exact: true }).fill(UGROUP2)
+  await groupPanel(alice).getByRole('button', { name: 'Lưu tên' }).click()
+  await roomItem(bob, UGROUP2).waitFor({ timeout: 10000 })
+  await bob.locator('.chat-head h2', { hasText: new RegExp(`^${escapeRe(UGROUP2)}$`) }).waitFor({ timeout: 5000 })
+  if (await roomItem(bob, UGROUP).count()) throw new Error('Bob vẫn thấy tên cũ')
+  await alice.locator('.chat-head h2', { hasText: new RegExp(`^${escapeRe(UGROUP2)}$`) }).waitFor({ timeout: 5000 })
+  if ((await myRoom(bobToken, ugroupId))?.name !== UGROUP2) throw new Error('GET /rooms của Bob chưa có tên mới')
+
+  // Thêm Dave.
+  dave = await openUserPage('dave', DAVE, DAVE_PW)
+  await roomItem(dave, GROUP_DAVE).waitFor({ timeout: 10000 })
+  if (await roomItem(dave, UGROUP2).count()) throw new Error('Dave thấy nhóm trước khi được thêm')
+  await markPage(dave)
+  await groupPanel(alice).getByLabel('Thêm thành viên').fill(DAVE.fullName)
+  await groupPanel(alice).getByRole('button', { name: new RegExp(`^${escapeRe(DAVE.fullName)}`) }).click()
+  await waitUntil(async () => (await panelNames(alice)).includes(DAVE.fullName), 5000, 'Dave có trong danh sách thành viên')
+  await roomItem(dave, UGROUP2).waitFor({ timeout: 10000 })
+  await notReloaded(dave, 'Dave')
+  await holdsFor(async () => (await roomItem(dave, UGROUP2).locator('.unread-badge').count()) === 0, 2000, 'Dave có huy hiệu chưa đọc cho tin cũ')
+  if ((await myRoom(daveToken, ugroupId))?.unread_count !== 0) throw new Error('GET /rooms của Dave có unread_count khác 0')
+  await openRoom(dave, UGROUP2)
+  await bubbles(dave, 'chào nhóm liên chi nhánh').waitFor({ timeout: 5000 })
+
+  // Carol đang mở nhóm và có thêm một WebSocket riêng: đối chứng là nhận được tin trước khi bị gỡ.
+  carolBot = await openBot(carolToken)
+  await send(alice, 'trước khi gỡ Carol')
+  await confirmedId(alice, 'trước khi gỡ Carol')
+  await bubbles(carol, 'trước khi gỡ Carol').waitFor({ timeout: 5000 })
+  await waitUntil(() => carolBot.frames.some((f) => f.data.type === 'message' && f.data.message?.body === 'trước khi gỡ Carol'), 5000, 'WebSocket của Carol nhận tin trước khi bị gỡ')
+
+  // Gỡ Carol chỉ bằng bàn phím: Tab tới nút "Gỡ", Enter (hộp xác nhận được chấp nhận).
+  const removeLabel = `Gỡ ${CAROL.fullName} khỏi nhóm`
+  await groupPanel(alice).getByLabel('Tên nhóm', { exact: true }).focus()
+  let tabs = 0
+  while ((await alice.evaluate(() => document.activeElement?.getAttribute('aria-label'))) !== removeLabel) {
+    if (++tabs > 40) throw new Error('không Tab tới được nút gỡ Carol')
+    await alice.keyboard.press('Tab')
+  }
+  const confirmsBefore = acceptedConfirms.length
+  await alice.keyboard.press('Enter')
+  await waitUntil(async () => !(await panelNames(alice)).includes(CAROL.fullName), 5000, 'Carol rời danh sách thành viên')
+  if (!acceptedConfirms.slice(confirmsBefore).some((m) => m.startsWith(`alice: Gỡ ${CAROL.fullName} khỏi nhóm`))) throw new Error('không có hộp xác nhận gỡ Carol')
+  await alice.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  const focus = await alice.evaluate(() => {
+    const el = document.activeElement
+    return { inside: !!el && el !== document.body && !!el.closest('[role="dialog"]'), label: el?.getAttribute('aria-label') ?? el?.tagName }
+  })
+  if (!focus.inside) throw new Error(`focus rơi ra ngoài hộp thoại sau khi gỡ: ${focus.label}`)
+
+  // Carol mất nhóm ngay; trang đang mở nhóm báo không còn trong đó.
+  await waitUntil(async () => (await roomItem(carol, UGROUP2).count()) === 0, 10000, 'nhóm biến mất khỏi danh sách của Carol')
+  await carol.getByText(NOT_IN_ROOM).waitFor({ timeout: 5000 })
+  await notReloaded(carol, 'Carol')
+  await expectStatus('GET', `/rooms/${ugroupId}/messages`, carolToken, undefined, 404, 'room_not_found', 'Carol đọc tin')
+  await expectStatus('GET', `/rooms/${ugroupId}/members`, carolToken, undefined, 404, 'room_not_found', 'Carol xem thành viên')
+  const sendBack = await carolBot.attempt(ugroupId, 'Carol cố gửi sau khi bị gỡ')
+  if (sendBack.type !== 'error' || sendBack.code !== 'room_not_found') throw new Error('Carol gửi qua WS: ' + JSON.stringify(sendBack))
+  const cut = Date.now()
+  await send(alice, 'sau khi gỡ Carol')
+  await confirmedId(alice, 'sau khi gỡ Carol')
+  await bubbles(bob, 'sau khi gỡ Carol').waitFor({ timeout: 5000 })
+  await sleep(1500)
+  const leaked = carolBot.frames.filter((f) => f.at >= cut && (f.data.room_id === ugroupId || f.data.message?.room_id === ugroupId))
+  if (leaked.length) throw new Error('WebSocket của Carol vẫn nhận sự kiện của nhóm: ' + JSON.stringify(leaked[0].data))
+  if (await bubbles(carol, 'sau khi gỡ Carol').count()) throw new Error('trang của Carol hiện tin sau khi bị gỡ')
+  const history = await must('GET', `/rooms/${ugroupId}/messages?limit=50`, bobToken)
+  if (history.items.some((m) => m.body === 'Carol cố gửi sau khi bị gỡ')) throw new Error('tin Carol gửi sau khi bị gỡ vẫn được lưu')
+
+  await alice.keyboard.press('Escape')
+  await groupPanel(alice).waitFor({ state: 'detached', timeout: 3000 })
+  return `${tabs} lần Tab, focus sau khi gỡ: ${focus.label}`
+})
+carolBot?.close()
+
+await step('21. Quyền: Bob (thành viên) không thấy điều khiển quản lý; đổi tên/thêm/gỡ/giải tán bằng token của Bob -> 403, Carol (đã bị gỡ) -> 404', async () => {
+  await openRoom(bob, UGROUP2)
+  await openPanel(bob)
+  await waitUntil(async () => {
+    const names = await panelNames(bob)
+    return names.length === 3 && names.includes(ALICE.fullName) && names.includes(DAVE.fullName)
+  }, 5000, 'bảng của Bob tải xong 3 thành viên')
+  if (!(await panelMembers(bob).filter({ hasText: ALICE.fullName }).getByText('Chủ nhóm').count())) throw new Error('không ghi Alice là chủ nhóm')
+  const c = await managerControls(bob)
+  if (Object.values(c).some((n) => n !== 0)) throw new Error('thành viên thường thấy điều khiển quản lý: ' + JSON.stringify(c))
+  if (!(await groupPanel(bob).getByRole('button', { name: 'Rời nhóm' }).isVisible())) throw new Error('không có nút "Rời nhóm"')
+
+  await expectStatus('PATCH', `/rooms/${ugroupId}`, bobToken, { name: 'Bob đổi tên' }, 403, 'forbidden', 'Bob đổi tên')
+  await expectStatus('POST', `/rooms/${ugroupId}/members`, bobToken, { user_id: carolId }, 403, 'forbidden', 'Bob thêm thành viên')
+  await expectStatus('DELETE', `/rooms/${ugroupId}/members/${daveId}`, bobToken, undefined, 403, 'forbidden', 'Bob gỡ thành viên')
+  await expectStatus('DELETE', `/rooms/${ugroupId}`, bobToken, undefined, 403, 'forbidden', 'Bob giải tán')
+  await expectStatus('PATCH', `/rooms/${ugroupId}`, carolToken, { name: 'Carol đổi tên' }, 404, 'room_not_found', 'Carol (ngoài nhóm) đổi tên')
+  const after = await myRoom(aliceToken, ugroupId)
+  if (after?.name !== UGROUP2 || after.member_count !== 3) throw new Error('nhóm bị đổi sau các yêu cầu bị từ chối: ' + JSON.stringify(after))
+  // Bảng của Bob để mở cho bước sau: chuyển quyền phải hiện ngay, không cần mở lại.
+})
+
+await step('22. Chủ nhóm Alice rời -> Bob thành chủ (bảng đang mở hiện điều khiển ngay, my_role=owner); Alice không còn thấy nhóm', async () => {
+  await openRoom(alice, UGROUP2)
+  await openPanel(alice)
+  const confirmsBefore = acceptedConfirms.length
+  await groupPanel(alice).getByRole('button', { name: 'Rời nhóm' }).click()
+  await alice.waitForURL(BASE + '/', { timeout: 10000 })
+  if (!acceptedConfirms.slice(confirmsBefore).some((m) => m.startsWith('alice: Bạn là chủ nhóm'))) throw new Error('Alice không được cảnh báo chuyển quyền')
+  await waitUntil(async () => (await roomItem(alice, UGROUP2).count()) === 0, 10000, 'nhóm biến mất khỏi danh sách của Alice')
+  if (await groupPanel(alice).count()) throw new Error('bảng của Alice vẫn mở')
+
+  await groupPanel(bob).getByRole('button', { name: 'Giải tán nhóm' }).waitFor({ timeout: 10000 })
+  const c = await managerControls(bob)
+  if (c.name !== 1 || c.add !== 1 || c.dissolve !== 1) throw new Error('Bob (chủ mới) thiếu điều khiển: ' + JSON.stringify(c))
+  await waitUntil(async () => {
+    const names = await panelNames(bob)
+    return names.length === 2 && !names.includes(ALICE.fullName)
+  }, 5000, 'bảng của Bob bỏ Alice')
+  if (!(await panelMembers(bob).filter({ hasText: BOB.fullName }).getByText('Chủ nhóm').count())) throw new Error('Bob không được ghi là chủ nhóm')
+  if ((await managerControls(bob)).remove !== 1) throw new Error('Bob không gỡ được Dave (thiếu nút "Gỡ")')
+
+  if ((await myRoom(bobToken, ugroupId))?.my_role !== 'owner') throw new Error('GET /rooms: my_role của Bob không phải owner')
+  if ((await myRoom(daveToken, ugroupId))?.my_role !== 'member') throw new Error('GET /rooms: my_role của Dave không phải member')
+  const roles = Object.fromEntries((await must('GET', `/rooms/${ugroupId}/members`, bobToken)).map((m) => [m.user_id, m.role]))
+  if (roles[bobId] !== 'owner' || roles[daveId] !== 'member' || aliceId in roles) throw new Error('vai trò sau khi Alice rời: ' + JSON.stringify(roles))
+  if (await myRoom(aliceToken, ugroupId)) throw new Error('GET /rooms của Alice vẫn có nhóm')
+  await expectStatus('GET', `/rooms/${ugroupId}/messages`, aliceToken, undefined, 404, 'room_not_found', 'Alice đọc tin sau khi rời')
+})
+
+await step('23. Giải tán: Bob gõ sai tên -> nút tắt, đúng -> nhóm mất ngay với Dave; admin thấy ở "Đã lưu trữ", khôi phục -> Bob và Dave thấy lại cùng tin nhắn', async () => {
+  await openRoom(dave, UGROUP2)
+  const panel = groupPanel(bob)
+  const box = panel.getByLabel('Gõ tên nhóm để xác nhận giải tán')
+  const btn = panel.getByRole('button', { name: 'Giải tán nhóm' })
+  for (const wrong of [UGROUP2.toUpperCase(), UGROUP2.slice(0, -1), ` ${UGROUP2}`]) {
+    await box.fill(wrong)
+    if (await btn.isEnabled()) throw new Error(`nút bật khi gõ sai: "${wrong}"`)
+  }
+  await box.fill(UGROUP2)
+  if (!(await btn.isEnabled())) throw new Error('nút vẫn tắt khi gõ đúng tên')
+  await btn.click()
+  await bob.waitForURL(BASE + '/', { timeout: 10000 })
+  await waitUntil(async () => (await roomItem(bob, UGROUP2).count()) === 0, 10000, 'nhóm biến mất khỏi danh sách của Bob')
+  await waitUntil(async () => (await roomItem(dave, UGROUP2).count()) === 0, 10000, 'nhóm biến mất khỏi danh sách của Dave')
+  await dave.getByText(NOT_IN_ROOM).waitFor({ timeout: 5000 })
+  await notReloaded(dave, 'Dave')
+  await expectStatus('GET', `/rooms/${ugroupId}/messages`, daveToken, undefined, 404, 'room_not_found', 'Dave đọc tin nhóm đã giải tán')
+  await expectStatus('GET', `/rooms/${ugroupId}/messages`, bobToken, undefined, 404, 'room_not_found', 'Bob đọc tin nhóm đã giải tán')
+
+  const ctx = await browser.newContext(desktop)
+  const admin = await ctx.newPage()
+  pages.admin = admin
+  watch(admin, 'admin')
+  try {
+    await login(admin, ADMIN_USER, ADMIN_PW)
+    await admin.getByText('Xin chào,').waitFor({ timeout: 10000 })
+    await admin.goto(BASE + '/admin/rooms')
+    await admin.getByRole('heading', { name: 'Phòng và nhóm' }).waitFor({ timeout: 10000 })
+    await admin.getByRole('tab', { name: 'Đã lưu trữ' }).click()
+    await admin.getByLabel('Tìm nhóm').fill(UGROUP2)
+    const row = admin.locator('.table-row', { hasText: UGROUP2 })
+    await row.waitFor({ timeout: 10000 })
+    await row.getByText(/Xoá vĩnh viễn sau/).waitFor({ timeout: 5000 })
+    for (const secret of ['chào nhóm liên chi nhánh', 'sau khi gỡ Carol']) {
+      if ((await admin.content()).includes(secret)) throw new Error('trang admin chứa nội dung tin: ' + secret)
+    }
+    await admin.getByRole('button', { name: `Khôi phục ${UGROUP2}` }).click()
+    await waitUntil(async () => (await row.count()) === 0, 10000, 'nhóm rời tab Đã lưu trữ')
+  } finally {
+    delete pages.admin
+    await ctx.close()
+  }
+
+  for (const [page, who] of [[bob, 'Bob'], [dave, 'Dave']]) {
+    await roomItem(page, UGROUP2).waitFor({ timeout: 10000 })
+    await notReloaded(page, who)
+    await openRoom(page, UGROUP2)
+    await bubbles(page, 'chào nhóm liên chi nhánh').waitFor({ timeout: 10000 })
+    await bubbles(page, 'sau khi gỡ Carol').waitFor({ timeout: 10000 })
+  }
+  if ((await myRoom(bobToken, ugroupId))?.my_role !== 'owner') throw new Error('sau khôi phục Bob không còn là chủ nhóm')
+  if (await myRoom(aliceToken, ugroupId)) throw new Error('Alice (đã rời) thấy lại nhóm sau khôi phục')
+})
+
+await step('24. Giới hạn MAX_OWNED_GROUPS=3: nhóm thứ 4 -> 409 too_many_groups (REST) và thông báo tiếng Việt trong hộp thoại; giải tán một nhóm thì tạo lại được', async () => {
+  const owned = async () => (await must('GET', '/rooms', carolToken)).filter((r) => r.my_role === 'owner')
+  if ((await owned()).length !== 0) throw new Error('Carol đã là chủ nhóm từ trước')
+  const ids = []
+  for (let i = 1; i <= 3; i++) ids.push((await must('POST', '/rooms/group', carolToken, { name: `UI giới hạn ${i} ${TAG}`, member_ids: [daveId] }, [201])).id)
+  await expectStatus('POST', '/rooms/group', carolToken, { name: `UI giới hạn 4 ${TAG}`, member_ids: [] }, 409, 'too_many_groups', 'nhóm thứ 4 qua REST')
+  if ((await owned()).length !== 3) throw new Error(`Carol làm chủ ${(await owned()).length} nhóm (mong đợi 3)`)
+
+  const name4 = `UI giới hạn 4 qua giao diện ${TAG}`
+  await carol.getByRole('button', { name: 'Cuộc trò chuyện mới' }).click()
+  const dialog = carol.getByRole('dialog', { name: 'Cuộc trò chuyện mới' })
+  await dialog.getByRole('tab', { name: 'Tạo nhóm' }).click()
+  await dialog.getByLabel('Tên nhóm').fill(name4)
+  const createBtn = dialog.getByRole('button', { name: 'Tạo nhóm', exact: true })
+  const urlBefore = carol.url()
+  await createBtn.click()
+  await dialog.getByRole('alert').filter({ hasText: 'Bạn đang quản lý quá nhiều nhóm. Hãy giải tán bớt.' }).waitFor({ timeout: 5000 })
+  if (carol.url() !== urlBefore) throw new Error('Carol bị điều hướng dù tạo nhóm thất bại: ' + carol.url())
+  await waitUntil(() => createBtn.isEnabled(), 3000, 'nút "Tạo nhóm" bật lại sau lỗi')
+  if ((await must('GET', '/rooms', carolToken)).some((r) => r.name === name4)) throw new Error('nhóm vượt giới hạn vẫn được tạo')
+
+  // Nhóm đã giải tán (lưu trữ) không tính vào giới hạn.
+  await must('DELETE', `/rooms/${ids[0]}`, carolToken, undefined, [204])
+  await createBtn.click()
+  await carol.waitForURL(/\/chat\/\d+$/, { timeout: 10000 })
+  await carol.locator('.chat-head h2', { hasText: new RegExp(`^${escapeRe(name4)}$`) }).waitFor({ timeout: 10000 })
+  if ((await owned()).length !== 3) throw new Error(`sau khi tạo lại Carol làm chủ ${(await owned()).length} nhóm`)
+})
+
+for (const ctx of extraContexts) await ctx.close()
+delete pages.carol
+delete pages.dave
+
+await step('25. Khoá ui.bob: trang của Bob về đăng nhập trong ~40 giây, không vòng lặp kết nối lại', async () => {
   await openRoom(bob, GROUP)
   await waitUntil(async () => (await bob.locator('.conn-banner').count()) === 0, 10000, 'Bob đang kết nối')
   const t0 = Date.now()
@@ -914,8 +1268,9 @@ await step('19. Khoá ui.bob: trang của Bob về đăng nhập trong ~40 giây
   return `về đăng nhập sau ${took}ms`
 })
 
-await step('20. Không có lỗi pageerror', async () => {
+await step('26. Không có lỗi pageerror hay hộp thoại ngoài dự kiến', async () => {
   if (pageErrors.length) throw new Error(pageErrors.slice(0, 3).join(' | '))
+  if (unexpectedDialogs.length) throw new Error('hộp thoại: ' + unexpectedDialogs.slice(0, 3).join(' | '))
 })
 
 await browser.close()

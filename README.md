@@ -32,7 +32,7 @@ npm run build    # kiểm tra kiểu và build ra frontend/dist
 
 ## Giao diện chat
 
-**Bố cục.** Cột trái là danh sách cuộc trò chuyện (nhóm và nhắn riêng, xếp theo hoạt động mới nhất, kèm tin cuối và số chưa đọc), ô "Lọc theo tên" và nút **"+ Mới"** để tìm đồng nghiệp theo tên hoặc tên đăng nhập rồi nhắn riêng. Chân cột trái có lời chào, "Quản trị" (chỉ admin), "Đổi mật khẩu", "Đăng xuất". Cột phải là hội thoại đang mở với ô soạn tin ở dưới (Enter để gửi, Shift+Enter xuống dòng; Enter của bộ gõ tiếng Việt khi đang soạn chữ không gửi tin). Trên điện thoại (màn hình hẹp) chỉ hiện một trong hai: danh sách, hoặc hội thoại có nút "←" (Về danh sách).
+**Bố cục.** Cột trái là danh sách cuộc trò chuyện (nhóm và nhắn riêng, xếp theo hoạt động mới nhất, kèm tin cuối và số chưa đọc), ô "Lọc theo tên" và nút **"+ Mới"** với hai tab: "Nhắn riêng" (tìm đồng nghiệp theo tên hoặc tên đăng nhập rồi nhắn riêng) và "Tạo nhóm". Chân cột trái có lời chào, "Quản trị" (chỉ admin), "Đổi mật khẩu", "Đăng xuất". Cột phải là hội thoại đang mở với ô soạn tin ở dưới (Enter để gửi, Shift+Enter xuống dòng; Enter của bộ gõ tiếng Việt khi đang soạn chữ không gửi tin). Trên điện thoại (màn hình hẹp) chỉ hiện một trong hai: danh sách, hoặc hội thoại có nút "←" (Về danh sách).
 
 **Hành vi.**
 - Tin vừa gửi hiện ngay với trạng thái "Đang gửi…". Mất mạng thì tin chờ gửi và tự gửi lại khi kết nối có lại (mỗi tin có `client_id` nên không bao giờ bị lưu hai lần); quá 15 giây chưa gửi được thì hiện "Gửi lỗi" với nút "Thử lại"/"Bỏ". Trong lúc mất kết nối có dải "Đang kết nối lại…"; khi nối lại, tin bị lỡ được tải bù.
@@ -44,11 +44,19 @@ npm run build    # kiểm tra kiểu và build ra frontend/dist
 - **Đang soạn tin:** dòng "<Tên> đang soạn tin…" ngay trên ô soạn khi người khác trong phòng đang gõ (hai người: "A và B đang soạn tin…", nhiều hơn: "Nhiều người đang soạn tin…"). Dòng tự mất 5 giây sau tín hiệu cuối, hoặc ngay khi người đó gửi tin. Trình duyệt báo "đang soạn" tối đa 1 lần/3 giây mỗi phòng và không báo khi ô soạn trống; không bao giờ hiện chính mình.
 - **Online:** chấm xanh ở ảnh đại diện của phòng 1-1 và dòng "Đang hoạt động" ở đầu hội thoại 1-1 khi người kia đang mở ứng dụng (ít nhất một tab). Đóng tab cuối cùng thì chấm mất ngay; tab/máy bị treo hoặc mất mạng thì chấm mất sau khoảng 45-60 giây (`PRESENCE_TTL_SECONDS` + một chu kỳ quét). **Quyền riêng tư:** chỉ thấy trạng thái online của người **chung ít nhất một phòng chưa lưu trữ** với mình; không có danh sách online toàn công ty, admin cũng không được thấy thêm. Không có "lần cuối online".
 
-**Trang admin "Phòng và nhóm"** (`/admin/rooms`): tìm và lọc nhóm theo chi nhánh; tạo nhóm (tên, chi nhánh hoặc liên chi nhánh, chọn thành viên); đổi tên; thêm, gỡ thành viên. Admin không xem được nội dung tin nhắn. **"Xoá" nhóm là lưu trữ**: phải gõ lại đúng tên nhóm để xác nhận; nhóm biến mất ngay với mọi thành viên nhưng được giữ (mặc định 3 ngày) ở tab "Đã lưu trữ" (kèm thời điểm xoá) và có thể **"Khôi phục"** nguyên vẹn cùng tin nhắn trong thời gian đó; hết hạn thì tự động bị **xoá vĩnh viễn cùng toàn bộ tin nhắn**. Số ngày giữ đặt bằng `ROOM_ARCHIVE_RETENTION_DAYS` (mặc định 3), chu kỳ dọn bằng `ROOM_PURGE_INTERVAL_SECONDS` (xem `.env.example`).
+**Nhóm do người dùng tạo.**
+- **Tạo:** "+ Mới" → tab "Tạo nhóm": đặt tên (tối đa 100 ký tự), tìm và tích chọn thành viên từ danh bạ toàn công ty (khác chi nhánh cũng được; danh sách ghi chi nhánh của từng người), bấm "Tạo nhóm" thì vào thẳng phòng mới. Người tạo là **chủ nhóm**. Nhóm do người dùng tạo là nhóm "Liên chi nhánh" (`branch_id` rỗng). Người được mời thấy nhóm ngay, không cần tải lại trang.
+- **Bảng "Thông tin nhóm":** nút ⓘ ở đầu cuộc trò chuyện nhóm mở bảng gồm danh sách thành viên ("· Bạn", "· Chủ nhóm") và nút "Rời nhóm". **Chỉ chủ nhóm** thấy thêm các điều khiển: đổi tên ("Lưu tên"), tìm và thêm thành viên, nút "Gỡ" cạnh từng người, và vùng "Giải tán nhóm". Thành viên khác chỉ chat và tự rời nhóm. Nhóm do admin tạo không có chủ: người dùng thường không quản lý được nhóm đó, nhưng vẫn rời được. Quyền thật do server quyết định: nếu bị từ chối (403/409), bảng hiện lỗi tiếng Việt, ví dụ "Bạn đang quản lý quá nhiều nhóm. Hãy giải tán bớt." khi vượt giới hạn.
+- **Gỡ thành viên:** cần xác nhận. Người bị gỡ mất nhóm ngay: nhóm biến mất khỏi danh sách, trang đang mở nhóm báo "không còn trong đó", và họ không gửi hay nhận được gì nữa. Tin nhắn cũ vẫn ở lại cho những người còn trong nhóm. Nếu được thêm lại, họ thấy toàn bộ lịch sử, còn mốc đã đọc đặt ở tin mới nhất. Người mới được thêm cũng vậy: thấy lịch sử, không có số chưa đọc cho tin cũ.
+- **Rời nhóm:** cần xác nhận, rời xong thì về danh sách. Khi **chủ nhóm rời**, quyền chủ chuyển cho thành viên vào nhóm sớm nhất còn lại (nếu bằng nhau thì người có id nhỏ nhất); người đó thấy điều khiển quản lý ngay. Người cuối cùng rời thì nhóm được lưu trữ.
+- **Giải tán:** chủ nhóm gõ lại **đúng** tên nhóm (phân biệt hoa thường) thì nút "Giải tán nhóm" mới bật. Nhóm biến mất ngay với mọi thành viên và được **lưu trữ** như khi admin xoá: admin khôi phục được ở tab "Đã lưu trữ" trong thời gian giữ (mặc định 3 ngày), sau đó nhóm bị xoá vĩnh viễn cùng tin nhắn. Khôi phục thì thành viên và chủ nhóm giữ nguyên như trước.
+- **Giới hạn:** mỗi người là chủ tối đa `MAX_OWNED_GROUPS` nhóm đang hoạt động (mặc định 20; nhóm đã giải tán/lưu trữ không tính). Mỗi nhóm có tối đa `MAX_GROUP_MEMBERS` thành viên, kể cả người tạo (mặc định 200, cũng áp dụng khi admin thêm thành viên). Giới hạn số nhóm làm chủ **chỉ kiểm tra lúc tạo nhóm**: nhận quyền chủ (chủ cũ rời hoặc bị admin gỡ) hay admin khôi phục nhóm có thể làm một người vượt `MAX_OWNED_GROUPS`.
+
+**Trang admin "Phòng và nhóm"** (`/admin/rooms`): tìm và lọc nhóm theo chi nhánh; tạo nhóm (tên, chi nhánh hoặc liên chi nhánh, chọn thành viên); đổi tên; thêm, gỡ thành viên. Nhóm do người dùng tạo cũng hiện ở đây (là nhóm "Liên chi nhánh"); admin gỡ chủ nhóm thì quyền chủ chuyển như khi chủ tự rời. Admin không xem được nội dung tin nhắn. **"Xoá" nhóm là lưu trữ**: phải gõ lại đúng tên nhóm để xác nhận; nhóm biến mất ngay với mọi thành viên nhưng được giữ (mặc định 3 ngày) ở tab "Đã lưu trữ" (kèm thời điểm xoá) và có thể **"Khôi phục"** nguyên vẹn cùng tin nhắn trong thời gian đó; hết hạn thì tự động bị **xoá vĩnh viễn cùng toàn bộ tin nhắn**. Số ngày giữ đặt bằng `ROOM_ARCHIVE_RETENTION_DAYS` (mặc định 3), chu kỳ dọn bằng `ROOM_PURGE_INTERVAL_SECONDS` (xem `.env.example`).
 
 ### Kiểm tra trên trình duyệt thật: `scripts/e2e_chat_ui.mjs`
 
-**Chỉ chạy trên stack thử nghiệm**: script tạo người dùng và nhóm, đổi mật khẩu admin, khoá một tài khoản. Nó điều khiển Chromium qua Playwright với hai người dùng song song và kiểm: gửi/nhận tức thì, chưa đọc, nhắn riêng mới, mất mạng rồi nối lại (bù tin, không trùng), gửi khi mất mạng, sửa/xoá, cuộn (đúng đáy khi mở, giữ vị trí khi tải tin cũ, "↓ N tin mới"), an toàn liên kết/HTML, token không nằm trong storage hay URL, giao diện điện thoại 390px, lưu trữ và khôi phục nhóm, online (đóng/mở trang, hai tab đóng một), "đang soạn tin" (hiện, tự hết hạn, mất khi gửi), "đã xem" (1-1 và "Đã xem bởi N người" trong nhóm), trạng thái đúng sau khi mất mạng rồi nối lại, quyền riêng tư của online (`GET /presence` không lộ người không chung phòng), khoá tài khoản, không có lỗi JavaScript.
+**Chỉ chạy trên stack thử nghiệm**: script tạo người dùng và nhóm, đổi mật khẩu admin, khoá một tài khoản. Nó điều khiển Chromium qua Playwright với hai người dùng song song và kiểm: gửi/nhận tức thì, chưa đọc, nhắn riêng mới, mất mạng rồi nối lại (bù tin, không trùng), gửi khi mất mạng, sửa/xoá, cuộn (đúng đáy khi mở, giữ vị trí khi tải tin cũ, "↓ N tin mới"), an toàn liên kết/HTML, token không nằm trong storage hay URL, giao diện điện thoại 390px, lưu trữ và khôi phục nhóm, online (đóng/mở trang, hai tab đóng một), "đang soạn tin" (hiện, tự hết hạn, mất khi gửi), "đã xem" (1-1 và "Đã xem bởi N người" trong nhóm), trạng thái đúng sau khi mất mạng rồi nối lại, quyền riêng tư của online (`GET /presence` không lộ người không chung phòng), nhóm do người dùng tạo (tạo nhóm liên chi nhánh qua "Tạo nhóm"; chủ nhóm đổi tên, thêm, gỡ thành viên bằng bàn phím với focus ở lại trong hộp thoại; người bị gỡ mất quyền ngay qua giao diện, REST và WebSocket; thành viên thường không có điều khiển quản lý và bị 403; chủ rời thì quyền chuyển ngay; giải tán phải gõ đúng tên, admin khôi phục; giới hạn số nhóm làm chủ), khoá tài khoản, không có lỗi JavaScript hay hộp thoại ngoài dự kiến.
 
 Playwright được cài **ngoài repo** (một lần):
 
@@ -56,7 +64,7 @@ Playwright được cài **ngoài repo** (một lần):
 mkdir /tmp/kn-e2e && cd /tmp/kn-e2e && npm init -y && npm i playwright@1.49.1 && npx playwright install chromium
 ```
 
-Chạy (từ thư mục gốc repo, Node 22+, stack đã `docker compose up -d --build` và có admin mới tạo bằng `create-admin`):
+Chạy (từ thư mục gốc repo, Node 22+, stack đã `docker compose up -d --build` và có admin mới tạo bằng `create-admin`). Stack thử nghiệm phải đặt `MAX_OWNED_GROUPS=3` trong `.env` (bước kiểm giới hạn số nhóm làm chủ) và nên đặt `PRESENCE_OFFLINE_GRACE_SECONDS=0.5`:
 
 ```bash
 PLAYWRIGHT_DIR=/tmp/kn-e2e BASE_URL=http://localhost ADMIN_USER=ui.admin ADMIN_TEMP_PASSWORD=<mật khẩu tạm> \
@@ -76,14 +84,22 @@ Tất cả dưới `/api`, cần `Authorization: Bearer <access token>` và đã
 | Việc | Endpoint |
 |---|---|
 | Tìm đồng nghiệp để nhắn riêng | `GET /users/directory?q=` |
-| Danh sách phòng của tôi (kèm tin cuối, số chưa đọc) | `GET /rooms` |
+| Danh sách phòng của tôi (kèm tin cuối, số chưa đọc) | `GET /rooms` → mỗi phòng có `my_role`: `"owner"` (tôi là chủ nhóm), `"member"`, hoặc `null` (phòng 1-1) |
 | Mở chat 1-1 | `POST /rooms/direct` `{"user_id": 3}` |
+| Tạo nhóm (người tạo là chủ) | `POST /rooms/group` `{"name": "...", "member_ids": [3, 7]}` → 201 phòng mới. Tên 1-100 ký tự (tự cắt khoảng trắng), `member_ids` bỏ trùng và bỏ chính mình. Người không tồn tại/bị khoá → `404 user_not_found` (không tạo gì); vượt `MAX_OWNED_GROUPS` → `409 too_many_groups`; vượt `MAX_GROUP_MEMBERS` → `409 group_full` |
+| Đổi tên nhóm (chỉ chủ) | `PATCH /rooms/{id}` `{"name": "..."}` → phòng |
+| Thêm thành viên (chỉ chủ) | `POST /rooms/{id}/members` `{"user_id": 9}` → danh sách thành viên mới. Đã là thành viên: 200, không đổi gì. Người mới thấy lịch sử, mốc đã đọc = tin mới nhất. Đầy → `409 group_full` |
+| Gỡ thành viên (chỉ chủ) | `DELETE /rooms/{id}/members/{user_id}` → danh sách thành viên mới. Gỡ chính mình → `400 cannot_remove_self` (dùng rời nhóm); không phải thành viên → `404 member_not_found` |
+| Rời nhóm (mọi thành viên, kể cả nhóm admin tạo) | `POST /rooms/{id}/leave` → 204. Chủ rời: quyền chủ chuyển cho người vào sớm nhất (bằng nhau thì `user_id` nhỏ nhất); người cuối cùng rời: nhóm được lưu trữ |
+| Giải tán nhóm (chỉ chủ) | `DELETE /rooms/{id}` → 204, lưu trữ như admin xoá (xem dưới) |
 | Lịch sử tin nhắn (con trỏ) | `GET /rooms/{id}/messages?before=&after=&around=&limit=` |
 | Đánh dấu đã đọc (phát `read` cho cả phòng khi mốc tăng) | `POST /rooms/{id}/read` `{"message_id": 10}` |
-| Thành viên và mốc đã đọc của từng người | `GET /rooms/{id}/members` → `[{"user_id", "full_name", "last_read_message_id" (hoặc null)}]`, sắp theo tên; không phải thành viên hoặc phòng đã lưu trữ → `404 room_not_found` |
+| Thành viên và mốc đã đọc của từng người | `GET /rooms/{id}/members` → `[{"user_id", "full_name", "role" ("owner" hoặc "member"), "last_read_message_id" (hoặc null)}]`, sắp theo tên; không phải thành viên hoặc phòng đã lưu trữ → `404 room_not_found` |
 | Ai đang online (chỉ người chung phòng với tôi, không gồm chính tôi) | `GET /presence` → `{"online_user_ids": [3, 7]}` |
 | Sửa / xoá tin của mình | `PATCH` / `DELETE /messages/{id}` |
 | Admin quản lý nhóm | `/admin/rooms` (tạo, đổi tên, thêm/bớt thành viên, lưu trữ = xoá; `?archived=true` xem nhóm đã lưu trữ; `POST /admin/rooms/{id}/restore` khôi phục) |
+
+**Quyền với các endpoint nhóm của người dùng:** thành viên không phải chủ gọi đổi tên/thêm/gỡ/giải tán → `403 forbidden` (nhóm do admin tạo không có chủ nên luôn là 403); người ngoài nhóm, phòng 1-1 và nhóm đã lưu trữ → `404 room_not_found` (không lộ nhóm có tồn tại hay không). Mỗi thay đổi (tạo, đổi tên, thêm, gỡ, rời, giải tán) gửi `rooms_changed` cho mọi người bị ảnh hưởng, kể cả người vừa bị gỡ hoặc vừa rời, nên người đó không còn nhận `message`/`typing`/`read`/`presence` của nhóm.
 
 ### Phân trang tin nhắn
 
@@ -141,11 +157,15 @@ Giới hạn frame là **16 KiB tính theo byte UTF-8** (không phải số ký 
 | `user_not_found` | REST | Người dùng không tồn tại hoặc đã bị khoá |
 | `cannot_chat_with_self` | REST | Mở chat 1-1 với chính mình |
 | `invalid_cursor` | REST | Truyền nhiều hơn một trong `before`/`after`/`around` |
-| `forbidden` | REST | Sửa/xoá tin của người khác, hoặc không phải admin |
+| `forbidden` | REST | Sửa/xoá tin của người khác, không phải admin, hoặc quản lý nhóm khi không phải chủ nhóm |
+| `too_many_groups` | REST (409) | Tạo nhóm khi đã là chủ `MAX_OWNED_GROUPS` nhóm đang hoạt động |
+| `group_full` | REST (409) | Nhóm sẽ vượt `MAX_GROUP_MEMBERS` thành viên (tạo nhóm hoặc thêm thành viên) |
+| `cannot_remove_self` | REST (400) | Chủ nhóm tự gỡ mình bằng `DELETE /rooms/{id}/members/{user_id}`; dùng `POST /rooms/{id}/leave` |
+| `member_not_found` | REST | Gỡ người không phải thành viên nhóm (cả trang admin) |
 | `not_authenticated` | REST | Thiếu/sai access token (WS: đóng 4401) |
 | `password_change_required` | REST | Phải đổi mật khẩu trước |
 | `service_unavailable` | REST (503) | Redis lỗi |
-| `member_not_found`, `branch_not_found`, `branch_exists`, `branch_has_users`, `username_taken`, `cannot_modify_self` | REST (admin) | Quản trị người dùng/chi nhánh/nhóm |
+| `branch_not_found`, `branch_exists`, `branch_has_users`, `username_taken`, `cannot_modify_self` | REST (admin) | Quản trị người dùng/chi nhánh/nhóm |
 | `invalid_credentials`, `too_many_attempts`, `invalid_refresh`, `wrong_current_password`, `password_unchanged` | REST (auth) | Đăng nhập và đổi mật khẩu |
 
 Lỗi REST có dạng `{"detail":"<code>"}`; sai kiểu/khoảng giá trị đầu vào là `422` với `detail` là danh sách lỗi của FastAPI.
@@ -154,10 +174,10 @@ Lỗi REST có dạng `{"detail":"<code>"}`; sai kiểu/khoảng giá trị đ�
 
 - Sau **mỗi** `ready` (không chỉ khi kết nối lại) và khi nhận `resync`: với từng phòng đang mở/đã tải, gọi `GET /rooms/{id}/messages?after=<id tin cuối đã có>` (lặp tới khi `has_more_after` là `false`) và tải lại `GET /rooms`. Tin có thể đã đến giữa lúc tải lịch sử và lúc kết nối xong.
 - Cũng sau mỗi `ready`/`resync`: tải lại `GET /presence` và `GET /rooms/{id}/members` của phòng đang mở, vì các sự kiện `presence`/`read` trong lúc mất kết nối đã bị lỡ. `typing` không cần bù (tự hết hạn).
-- Nhận `rooms_changed` (được thêm/gỡ khỏi phòng, đổi tên nhóm, phòng bị xoá): tải lại `GET /rooms` (và `GET /presence`, vì phòng chung mới có thể thêm người được thấy online).
+- Nhận `rooms_changed` (được thêm/gỡ khỏi phòng, đổi tên nhóm, đổi chủ nhóm, rời nhóm, phòng bị xoá/giải tán/khôi phục): tải lại `GET /rooms` (và `GET /presence`, vì phòng chung mới có thể thêm người được thấy online).
 - Server cũng tự đối soát định kỳ (`WS_RECONCILE_SECONDS`, mặc định 30 giây) và đóng kết nối của tài khoản đã khoá hoặc phải đổi mật khẩu, nên client phải xử lý 4401/4403 bất cứ lúc nào.
 
-**Xoá nhóm = lưu trữ (mặc định 3 ngày) rồi xoá vĩnh viễn**: `DELETE /admin/rooms/{id}` (204) không xoá dữ liệu mà đặt `archived_at`. Nhóm đã lưu trữ biến mất với mọi người dùng thường (danh sách phòng, tin nhắn, gửi/sửa/xoá/đánh dấu đã đọc đều trả `404 room_not_found`, WebSocket không còn nhận tin của nhóm) và các thành viên nhận `rooms_changed`. Admin xem được bằng `GET /admin/rooms?archived=true` (mỗi nhóm có `archived_at` và `purge_at`), xem chi tiết bằng `GET /admin/rooms/{id}`, khôi phục bằng `POST /admin/rooms/{id}/restore` (thành viên thấy lại đủ tin nhắn và số chưa đọc cũ); đổi tên, thêm/gỡ thành viên trên nhóm đã lưu trữ trả `404 room_not_found`. Tiến trình nền (chạy lúc khởi động rồi mỗi `ROOM_PURGE_INTERVAL_SECONDS` giây, mặc định 3600) xoá vĩnh viễn nhóm đã lưu trữ quá `ROOM_ARCHIVE_RETENTION_DAYS` ngày (mặc định 3) cùng toàn bộ tin nhắn. Phòng chat 1-1 không bị ảnh hưởng. Lưu ý: bản sao lưu DB vẫn chứa dữ liệu đã xoá vĩnh viễn cho tới khi hết hạn theo chính sách sao lưu (Plan 7). Giao diện admin vẫn phải xác nhận trước khi lưu trữ.
+**Xoá nhóm = lưu trữ (mặc định 3 ngày) rồi xoá vĩnh viễn**: `DELETE /admin/rooms/{id}` (204) không xoá dữ liệu mà đặt `archived_at`. Nhóm đã lưu trữ biến mất với mọi người dùng thường (danh sách phòng, tin nhắn, gửi/sửa/xoá/đánh dấu đã đọc đều trả `404 room_not_found`, WebSocket không còn nhận tin của nhóm) và các thành viên nhận `rooms_changed`. Admin xem được bằng `GET /admin/rooms?archived=true` (mỗi nhóm có `archived_at` và `purge_at`), xem chi tiết bằng `GET /admin/rooms/{id}`, khôi phục bằng `POST /admin/rooms/{id}/restore` (thành viên thấy lại đủ tin nhắn và số chưa đọc cũ); đổi tên, thêm/gỡ thành viên trên nhóm đã lưu trữ trả `404 room_not_found`. Tiến trình nền (chạy lúc khởi động rồi mỗi `ROOM_PURGE_INTERVAL_SECONDS` giây, mặc định 3600) xoá vĩnh viễn nhóm đã lưu trữ quá `ROOM_ARCHIVE_RETENTION_DAYS` ngày (mặc định 3) cùng toàn bộ tin nhắn. Chủ nhóm giải tán nhóm do mình tạo (`DELETE /rooms/{id}`) dùng đúng cơ chế này. Phòng chat 1-1 không bị ảnh hưởng. Lưu ý: bản sao lưu DB vẫn chứa dữ liệu đã xoá vĩnh viễn cho tới khi hết hạn theo chính sách sao lưu (Plan 7). Giao diện admin vẫn phải xác nhận trước khi lưu trữ.
 
 ### Kiểm tra đầu-cuối: `scripts/e2e_chat_smoke.py`
 
@@ -210,9 +230,16 @@ pytest -v
 | `PRESENCE_SWEEP_SECONDS` | 15 | Chu kỳ mỗi worker gia hạn các kết nối đang mở của mình và đối soát người vừa online/offline. Ngắt kết nối bình thường được gỡ ngay, không chờ chu kỳ này. |
 | `PRESENCE_ANNOUNCE_TIMEOUT_SECONDS` | 10 | Thời gian tối đa cho một lượt phát thông báo `presence` của một người. |
 | `PRESENCE_OFFLINE_GRACE_SECONDS` | 5 | Thông báo **offline** bị hoãn bấy nhiêu giây rồi kiểm tra lại: người dùng tải lại trang hoặc mạng chập chờn nối lại kịp thì không có sự kiện nào. Online vẫn báo ngay. `0` = tắt. Khi chạy e2e (`scripts/e2e_chat_ui.mjs`) nên đặt giá trị nhỏ (ví dụ `0.5`), hoặc các bước chờ "mất chấm online" phải chờ lâu hơn khoảng ân hạn. |
+| `WS_TYPING_INTERVAL_SECONDS` | 2 | Khoảng tối thiểu giữa hai sự kiện `typing` của một kết nối trong cùng một phòng. |
 
 **Nhiều worker:** trạng thái online lưu chung trong Redis nhưng mỗi worker chỉ phát `presence` cho kết nối của mình và đối soát mỗi `PRESENCE_SWEEP_SECONDS`, nên khi chạy nhiều worker có thể có thông báo trùng hoặc trạng thái cũ tối đa khoảng một chu kỳ quét (client luôn tải lại `GET /presence` khi nối lại). Sự kiện tạm thời (`typing`, `read`, `presence`) bị bỏ khi hàng đợi của một kết nối chậm gần đầy, thay vì đóng kết nối.
-| `WS_TYPING_INTERVAL_SECONDS` | 2 | Khoảng tối thiểu giữa hai sự kiện `typing` của một kết nối trong cùng một phòng. |
+
+## Giới hạn nhóm (tuỳ chọn, xem `.env.example`)
+
+| Biến | Mặc định | Ý nghĩa |
+|---|---|---|
+| `MAX_OWNED_GROUPS` | 20 | Số nhóm **đang hoạt động** tối đa một người được làm chủ khi tạo nhóm mới (nhóm đã giải tán/lưu trữ không tính). Vượt: `409 too_many_groups`. Chỉ kiểm tra lúc tạo nhóm: nhận quyền chủ (chủ cũ rời hoặc bị admin gỡ) và admin khôi phục nhóm có thể làm một người vượt giới hạn này. |
+| `MAX_GROUP_MEMBERS` | 200 | Số thành viên tối đa của một nhóm, kể cả người tạo; áp dụng khi tạo nhóm, khi chủ nhóm thêm và khi admin thêm thành viên. Vượt: `409 group_full`. |
 
 ## Cấu hình môi trường: `APP_ENV` và `COOKIE_SECURE`
 
