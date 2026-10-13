@@ -40,8 +40,10 @@ const TAG = Date.now().toString(36).slice(-6)
 const ALICE = { username: `ui.alice.${TAG}`, fullName: `Lê Thu Hà ${TAG}` }
 const BOB = { username: `ui.bob.${TAG}`, fullName: `Trần Quốc Huy ${TAG}` }
 const CAROL = { username: `ui.carol.${TAG}`, fullName: `Bot Gửi Tin ${TAG}` }
+const DAVE = { username: `ui.dave.${TAG}`, fullName: `Người Ngoài ${TAG}` } // không chung phòng nào với Alice
 const GROUP = `UI nhóm ${TAG}`
 const GROUP2 = `UI nhóm 2 ${TAG}`
+const GROUP_DAVE = `UI nhóm Dave ${TAG}` // chỉ Bob và Dave
 
 // ---------------- REST ----------------
 
@@ -263,14 +265,17 @@ const branches = await must('GET', '/admin/branches', adminToken)
 if (!branches.length) throw new Error('chưa có chi nhánh nào')
 const branchId = branches[0].id
 const created = {}
-for (const u of [ALICE, BOB, CAROL]) {
+for (const u of [ALICE, BOB, CAROL, DAVE]) {
   created[u.username] = await must('POST', '/admin/users', adminToken, { username: u.username, full_name: u.fullName, branch_id: branchId, role: 'member' })
 }
 const aliceId = created[ALICE.username].id
 const bobId = created[BOB.username].id
 const carolId = created[CAROL.username].id
+const daveId = created[DAVE.username].id
 const group = await must('POST', '/admin/rooms', adminToken, { name: GROUP, branch_id: branchId, member_ids: [aliceId, bobId, carolId] })
 const carolToken = await restReady(CAROL.username, created[CAROL.username].temp_password, 'UiCarolPassw0rd!')
+const groupDave = await must('POST', '/admin/rooms', adminToken, { name: GROUP_DAVE, branch_id: branchId, member_ids: [bobId, daveId] })
+const daveToken = await restReady(DAVE.username, created[DAVE.username].temp_password, 'UiDavePassw0rd!')
 
 // ---------------- trình duyệt ----------------
 
@@ -321,7 +326,7 @@ async function networkSwitch(ctx, who) {
 const setAliceOffline = await networkSwitch(aliceCtx, 'alice')
 const setBobOffline = await networkSwitch(bobCtx, 'bob')
 const alice = await aliceCtx.newPage()
-const bob = await bobCtx.newPage()
+let bob = await bobCtx.newPage()
 pages.alice = alice
 pages.bob = bob
 
@@ -676,7 +681,226 @@ await step('13. Admin: thấy nhóm, tạo "UI nhóm 2", lưu trữ (gõ đúng 
   }
 })
 
-await step('14. Khoá ui.bob: trang của Bob về đăng nhập trong ~40 giây, không vòng lặp kết nối lại', async () => {
+// ---------------- đã xem / đang soạn tin / online ----------------
+
+const presenceDot = (page, name) => roomItem(page, name).locator('.presence-dot')
+const presenceLine = (page) => page.locator('.chat-head .presence-line', { hasText: 'Đang hoạt động' })
+const typingText = async (page) => (await page.locator('.typing-indicator').innerText()).trim()
+const seenLabels = (page) => msgList(page).locator('.seen-label')
+/** Nhãn "đã xem" nằm ngay dưới đúng tin `id`. */
+const seenUnder = (page, id) => msgList(page).locator(`.msg[data-message-id="${id}"] + .seen-row .seen-label`)
+
+/** Điều kiện phải đúng liên tục trong `ms` (kiểm lặp lại, lỗi trong fn làm hỏng ngay). */
+async function holdsFor(fn, ms, what) {
+  const end = Date.now() + ms
+  let checks = 0
+  while (Date.now() < end) {
+    if (!(await fn())) throw new Error(`${what} (lần kiểm thứ ${checks + 1})`)
+    checks++
+    await sleep(250)
+  }
+  if (checks < 2) throw new Error(`${what}: chỉ kiểm được ${checks} lần`)
+}
+
+/** Id online mà người giữ `token` được thấy qua REST. */
+async function onlineIds(token) {
+  const data = await must('GET', '/presence', token)
+  if (!Array.isArray(data?.online_user_ids)) throw new Error('GET /presence trả sai dạng: ' + JSON.stringify(data))
+  return data.online_user_ids
+}
+
+/** Chờ tin chứa `text` trên `page` được máy chủ xác nhận; trả id. */
+async function confirmedId(page, text) {
+  let id = 0
+  await waitUntil(async () => (id = Number(await bubbles(page, text).getAttribute('data-message-id'))) > 0, 10000, `tin "${text}" được xác nhận`)
+  return id
+}
+
+/** Mở một tab mới của Bob (cùng phiên qua cookie refresh), dừng ở danh sách phòng. */
+async function openBobTab(label = 'bob') {
+  const page = await bobCtx.newPage()
+  watch(page, label)
+  pages[label] = page
+  await page.goto(BASE + '/')
+  await roomItem(page, GROUP).waitFor({ timeout: 10000 })
+  return page
+}
+
+let aliceToken = ''
+let bobToken = ''
+let directRoomId = 0
+
+await step('14. Online: Alice thấy chấm của Bob; Bob đóng trang -> chấm mất (≤20 giây), mở lại -> có lại; hai tab đóng một vẫn online', async () => {
+  aliceToken = await restReady(ALICE.username, ALICE_PW)
+  bobToken = await restReady(BOB.username, BOB_PW)
+  await openRoom(alice, BOB.fullName)
+  directRoomId = Number(new URL(alice.url()).pathname.split('/').pop())
+  if (!(directRoomId > 0)) throw new Error('không lấy được id phòng 1-1 từ URL ' + alice.url())
+  const dot = presenceDot(alice, BOB.fullName)
+  await waitUntil(async () => (await dot.count()) === 1, 10000, 'Alice thấy chấm online của Bob')
+  await presenceLine(alice).waitFor({ timeout: 5000 })
+  if (!(await onlineIds(aliceToken)).includes(bobId)) throw new Error('GET /presence của Alice không có Bob dù Bob đang mở trang')
+
+  // Bob đóng tab duy nhất.
+  const t0 = Date.now()
+  await bob.close()
+  await waitUntil(async () => (await dot.count()) === 0, 20000, 'chấm của Bob biến mất sau khi Bob đóng trang')
+  const goneMs = Date.now() - t0
+  if (await presenceLine(alice).count()) throw new Error('đầu hội thoại vẫn "Đang hoạt động"')
+  if ((await onlineIds(aliceToken)).includes(bobId)) throw new Error('GET /presence vẫn có Bob sau khi chấm mất')
+
+  // Bob mở lại.
+  const t1 = Date.now()
+  bob = await openBobTab()
+  await waitUntil(async () => (await dot.count()) === 1, 20000, 'chấm trở lại khi Bob mở lại trang')
+  const backMs = Date.now() - t1
+
+  // Hai tab: mở tab thứ hai, chờ nó có WebSocket đã kết nối, rồi đóng tab CŨ.
+  const nBefore = sockets.bob.length
+  const second = await openBobTab('bob2')
+  await waitUntil(() => sockets.bob.length > nBefore, 10000, 'tab thứ hai của Bob mở WebSocket')
+  await waitUntil(async () => (await second.locator('.conn-banner').count()) === 0, 10000, 'tab thứ hai đã kết nối')
+  await sleep(1000) // để kết nối thứ hai kịp xác thực và ghi presence
+  await bob.close()
+  delete pages.bob2
+  bob = second
+  pages.bob = bob
+  await holdsFor(async () => (await dot.count()) === 1, 8000, 'chấm của Bob biến mất dù Bob còn một tab mở')
+  if (!(await onlineIds(aliceToken)).includes(bobId)) throw new Error('GET /presence mất Bob dù Bob còn một tab mở')
+  return `mất sau ${goneMs}ms, có lại sau ${backMs}ms, giữ nguyên 8 giây sau khi đóng 1/2 tab`
+})
+
+await step('15. Đang soạn tin: Bob gõ -> Alice thấy trong 2 giây; dừng gõ -> mất trong 6 giây; gửi tin -> mất ngay', async () => {
+  await openRoom(alice, BOB.fullName)
+  await openRoom(bob, ALICE.fullName)
+  const expected = `${BOB.fullName} đang soạn tin…`
+  if (await typingText(alice)) throw new Error('dòng "đang soạn" có sẵn trước khi Bob gõ: ' + (await typingText(alice)))
+  const box = bob.getByLabel('Nhập tin nhắn')
+  const t0 = Date.now()
+  const typing = box.pressSequentially('dang go thu', { delay: 60 })
+  await waitUntil(async () => (await typingText(alice)) === expected, 2000, 'Alice thấy "Bob … đang soạn tin…"')
+  const shownMs = Date.now() - t0
+  await typing
+  const t1 = Date.now()
+  if (await typingText(bob)) throw new Error('Bob thấy chính mình đang soạn tin')
+  await waitUntil(async () => (await typingText(alice)) === '', 6000, 'dòng "đang soạn" biến mất sau khi Bob dừng gõ')
+  const goneMs = Date.now() - t1
+  if (goneMs < 1000) throw new Error(`dòng "đang soạn" mất quá sớm (${goneMs}ms) ngay khi Bob vừa dừng gõ`)
+
+  // Gõ tiếp (đã quá giới hạn 3 giây phía client) rồi gửi: dòng mất ngay khi tin tới.
+  await sleep(Math.max(0, 3500 - (Date.now() - t1)))
+  await box.pressSequentially(' tin sau khi go', { delay: 20 })
+  await waitUntil(async () => (await typingText(alice)) === expected, 3000, 'Alice thấy Bob soạn lần hai')
+  const t2 = Date.now()
+  await box.press('Enter')
+  await bubbles(alice, 'dang go thu tin sau khi go').waitFor({ timeout: 5000 })
+  await waitUntil(async () => (await typingText(alice)) === '', 1500, 'dòng "đang soạn" mất ngay khi Bob gửi tin')
+  const clearMs = Date.now() - t2
+  return `hiện sau ${shownMs}ms, mất ${goneMs}ms sau khi dừng gõ, mất ${clearMs}ms sau khi bấm gửi`
+})
+
+await step('16. Đã xem: 1-1 chưa mở phòng thì không có nhãn, mở thì "Đã xem" ≤3 giây; nhóm "Đã xem bởi 1 người" rồi "2 người"', async () => {
+  // 1-1: Bob rời phòng 1-1 trước khi Alice gửi.
+  await openRoom(bob, GROUP)
+  await openRoom(alice, BOB.fullName)
+  await send(alice, 'Huy chưa mở phòng này')
+  const id = await confirmedId(alice, 'Huy chưa mở phòng này')
+  await holdsFor(async () => (await seenLabels(alice).count()) === 0, 2500, 'có nhãn "Đã xem" dù Bob chưa mở phòng')
+  await openRoom(bob, ALICE.fullName)
+  const t0 = Date.now() // Bob đã tải xong phòng
+  await waitUntil(async () => (await seenUnder(alice, id).count()) === 1, 3000, 'Alice thấy "Đã xem" dưới tin cuối')
+  const directMs = Date.now() - t0
+  const text = (await seenUnder(alice, id).innerText()).trim()
+  if (text !== 'Đã xem') throw new Error(`nhãn 1-1 là "${text}"`)
+  if ((await seenLabels(alice).count()) !== 1) throw new Error(`${await seenLabels(alice).count()} nhãn "Đã xem" (mong đợi 1)`)
+
+  // Nhóm 3 người (Alice, Bob, Carol): Bob đang ở phòng 1-1, Carol không mở gì.
+  await openRoom(alice, GROUP)
+  await send(alice, 'đếm người đã xem')
+  const gid = await confirmedId(alice, 'đếm người đã xem')
+  await holdsFor(async () => (await seenLabels(alice).count()) === 0, 2500, 'có nhãn đã xem khi chưa ai đọc tin nhóm')
+  await openRoom(bob, GROUP)
+  const t1 = Date.now()
+  await waitUntil(async () => (await seenUnder(alice, gid).count()) === 1 && (await seenUnder(alice, gid).innerText()).trim() === 'Đã xem bởi 1 người', 3000, '"Đã xem bởi 1 người"')
+  const groupMs = Date.now() - t1
+  const title1 = await seenUnder(alice, gid).getAttribute('title')
+  if (title1 !== BOB.fullName) throw new Error(`title là "${title1}" (mong đợi tên Bob)`)
+  await must('POST', `/rooms/${group.id}/read`, carolToken, { message_id: gid })
+  await waitUntil(async () => (await seenUnder(alice, gid).innerText()).trim() === 'Đã xem bởi 2 người', 3000, '"Đã xem bởi 2 người" khi Carol đọc')
+  const title2 = await seenUnder(alice, gid).getAttribute('title')
+  if (!title2?.includes(BOB.fullName) || !title2.includes(CAROL.fullName)) throw new Error(`title là "${title2}"`)
+  if ((await seenLabels(alice).count()) !== 1) throw new Error(`${await seenLabels(alice).count()} nhãn trong nhóm (mong đợi 1)`)
+  return `1-1 sau ${directMs}ms, nhóm sau ${groupMs}ms; title "${title2}"`
+})
+
+await step('17. Sau mất mạng: Bob đọc, gửi tin rồi offline khi Alice mất mạng; Alice nối lại thấy "Đã xem", tin bù và Bob offline', async () => {
+  await openRoom(alice, BOB.fullName) // Bob đang ở nhóm (bước trước), không xem phòng 1-1
+  const dot = presenceDot(alice, BOB.fullName)
+  await waitUntil(async () => (await dot.count()) === 1, 10000, 'Alice thấy Bob online trước khi mất mạng')
+  await send(alice, 'tin trước khi mất mạng')
+  const id = await confirmedId(alice, 'tin trước khi mất mạng')
+  await holdsFor(async () => (await seenLabels(alice).count()) === 0, 2000, 'có nhãn đã xem trước khi Bob đọc')
+
+  await setAliceOffline(true)
+  await waitUntil(() => alice.locator('.conn-banner').count(), 15000, 'Alice thấy banner mất kết nối')
+  await openRoom(bob, ALICE.fullName)
+  await bubbles(bob, 'tin trước khi mất mạng').waitFor({ timeout: 5000 })
+  await waitUntil(async () => {
+    const members = await must('GET', `/rooms/${directRoomId}/members`, bobToken)
+    const me = members.find((m) => m.user_id === bobId)
+    return me?.last_read_message_id != null && me.last_read_message_id >= id
+  }, 10000, 'máy chủ ghi nhận Bob đã đọc tin của Alice')
+  await send(bob, 'Bob gửi lúc Alice mất mạng 1')
+  await confirmedId(bob, 'Bob gửi lúc Alice mất mạng 1')
+  await send(bob, 'Bob gửi lúc Alice mất mạng 2')
+  await confirmedId(bob, 'Bob gửi lúc Alice mất mạng 2')
+  await bob.close()
+  await waitUntil(async () => !(await onlineIds(aliceToken)).includes(bobId), 20000, 'máy chủ coi Bob offline')
+  // Alice thật sự lỡ các sự kiện: chưa có nhãn, chưa có tin; chấm cũ (nếu còn) là trạng thái cũ phải được sửa khi nối lại.
+  const staleDot = (await dot.count()) === 1
+  if (await seenUnder(alice, id).count()) throw new Error('Alice nhận "đã xem" khi đang mất mạng?')
+  if (await bubbles(alice, 'Bob gửi lúc Alice mất mạng 1').count()) throw new Error('Alice nhận tin khi đang mất mạng?')
+
+  await setAliceOffline(false)
+  const t0 = Date.now()
+  await waitUntil(async () => (await alice.locator('.conn-banner').count()) === 0, 15000, 'Alice nối lại')
+  await waitUntil(async () => (await seenUnder(alice, id).count()) === 1, 10000, 'Alice thấy "Đã xem" sau khi nối lại')
+  await waitUntil(async () => (await dot.count()) === 0, 10000, 'chấm online cũ của Bob biến mất sau khi nối lại')
+  const fixedMs = Date.now() - t0
+  await expectExactlyOnce(alice, 'Bob gửi lúc Alice mất mạng 1', 10000, 'Alice nhận tin bù 1')
+  await expectExactlyOnce(alice, 'Bob gửi lúc Alice mất mạng 2', 10000, 'Alice nhận tin bù 2')
+  await holdsFor(async () => (await dot.count()) === 0 && (await presenceLine(alice).count()) === 0, 3000, 'Bob lại hiện online dù đã đóng trang')
+  const label = (await seenUnder(alice, id).innerText()).trim()
+  if (label !== 'Đã xem') throw new Error(`nhãn là "${label}"`)
+
+  // Bob quay lại: sự kiện trực tiếp vẫn tới Alice sau khi nối lại.
+  bob = await openBobTab()
+  await waitUntil(async () => (await dot.count()) === 1, 20000, 'Alice thấy Bob online lại')
+  return `"Đã xem" và offline đúng sau ~${fixedMs}ms kể từ khi có mạng (chấm cũ ${staleDot ? 'còn' : 'không còn'} lúc mất mạng)`
+})
+await setAliceOffline(false)
+if (bob.isClosed()) bob = await openBobTab() // nếu bước trên hỏng giữa chừng: các bước sau vẫn cần trang của Bob
+
+await step('18. Riêng tư: Dave (không chung phòng với Alice) online; Bob thấy, GET /presence của Alice không có Dave', async () => {
+  const dave = await openBot(daveToken)
+  try {
+    await waitUntil(async () => (await onlineIds(bobToken)).includes(daveId), 10000, 'Bob (chung nhóm với Dave) thấy Dave online')
+    await holdsFor(async () => {
+      const ids = await onlineIds(aliceToken)
+      if (ids.includes(daveId)) throw new Error('GET /presence của Alice chứa id của Dave')
+      if (ids.includes(aliceId)) throw new Error('GET /presence của Alice chứa chính Alice')
+      return ids.includes(bobId) // đối chứng: token của Alice vẫn thấy người chung phòng
+    }, 4000, 'GET /presence của Alice không có Bob (đối chứng)')
+    const peek = await http('GET', `/rooms/${groupDave.id}/members`, aliceToken)
+    if (peek.status !== 404 || peek.data?.detail !== 'room_not_found') throw new Error(`Alice xem được thành viên nhóm của Dave: ${peek.status} ${JSON.stringify(peek.data)}`)
+    if (await alice.getByText(DAVE.fullName).count()) throw new Error('giao diện của Alice có tên Dave')
+    return `Alice thấy ${JSON.stringify(await onlineIds(aliceToken))}, Bob thấy cả Dave`
+  } finally {
+    dave.close()
+  }
+})
+
+await step('19. Khoá ui.bob: trang của Bob về đăng nhập trong ~40 giây, không vòng lặp kết nối lại', async () => {
   await openRoom(bob, GROUP)
   await waitUntil(async () => (await bob.locator('.conn-banner').count()) === 0, 10000, 'Bob đang kết nối')
   const t0 = Date.now()
@@ -690,7 +914,7 @@ await step('14. Khoá ui.bob: trang của Bob về đăng nhập trong ~40 giây
   return `về đăng nhập sau ${took}ms`
 })
 
-await step('15. Không có lỗi pageerror', async () => {
+await step('20. Không có lỗi pageerror', async () => {
   if (pageErrors.length) throw new Error(pageErrors.slice(0, 3).join(' | '))
 })
 

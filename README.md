@@ -40,12 +40,15 @@ npm run build    # kiểm tra kiểu và build ra frontend/dist
 - Mở phòng thì nhảy tới tin mới nhất; cuộn lên đầu để tải thêm tin cũ (vị trí đang đọc giữ nguyên). Đang đọc tin cũ mà có tin mới thì hiện nút "↓ N tin mới" thay vì kéo xuống.
 - Sửa ("(đã sửa)") và xoá ("Tin nhắn đã bị xoá", nội dung bị bỏ với mọi người) được với tin của chính mình.
 - Tin nhắn chỉ là văn bản thuần: không hiển thị HTML; chỉ địa chỉ `http://` và `https://` được tự nhận thành liên kết (mở tab mới, `rel="noopener noreferrer nofollow"`).
+- **Đã xem:** chỉ hiện dưới **tin cuối cùng của chính mình** trong phòng (không hiện trên mọi tin, không hiện cho tin đã xoá). Chat 1-1: "Đã xem" khi người kia đã đọc tới tin đó. Nhóm: "Đã xem bởi N người" (N chỉ tính người khác mình; rê chuột để thấy tên). Nhãn cập nhật tức thì khi người khác mở phòng, và được tải lại đúng sau khi mất kết nối rồi nối lại.
+- **Đang soạn tin:** dòng "<Tên> đang soạn tin…" ngay trên ô soạn khi người khác trong phòng đang gõ (hai người: "A và B đang soạn tin…", nhiều hơn: "Nhiều người đang soạn tin…"). Dòng tự mất 5 giây sau tín hiệu cuối, hoặc ngay khi người đó gửi tin. Trình duyệt báo "đang soạn" tối đa 1 lần/3 giây mỗi phòng và không báo khi ô soạn trống; không bao giờ hiện chính mình.
+- **Online:** chấm xanh ở ảnh đại diện của phòng 1-1 và dòng "Đang hoạt động" ở đầu hội thoại 1-1 khi người kia đang mở ứng dụng (ít nhất một tab). Đóng tab cuối cùng thì chấm mất ngay; tab/máy bị treo hoặc mất mạng thì chấm mất sau khoảng 45-60 giây (`PRESENCE_TTL_SECONDS` + một chu kỳ quét). **Quyền riêng tư:** chỉ thấy trạng thái online của người **chung ít nhất một phòng chưa lưu trữ** với mình; không có danh sách online toàn công ty, admin cũng không được thấy thêm. Không có "lần cuối online".
 
 **Trang admin "Phòng và nhóm"** (`/admin/rooms`): tìm và lọc nhóm theo chi nhánh; tạo nhóm (tên, chi nhánh hoặc liên chi nhánh, chọn thành viên); đổi tên; thêm, gỡ thành viên. Admin không xem được nội dung tin nhắn. **"Xoá" nhóm là lưu trữ**: phải gõ lại đúng tên nhóm để xác nhận; nhóm biến mất ngay với mọi thành viên nhưng được giữ (mặc định 3 ngày) ở tab "Đã lưu trữ" (kèm thời điểm xoá) và có thể **"Khôi phục"** nguyên vẹn cùng tin nhắn trong thời gian đó; hết hạn thì tự động bị **xoá vĩnh viễn cùng toàn bộ tin nhắn**. Số ngày giữ đặt bằng `ROOM_ARCHIVE_RETENTION_DAYS` (mặc định 3), chu kỳ dọn bằng `ROOM_PURGE_INTERVAL_SECONDS` (xem `.env.example`).
 
 ### Kiểm tra trên trình duyệt thật: `scripts/e2e_chat_ui.mjs`
 
-**Chỉ chạy trên stack thử nghiệm**: script tạo người dùng và nhóm, đổi mật khẩu admin, khoá một tài khoản. Nó điều khiển Chromium qua Playwright với hai người dùng song song và kiểm: gửi/nhận tức thì, chưa đọc, nhắn riêng mới, mất mạng rồi nối lại (bù tin, không trùng), gửi khi mất mạng, sửa/xoá, cuộn (đúng đáy khi mở, giữ vị trí khi tải tin cũ, "↓ N tin mới"), an toàn liên kết/HTML, token không nằm trong storage hay URL, giao diện điện thoại 390px, lưu trữ và khôi phục nhóm, khoá tài khoản, không có lỗi JavaScript.
+**Chỉ chạy trên stack thử nghiệm**: script tạo người dùng và nhóm, đổi mật khẩu admin, khoá một tài khoản. Nó điều khiển Chromium qua Playwright với hai người dùng song song và kiểm: gửi/nhận tức thì, chưa đọc, nhắn riêng mới, mất mạng rồi nối lại (bù tin, không trùng), gửi khi mất mạng, sửa/xoá, cuộn (đúng đáy khi mở, giữ vị trí khi tải tin cũ, "↓ N tin mới"), an toàn liên kết/HTML, token không nằm trong storage hay URL, giao diện điện thoại 390px, lưu trữ và khôi phục nhóm, online (đóng/mở trang, hai tab đóng một), "đang soạn tin" (hiện, tự hết hạn, mất khi gửi), "đã xem" (1-1 và "Đã xem bởi N người" trong nhóm), trạng thái đúng sau khi mất mạng rồi nối lại, quyền riêng tư của online (`GET /presence` không lộ người không chung phòng), khoá tài khoản, không có lỗi JavaScript.
 
 Playwright được cài **ngoài repo** (một lần):
 
@@ -76,7 +79,9 @@ Tất cả dưới `/api`, cần `Authorization: Bearer <access token>` và đã
 | Danh sách phòng của tôi (kèm tin cuối, số chưa đọc) | `GET /rooms` |
 | Mở chat 1-1 | `POST /rooms/direct` `{"user_id": 3}` |
 | Lịch sử tin nhắn (con trỏ) | `GET /rooms/{id}/messages?before=&after=&around=&limit=` |
-| Đánh dấu đã đọc | `POST /rooms/{id}/read` `{"message_id": 10}` |
+| Đánh dấu đã đọc (phát `read` cho cả phòng khi mốc tăng) | `POST /rooms/{id}/read` `{"message_id": 10}` |
+| Thành viên và mốc đã đọc của từng người | `GET /rooms/{id}/members` → `[{"user_id", "full_name", "last_read_message_id" (hoặc null)}]`, sắp theo tên; không phải thành viên hoặc phòng đã lưu trữ → `404 room_not_found` |
+| Ai đang online (chỉ người chung phòng với tôi, không gồm chính tôi) | `GET /presence` → `{"online_user_ids": [3, 7]}` |
 | Sửa / xoá tin của mình | `PATCH` / `DELETE /messages/{id}` |
 | Admin quản lý nhóm | `/admin/rooms` (tạo, đổi tên, thêm/bớt thành viên, lưu trữ = xoá; `?archived=true` xem nhóm đã lưu trữ; `POST /admin/rooms/{id}/restore` khôi phục) |
 
@@ -90,7 +95,18 @@ Tất cả dưới `/api`, cần `Authorization: Bearer <access token>` và đã
 
 ### WebSocket `/api/ws`
 
-Mở kết nối rồi gửi ngay `{"type":"auth","token":"<access token>"}` (trong 5 giây). Sau khi nhận `{"type":"ready","user_id":1}`, gửi tin bằng `{"type":"send","room_id":1,"body":"...","client_id":"<uuid>"}` (`client_id` tối đa 64 ký tự, gửi lại cùng `client_id` là idempotent). Ping: `{"type":"ping"}` trả `{"type":"pong"}`. Server đẩy xuống: `message`, `message_updated`, `message_deleted`, `rooms_changed`, `resync`, `error` (`{"type":"error","code":"...","client_id":...}`).
+Mở kết nối rồi gửi ngay `{"type":"auth","token":"<access token>"}` (trong 5 giây). Sau khi nhận `{"type":"ready","user_id":1}`, gửi tin bằng `{"type":"send","room_id":1,"body":"...","client_id":"<uuid>"}` (`client_id` tối đa 64 ký tự, gửi lại cùng `client_id` là idempotent). Ping: `{"type":"ping"}` trả `{"type":"pong"}`. Server đẩy xuống: `message`, `message_updated`, `message_deleted`, `rooms_changed`, `resync`, `typing`, `read`, `presence`, `error` (`{"type":"error","code":"...","client_id":...}`).
+
+**Đã xem, đang soạn tin, online**
+
+| Hướng | Frame | Ghi chú |
+|---|---|---|
+| Client → server | `{"type":"typing","room_id":1}` | Báo đang gõ. Server giới hạn 1 frame/`WS_TYPING_INTERVAL_SECONDS` (mặc định 2 giây) mỗi phòng mỗi kết nối; vượt giới hạn hoặc phòng không phải của mình thì **bỏ qua im lặng** (không báo lỗi, tránh lộ phòng nào tồn tại); `room_id` sai kiểu/khoảng → `invalid_message`. Không tính vào giới hạn 20 tin/10 giây. |
+| Server → client | `{"type":"typing","room_id":1,"user_id":3,"user_name":"Trần Quốc Huy"}` | Phát cho mọi kết nối trong phòng (kể cả các tab của chính người gõ: client tự bỏ qua `user_id` của mình). `user_id`/`user_name` lấy từ kết nối đã xác thực, không tin dữ liệu client gửi. Không lưu ở server: client tự cho hết hạn sau 5 giây và xoá ngay khi nhận `message` của người đó. |
+| Server → client | `{"type":"read","room_id":1,"user_id":3,"message_id":42}` | Sau `POST /rooms/{id}/read`, **chỉ khi mốc đã đọc thực sự tăng**. Tới cả các tab khác của chính người đọc (đồng bộ số chưa đọc giữa các tab). |
+| Server → client | `{"type":"presence","user_id":3,"online":true}` | Khi một người chuyển online/offline; chỉ tới những người chung phòng với họ. Online = còn ít nhất một kết nối WebSocket chưa hết hạn. |
+
+`typing`/`read` không bao giờ được gửi cho người không thuộc phòng (kể cả người vừa bị gỡ hoặc phòng đã lưu trữ). Redis lỗi không làm hỏng gửi/nhận tin: các tín hiệu này chỉ bị bỏ và ghi log.
 
 **Mã đóng kết nối và cách client phản ứng**
 
@@ -137,7 +153,8 @@ Lỗi REST có dạng `{"detail":"<code>"}`; sai kiểu/khoảng giá trị đ�
 **Quy tắc đồng bộ cho client**
 
 - Sau **mỗi** `ready` (không chỉ khi kết nối lại) và khi nhận `resync`: với từng phòng đang mở/đã tải, gọi `GET /rooms/{id}/messages?after=<id tin cuối đã có>` (lặp tới khi `has_more_after` là `false`) và tải lại `GET /rooms`. Tin có thể đã đến giữa lúc tải lịch sử và lúc kết nối xong.
-- Nhận `rooms_changed` (được thêm/gỡ khỏi phòng, đổi tên nhóm, phòng bị xoá): tải lại `GET /rooms`.
+- Cũng sau mỗi `ready`/`resync`: tải lại `GET /presence` và `GET /rooms/{id}/members` của phòng đang mở, vì các sự kiện `presence`/`read` trong lúc mất kết nối đã bị lỡ. `typing` không cần bù (tự hết hạn).
+- Nhận `rooms_changed` (được thêm/gỡ khỏi phòng, đổi tên nhóm, phòng bị xoá): tải lại `GET /rooms` (và `GET /presence`, vì phòng chung mới có thể thêm người được thấy online).
 - Server cũng tự đối soát định kỳ (`WS_RECONCILE_SECONDS`, mặc định 30 giây) và đóng kết nối của tài khoản đã khoá hoặc phải đổi mật khẩu, nên client phải xử lý 4401/4403 bất cứ lúc nào.
 
 **Xoá nhóm = lưu trữ (mặc định 3 ngày) rồi xoá vĩnh viễn**: `DELETE /admin/rooms/{id}` (204) không xoá dữ liệu mà đặt `archived_at`. Nhóm đã lưu trữ biến mất với mọi người dùng thường (danh sách phòng, tin nhắn, gửi/sửa/xoá/đánh dấu đã đọc đều trả `404 room_not_found`, WebSocket không còn nhận tin của nhóm) và các thành viên nhận `rooms_changed`. Admin xem được bằng `GET /admin/rooms?archived=true` (mỗi nhóm có `archived_at` và `purge_at`), xem chi tiết bằng `GET /admin/rooms/{id}`, khôi phục bằng `POST /admin/rooms/{id}/restore` (thành viên thấy lại đủ tin nhắn và số chưa đọc cũ); đổi tên, thêm/gỡ thành viên trên nhóm đã lưu trữ trả `404 room_not_found`. Tiến trình nền (chạy lúc khởi động rồi mỗi `ROOM_PURGE_INTERVAL_SECONDS` giây, mặc định 3600) xoá vĩnh viễn nhóm đã lưu trữ quá `ROOM_ARCHIVE_RETENTION_DAYS` ngày (mặc định 3) cùng toàn bộ tin nhắn. Phòng chat 1-1 không bị ảnh hưởng. Lưu ý: bản sao lưu DB vẫn chứa dữ liệu đã xoá vĩnh viễn cho tới khi hết hạn theo chính sách sao lưu (Plan 7). Giao diện admin vẫn phải xác nhận trước khi lưu trữ.
@@ -184,6 +201,15 @@ python -m venv .venv && source .venv/bin/activate              # Git Bash: sourc
 pip install -r requirements-dev.txt
 pytest -v
 ```
+
+## Cấu hình thời gian thực (tuỳ chọn, xem `.env.example`)
+
+| Biến | Mặc định | Ý nghĩa |
+|---|---|---|
+| `PRESENCE_TTL_SECONDS` | 45 | Một kết nối được coi là còn online bấy nhiêu giây sau lần gia hạn cuối (kết nối/worker chết mà không kịp gỡ sẽ tự hết hạn). Phải lớn hơn `PRESENCE_SWEEP_SECONDS`. |
+| `PRESENCE_SWEEP_SECONDS` | 15 | Chu kỳ mỗi worker gia hạn các kết nối đang mở của mình và đối soát người vừa online/offline. Ngắt kết nối bình thường được gỡ ngay, không chờ chu kỳ này. |
+| `PRESENCE_ANNOUNCE_TIMEOUT_SECONDS` | 10 | Thời gian tối đa cho một lượt phát thông báo `presence` của một người. |
+| `WS_TYPING_INTERVAL_SECONDS` | 2 | Khoảng tối thiểu giữa hai sự kiện `typing` của một kết nối trong cùng một phòng. |
 
 ## Cấu hình môi trường: `APP_ENV` và `COOKIE_SECURE`
 
