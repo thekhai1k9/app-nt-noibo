@@ -20,3 +20,11 @@ def test_room_archive_settings_must_be_positive():
             Settings(**{field: -1})
     s = Settings()
     assert (s.room_archive_retention_days, s.room_purge_interval_seconds) == (3, 3600)
+
+
+@pytest.mark.parametrize("field", ["max_owned_groups", "max_group_members"])
+def test_group_limits_must_be_positive(field):
+    for bad in (0, -1):
+        with pytest.raises(ValidationError):
+            Settings(**{field: bad})
+    assert getattr(Settings(**{field: 1}), field) == 1

@@ -264,19 +264,15 @@ async def get_room_out(session: AsyncSession, user_id: int, room_id: int) -> Roo
     return rooms[0]
 
 
-async def create_group(session: AsyncSession, user: User, name: str, member_ids: list[int]) -> Room:
-    """Tạo nhóm + toàn bộ thành viên trong một giao dịch; người tạo là owner."""
+async def create_group(session: AsyncSession, user: User, name: str, member_ids: list[int]) -> tuple[Room, list[int]]:
+    """Tạo nhóm + toàn bộ thành viên trong một giao dịch; người tạo là owner.
+
+    Trả (phòng, id những người được mời đã bỏ trùng/bỏ chính mình)."""
     settings = get_settings()
     me_id = user.id
     invited = [uid for uid in dict.fromkeys(member_ids) if uid != me_id]
     if 1 + len(invited) > settings.max_group_members:
         raise ChatError(409, "group_full")
-    if invited:
-        active = set(
-            (await session.execute(select(User.id).where(User.id.in_(invited), User.is_active.is_(True)))).scalars()
-        )
-        if len(active) != len(invited):
-            raise ChatError(404, "user_not_found")
     # Tuần tự hoá các lần tạo nhóm của cùng một người để giới hạn đếm đúng khi gọi song song.
     await session.execute(select(func.pg_advisory_xact_lock(GROUP_LOCK_CLASS, me_id)))
     owned = (
@@ -294,13 +290,28 @@ async def create_group(session: AsyncSession, user: User, name: str, member_ids:
     ).scalar_one()
     if owned >= settings.max_owned_groups:
         raise ChatError(409, "too_many_groups")
+    if invited:
+        # FOR SHARE: giữ các hàng người dùng trong giao dịch này nên không bị xoá giữa lúc kiểm tra và lúc chèn.
+        active = set(
+            (
+                await session.execute(
+                    select(User.id).where(User.id.in_(invited), User.is_active.is_(True)).with_for_update(read=True)
+                )
+            ).scalars()
+        )
+        if len(active) != len(invited):
+            raise ChatError(404, "user_not_found")
     room = Room(type="group", name=name, branch_id=None, created_by=me_id)
     session.add(room)
     await session.flush()
     session.add(RoomMember(room_id=room.id, user_id=me_id, role="owner"))
     session.add_all([RoomMember(room_id=room.id, user_id=uid) for uid in invited])
-    await session.commit()
-    return room
+    try:
+        await session.commit()
+    except IntegrityError:  # người được mời bị xoá cùng lúc: không để lại gì, trả 404 thay vì 500
+        await session.rollback()
+        raise ChatError(404, "user_not_found")
+    return room, invited
 
 
 async def mark_read(session: AsyncSession, room_id: int, user_id: int, message_id: int) -> int | None:

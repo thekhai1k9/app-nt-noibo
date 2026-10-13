@@ -1,9 +1,11 @@
 import asyncio
+import json
 
 import pytest
 from httpx import AsyncClient
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import SessionLocal
@@ -61,7 +63,7 @@ async def test_user_creates_group_with_members_across_branches(live_server):
         await wc.close()
 
 
-@pytest.mark.parametrize("name", ["", "   ", "x" * 101, "ab\x00c"])
+@pytest.mark.parametrize("name", ["", "   ", "x" * 101, "ab\x00c", "​​", " ​\t ", "\x07\x08"])
 async def test_group_name_invalid_is_422(client, name):
     await create_user("alice")
     r = await client.post(
@@ -88,7 +90,7 @@ async def test_group_member_ids_dedupe_and_ignore_self(client, bus):
     async with SessionLocal() as s:
         roles = dict((await s.execute(select(RoomMember.user_id, RoomMember.role))).all())
     assert roles == {a: "owner", b: "member"}
-    assert [t for sc, t, e in bus.published if e == {"type": "rooms_changed"}] == [b]
+    assert [t for sc, t, e in bus.published if e == {"type": "rooms_changed"}] == [a, b]
 
 
 async def test_inactive_or_missing_member_creates_nothing(client, bus):
@@ -165,10 +167,10 @@ async def test_concurrent_creates_at_limit_minus_one(client, small_limits):
 
 
 async def test_group_can_be_created_alone(client, bus):
-    await create_user("alice")
+    a = await create_user("alice")
     r = await client.post("/api/rooms/group", json={"name": "Một mình"}, headers=await _headers(client, "alice"))
     assert (r.status_code, r.json()["member_count"], r.json()["my_role"]) == (201, 1, "owner")
-    assert bus.published == []
+    assert [(sc, t) for sc, t, e in bus.published] == [("user", a)]
 
 
 async def test_redis_failure_does_not_fail_creation(client, bus):
@@ -204,3 +206,41 @@ async def test_my_role_for_admin_created_and_direct_rooms(client):
     assert rooms[direct]["my_role"] is None
     r = await client.get(f"/api/rooms/{group}/members", headers=h)
     assert {m["role"] for m in r.json()} == {"member"}
+
+
+async def test_creator_connections_learn_about_the_new_room(live_server):
+    await create_user("alice")
+    b = await create_user("bob")
+    async with AsyncClient(base_url=live_server.http) as http:
+        ta, tb = await token_for(http, "alice"), await token_for(http, "bob")
+        wa1, _ = await ws_open(live_server.ws, ta)
+        wa2, _ = await ws_open(live_server.ws, ta)
+        wb, _ = await ws_open(live_server.ws, tb)
+        r = await http.post("/api/rooms/group", json={"name": "G", "member_ids": [b]}, headers=auth_headers(ta))
+        room = r.json()["id"]
+        for ws in (wa1, wa2, wb):
+            assert await recv_json(ws) == {"type": "rooms_changed"}
+        await wb.send(json.dumps({"type": "send", "room_id": room, "body": "chào", "client_id": "c1"}))
+        for ws in (wa1, wa2):
+            event = await recv_json(ws)
+            assert event["type"] == "message" and event["message"]["body"] == "chào"
+        for ws in (wa1, wa2, wb):
+            await ws.close()
+
+
+async def test_member_deleted_mid_create_is_404_not_500(client, monkeypatch):
+    from sqlalchemy.exc import IntegrityError
+
+    await create_user("alice")
+    b = await create_user("bob")
+    h = await _headers(client, "alice")
+    real_commit = AsyncSession.commit
+
+    async def commit_fails_once(self):
+        raise IntegrityError("insert", {}, Exception("fk"))
+
+    monkeypatch.setattr(AsyncSession, "commit", commit_fails_once)
+    r = await client.post("/api/rooms/group", json={"name": "G", "member_ids": [b]}, headers=h)
+    monkeypatch.setattr(AsyncSession, "commit", real_commit)
+    assert (r.status_code, r.json()["detail"]) == (404, "user_not_found")
+    assert await _room_count() == 0

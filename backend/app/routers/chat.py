@@ -1,3 +1,5 @@
+import unicodedata
+
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import or_, select
@@ -54,6 +56,8 @@ class GroupCreateIn(BaseModel):
     def _no_nul(cls, v: str) -> str:
         if "\x00" in v:
             raise ValueError("name must not contain NUL")
+        if all(unicodedata.category(ch) in ("Cc", "Cf", "Zs") for ch in v):
+            raise ValueError("name must contain visible characters")
         return v
 
 
@@ -131,8 +135,7 @@ async def open_direct_room(
         response.status_code = 201
         for member_id in (user.id, body.user_id):
             await publish_user_safely(bus, member_id, {"type": "rooms_changed"})
-    rooms = await service.list_rooms(session, user.id)
-    return next(r for r in rooms if r.id == room.id)
+    return await service.get_room_out(session, user.id, room.id)
 
 
 @router.post("/rooms/group", response_model=RoomOut, status_code=201)
@@ -143,9 +146,10 @@ async def create_group(
     bus: MessageBus = Depends(get_bus),
 ) -> RoomOut:
     me_id = user.id
-    room = await service.create_group(session, user, body.name, body.member_ids)
-    for member_id in dict.fromkeys(body.member_ids):
-        if member_id != me_id and not await publish_user_safely(bus, member_id, {"type": "rooms_changed"}):
+    room, invited = await service.create_group(session, user, body.name, body.member_ids)
+    # Người tạo trước (để các kết nối của họ nhận phòng mới ngay), rồi những người được mời.
+    for member_id in (me_id, *invited):
+        if not await publish_user_safely(bus, member_id, {"type": "rooms_changed"}):
             break  # bus hỏng: client đối soát sau
     return await service.get_room_out(session, me_id, room.id)
 
