@@ -1584,4 +1584,65 @@ describe('ChatController: onIncoming', () => {
     controller.handleSocketEvent({ type: 'message', message: msg(10, { room_id: 2 }) })
     expect(store.getState().rooms.find((r) => r.id === 2)!.unread_count).toBe(1)
   })
+
+  describe('first contact (room not in the store yet)', () => {
+    it('notifies exactly once after the rooms reload brings the room in', async () => {
+      const onIncoming = vi.fn()
+      const { controller, api } = setup({ onIncoming })
+      await controller.loadRooms()
+      api.rooms.mockResolvedValue([room(1), room(2), room(7)])
+      controller.handleSocketEvent({ type: 'message', message: msg(30, { room_id: 7 }) })
+      expect(onIncoming).not.toHaveBeenCalled()
+      await flush()
+      expect(onIncoming).toHaveBeenCalledTimes(1)
+      expect(onIncoming.mock.calls[0][0]).toMatchObject({ message: { id: 30 }, room: { id: 7 } })
+      controller.handleSocketEvent({ type: 'message', message: msg(30, { room_id: 7 }) })
+      await flush()
+      expect(onIncoming).toHaveBeenCalledTimes(1)
+    })
+
+    it('drops buffered messages when the room is still absent after the reload', async () => {
+      const onIncoming = vi.fn()
+      const { controller, api } = setup({ onIncoming })
+      await controller.loadRooms()
+      controller.handleSocketEvent({ type: 'message', message: msg(30, { room_id: 7 }) })
+      await flush()
+      api.rooms.mockResolvedValue([room(1), room(2), room(7)])
+      await controller.loadRooms()
+      expect(onIncoming).not.toHaveBeenCalled()
+    })
+
+    it('drops buffered messages older than 60 seconds by arrival time', async () => {
+      const onIncoming = vi.fn()
+      const { controller, api, advance } = setup({ onIncoming })
+      await controller.loadRooms()
+      let release!: (rooms: Room[]) => void
+      api.rooms.mockReturnValueOnce(new Promise<Room[]>((r) => { release = r }))
+      controller.handleSocketEvent({ type: 'message', message: msg(30, { room_id: 7 }) })
+      advance(61_000)
+      release([room(1), room(2), room(7)])
+      await flush()
+      expect(onIncoming).not.toHaveBeenCalled()
+    })
+
+    it('caps the buffer at 20 messages, dropping the oldest', async () => {
+      const onIncoming = vi.fn()
+      const { controller, api } = setup({ onIncoming })
+      await controller.loadRooms()
+      api.rooms.mockResolvedValue([room(1), room(2), room(7)])
+      for (let i = 0; i < 25; i++) controller.handleSocketEvent({ type: 'message', message: msg(100 + i, { room_id: 7 }) })
+      await flush()
+      expect(onIncoming).toHaveBeenCalledTimes(20)
+      expect(onIncoming.mock.calls[0][0].message.id).toBe(105)
+    })
+  })
+
+  it('notifies a live message even if the room list already shows it as last message', async () => {
+    const onIncoming = vi.fn()
+    const { controller, api } = setup({ onIncoming })
+    api.rooms.mockResolvedValue([room(1), room(2, { last_message: msg(40, { room_id: 2 }) })])
+    await controller.loadRooms()
+    controller.handleSocketEvent({ type: 'message', message: msg(40, { room_id: 2 }) })
+    expect(onIncoming).toHaveBeenCalledTimes(1)
+  })
 })

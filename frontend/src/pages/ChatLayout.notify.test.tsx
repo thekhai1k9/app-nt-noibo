@@ -156,4 +156,71 @@ describe('notifications in the chat layout', () => {
     await userEvent.click(await screen.findByRole('link', { name: /Dự án kho/ }))
     await waitFor(() => expect(document.title).toBe('Kết Nối'))
   })
+
+  it('still beeps (no popup) on an insecure context', async () => {
+    vi.stubGlobal('isSecureContext', false)
+    mockFetch(routes())
+    renderApp('/')
+    await screen.findByRole('link', { name: /Trần Quốc Huy/ })
+    const ws = await connect()
+    await act(async () => ws.receive({ type: 'message', message: live({ id: 10, room_id: 2, body: 'ơi' }) }))
+    expect(shown).toHaveLength(0)
+    expect(beeps).toBe(1)
+  })
+
+  it('beeps only when notifications are unsupported', async () => {
+    vi.stubGlobal('Notification', undefined)
+    mockFetch(routes())
+    renderApp('/')
+    await screen.findByRole('link', { name: /Trần Quốc Huy/ })
+    const ws = await connect()
+    await act(async () => ws.receive({ type: 'message', message: live({ id: 10, room_id: 2, body: 'ơi' }) }))
+    expect(beeps).toBe(1)
+  })
+
+  it('beeps without a popup when the popup setting is off but permission was never granted', async () => {
+    localStorage.clear()
+    permission = 'default'
+    mockFetch(routes())
+    renderApp('/')
+    await screen.findByRole('link', { name: /Trần Quốc Huy/ })
+    const ws = await connect()
+    await act(async () => ws.receive({ type: 'message', message: live({ id: 10, room_id: 2, body: 'ơi' }) }))
+    expect(shown).toHaveLength(0)
+    expect(beeps).toBe(1)
+  })
+
+  it('plays nothing when sound is off and popups are unavailable', async () => {
+    localStorage.setItem('kn.notify.v1', JSON.stringify({ ...DEFAULT_SETTINGS, enabled: false, sound: false }))
+    mockFetch(routes())
+    renderApp('/')
+    await screen.findByRole('link', { name: /Trần Quốc Huy/ })
+    const ws = await connect()
+    await act(async () => ws.receive({ type: 'message', message: live({ id: 10, room_id: 2, body: 'ơi' }) }))
+    expect(shown).toHaveLength(0)
+    expect(beeps).toBe(0)
+  })
+
+  it('shows the popup but no beep when only sound is off', async () => {
+    localStorage.setItem('kn.notify.v1', JSON.stringify({ ...DEFAULT_SETTINGS, enabled: true, sound: false }))
+    mockFetch(routes())
+    renderApp('/')
+    await screen.findByRole('link', { name: /Trần Quốc Huy/ })
+    const ws = await connect()
+    await act(async () => ws.receive({ type: 'message', message: live({ id: 10, room_id: 2, body: 'ơi' }) }))
+    expect(shown).toHaveLength(1)
+    expect(beeps).toBe(0)
+  })
+
+  it('stays silent for the open room while the window is visible and focused', async () => {
+    visibility = 'visible'
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    mockFetch(routes())
+    renderApp('/chat/2')
+    await screen.findByRole('heading', { name: 'Trần Quốc Huy' })
+    const ws = await connect()
+    await act(async () => ws.receive({ type: 'message', message: live({ id: 10, room_id: 2, body: 'ơi' }) }))
+    expect(shown).toHaveLength(0)
+    expect(beeps).toBe(0)
+  })
 })

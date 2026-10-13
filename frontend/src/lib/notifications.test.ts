@@ -2,7 +2,7 @@ import { vi } from 'vitest'
 import { makeMessage, makeRoom } from '../test/utils'
 import {
   DEFAULT_SETTINGS, loadSettings, notificationBody, notificationSupport, playBeep, requestPermission, resetNotificationState,
-  restoreTitle, saveSettings, shouldNotify, showNotification, unreadTotal, updateTitle, type NotifySettings, type ShouldNotifyInput,
+  liveNow, cleanText, restoreTitle, saveSettings, shouldNotify, showNotification, unreadTotal, updateTitle, type NotifySettings, type ShouldNotifyInput,
 } from './notifications'
 
 const NOW = Date.parse('2026-10-15T09:00:30.000Z')
@@ -130,7 +130,7 @@ describe('playBeep', () => {
     const osc = { type: '', frequency: { value: 0 }, connect: vi.fn(), start: vi.fn(), stop: vi.fn() }
     const ctor = vi.fn(function () {
       return {
-        state: 'suspended', resume: vi.fn().mockResolvedValue(undefined), currentTime: 0, destination: {},
+        state: 'suspended', resume: vi.fn(function (this: { state: string }) { this.state = 'running'; return Promise.resolve() }), currentTime: 0, destination: {},
         createOscillator: () => osc, createGain: () => ({ gain: { value: 0 }, connect: vi.fn() }),
       }
     })
@@ -174,5 +174,78 @@ describe('title', () => {
     updateTitle(1)
     restoreTitle()
     expect(document.title).toBe('Kết Nối')
+  })
+})
+
+describe('liveNow', () => {
+  const created = '2026-10-15T09:00:00.000Z'
+  const t = Date.parse(created)
+  it('tolerates client clocks 5 minutes ahead or behind', () => {
+    const msg = makeMessage({ created_at: created })
+    const room = makeRoom({ type: 'direct' })
+    const base = { room, meId: 1, settings: on, windowVisible: false, windowFocused: false, activeRoomId: null }
+    expect(shouldNotify({ ...base, message: msg, now: liveNow(created, t + 300_000) }).notify).toBe(true)
+    expect(shouldNotify({ ...base, message: msg, now: liveNow(created, t - 300_000) }).notify).toBe(true)
+    expect(liveNow('garbage', 42)).toBe(42)
+  })
+})
+
+describe('extra notification behaviours', () => {
+  beforeEach(() => resetNotificationState())
+  afterEach(() => vi.useRealTimers())
+
+  it('keeps using memory settings after a failed write', () => {
+    saveSettings({ ...on, sound: false })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('full')
+    })
+    saveSettings({ ...on, sound: true, allGroupMessages: true })
+    expect(loadSettings()).toEqual({ ...on, sound: true, allGroupMessages: true })
+  })
+
+  it('reports unsupported after the constructor throws a TypeError', () => {
+    vi.stubGlobal('isSecureContext', true)
+    vi.stubGlobal('Notification', Object.assign(function () {
+      throw new TypeError('Illegal constructor')
+    }, { permission: 'granted' }))
+    expect(notificationSupport()).toBe('granted')
+    showNotification({ title: 'T', body: 'B', tag: 'x' })
+    expect(notificationSupport()).toBe('unsupported')
+  })
+
+  it('replaces the previous notification with the same tag and clears its timer', () => {
+    vi.useFakeTimers()
+    const made: { close: ReturnType<typeof vi.fn> }[] = []
+    vi.stubGlobal('Notification', function () {
+      const n = { close: vi.fn() }
+      made.push(n)
+      return n
+    })
+    showNotification({ title: 'A', body: 'B', tag: 'kn-room-1' })
+    showNotification({ title: 'A', body: 'C', tag: 'kn-room-1' })
+    expect(made[0].close).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(8000)
+    expect(made[0].close).toHaveBeenCalledTimes(1)
+    expect(made[1].close).toHaveBeenCalledTimes(1)
+  })
+
+  it('strips bidi/format characters from titles and sender names', () => {
+    expect(cleanText('‮Huy⁦')).toBe('Huy')
+    expect(notificationBody(makeMessage({ sender_name: '‮Hà', body: 'x' }), true)).toBe('Hà: x')
+  })
+
+  it('does not consume the throttle slot while the audio context cannot run', () => {
+    vi.useFakeTimers({ now: 10_000 })
+    const osc = { frequency: { value: 0 }, connect: vi.fn(), start: vi.fn(), stop: vi.fn() }
+    const ctx = {
+      state: 'suspended', resume: vi.fn().mockResolvedValue(undefined), currentTime: 0, destination: {},
+      createOscillator: () => osc, createGain: () => ({ gain: { value: 0 }, connect: vi.fn() }),
+    }
+    vi.stubGlobal('AudioContext', vi.fn(function () { return ctx }))
+    playBeep()
+    expect(osc.start).not.toHaveBeenCalled()
+    ctx.state = 'running'
+    playBeep()
+    expect(osc.start).toHaveBeenCalledTimes(1)
   })
 })

@@ -7,7 +7,9 @@ import { ChatController, type IncomingEvent } from './chatController'
 import { ChatStore, EMPTY_THREAD, type ChatState, type Thread } from './chatStore'
 import {
   armAudioUnlock,
+  liveNow,
   loadSettings,
+  notificationSupport,
   notificationBody,
   playBeep,
   restoreTitle,
@@ -69,24 +71,27 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         ? build(userId, userName, (event) => {
             const settings = loadSettings()
             const visible = document.visibilityState === 'visible'
+            // Chính sách tính như đã bật: âm báo và số chưa đọc vẫn hoạt động khi thông báo trình duyệt không dùng được.
             const result = shouldNotify({
               message: event.message,
               room: event.room,
               meId: userId,
-              settings,
+              settings: { ...settings, enabled: true },
               windowVisible: visible,
               windowFocused: visible && (typeof document.hasFocus === 'function' ? document.hasFocus() : true),
               activeRoomId: event.activeRoomId,
-              now: Date.now(),
+              now: liveNow(event.message.created_at),
             })
             if (!result.notify) return
             const roomId = event.room.id
-            showNotification({
-              title: event.room.name ?? event.message.sender_name,
-              body: notificationBody(event.message, settings.showPreview),
-              tag: `kn-room-${roomId}`,
-              onClick: () => navigateRef.current?.(`/chat/${roomId}`),
-            })
+            if (settings.enabled && notificationSupport() === 'granted') {
+              showNotification({
+                title: event.room.name ?? event.message.sender_name,
+                body: notificationBody(event.message, settings.showPreview),
+                tag: `kn-room-${roomId}`,
+                onClick: () => navigateRef.current?.(`/chat/${roomId}`),
+              })
+            }
             if (settings.sound) playBeep()
           })
         : null,

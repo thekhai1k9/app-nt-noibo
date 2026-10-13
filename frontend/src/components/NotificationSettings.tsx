@@ -18,17 +18,19 @@ const SUPPORT_TEXT = {
 
 function Switch({ label, hint, checked, disabled, onChange }: { label: string; hint?: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void }) {
   const id = useId()
+  const hintId = `${id}-hint`
   return (
     <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'nowrap', alignItems: 'flex-start' }}>
       <span style={{ minWidth: 0 }}>
         <span id={id} style={{ fontWeight: 600 }}>{label}</span>
-        {hint && <span className="muted" style={{ display: 'block', fontSize: 13 }}>{hint}</span>}
+        {hint && <span id={hintId} className="muted" style={{ display: 'block', fontSize: 13 }}>{hint}</span>}
       </span>
       <button
         type="button"
         role="switch"
         aria-checked={checked}
         aria-labelledby={id}
+        aria-describedby={hint ? hintId : undefined}
         disabled={disabled}
         className={`btn ${checked ? '' : 'btn-ghost'}`}
         onClick={() => onChange(!checked)}
@@ -107,7 +109,7 @@ export function NotificationSettings({ onClose }: { onClose: () => void }) {
         <Switch label="Âm báo" checked={settings.sound} onChange={(sound) => update({ sound })} />
         <Switch
           label="Hiện nội dung tin"
-          hint="Nội dung tin sẽ hiện trên màn hình khoá/khu vực thông báo của máy"
+          hint="Nội dung tin sẽ hiện trên màn hình khoá/khu vực thông báo của máy. Khi tắt, tên phòng/người gửi vẫn hiện."
           checked={settings.showPreview}
           onChange={(showPreview) => update({ showPreview })}
         />

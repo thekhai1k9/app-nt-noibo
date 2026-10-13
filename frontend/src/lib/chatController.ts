@@ -32,6 +32,9 @@ const PENDING_READ_TTL_MS = 5 * 60_000
 const TYPING_TTL_MS = 5000
 const TYPING_SEND_INTERVAL_MS = 3000
 const READ_DEBOUNCE_MS = 1000
+const UNKNOWN_BUFFER_MAX = 20
+const UNKNOWN_BUFFER_TTL_MS = 60_000
+const NOTIFIED_MAX = 200
 
 interface PendingMeta {
   roomId: number
@@ -79,6 +82,10 @@ export class ChatController {
   /** Id đã thực sự nhìn thấy lúc yêu cầu đánh dấu; không bao giờ gửi id vượt quá phần đã xem. */
   private readonly readPending = new Map<number, number>()
   private presenceSeq = 0
+  /** Tin trực tiếp của phòng chưa có trong store (liên hệ lần đầu): chờ lần tải phòng kế tiếp rồi mới báo. */
+  private unknownBuffer: { message: Message; at: number }[] = []
+  /** Id đã báo (FIFO) để tin trùng đến sau không báo lần nữa. */
+  private readonly notified = new Set<number>()
   private readonly presenceLiveAt = new Map<number, number>()
 
   constructor(private readonly deps: ChatControllerDeps) {}
@@ -111,6 +118,7 @@ export class ChatController {
   private applyRooms(rooms: Room[]): void {
     this.deps.store.setRooms(rooms)
     this.pruneRemovedRooms(new Set(rooms.map((r) => r.id)))
+    this.drainUnknown()
     // Bản chụp cũ có thể khôi phục huy hiệu chưa đọc của phòng đã đánh dấu đọc.
     for (const r of this.deps.store.getState().rooms) {
       if ((r.unread_count > 0 || r.unread_mentions > 0) && r.last_message && (this.lastMarked.get(r.id) ?? 0) >= r.last_message.id) {
@@ -503,24 +511,48 @@ export class ChatController {
     if (mine && message.client_id) this.confirm(message.client_id)
     const viewing = this.isViewing(message.room_id)
     this.clearTypingEntry(message.room_id, message.sender_id)
-    const state = this.deps.store.getState()
-    const isNew =
-      !(state.threads[message.room_id]?.items.some((m) => m.id === message.id) ?? false) &&
-      state.rooms.find((r) => r.id === message.room_id)?.last_message?.id !== message.id
+    const isNew = !(this.deps.store.getState().threads[message.room_id]?.items.some((m) => m.id === message.id) ?? false) && !this.notified.has(message.id)
     this.deps.store.upsertMessage(message)
     const mentionsMe = message.mention_all || message.mentions.some((m) => m.user_id === this.deps.meId)
     const known = this.deps.store.bumpRoom(message, !mine && !viewing, mentionsMe)
     if (!known) void this.loadRooms()
     if (!mine && viewing) this.markReadIfViewing(message.room_id)
-    if (!mine && isNew && known && !this.disposed && this.deps.onIncoming) {
+    if (!mine && isNew && !this.disposed) {
       const room = this.deps.store.getState().rooms.find((r) => r.id === message.room_id)
-      if (room) {
-        try {
-          this.deps.onIncoming({ message, room, live: true, activeRoomId: this.activeRoom })
-        } catch {
-          // thông báo hỏng không được làm hỏng luồng nhận tin
-        }
-      }
+      if (room) this.emitIncoming(message, room)
+      else this.bufferUnknown(message)
+    }
+  }
+
+  private emitIncoming(message: Message, room: Room): void {
+    if (!this.deps.onIncoming || this.notified.has(message.id)) return
+    this.notified.add(message.id)
+    if (this.notified.size > NOTIFIED_MAX) this.notified.delete(this.notified.values().next().value as number)
+    try {
+      this.deps.onIncoming({ message, room, live: true, activeRoomId: this.activeRoom })
+    } catch {
+      // thông báo hỏng không được làm hỏng luồng nhận tin
+    }
+  }
+
+  private bufferUnknown(message: Message): void {
+    if (this.unknownBuffer.some((b) => b.message.id === message.id)) return
+    this.unknownBuffer.push({ message, at: this.now() })
+    if (this.unknownBuffer.length > UNKNOWN_BUFFER_MAX) this.unknownBuffer.shift()
+  }
+
+  /** Sau mỗi lần áp danh sách phòng: báo các tin đã đệm mà phòng nay đã có; phòng vẫn vắng thì bỏ. */
+  private drainUnknown(): void {
+    if (this.unknownBuffer.length === 0) return
+    const buffered = this.unknownBuffer
+    this.unknownBuffer = []
+    if (this.disposed) return
+    const cutoff = this.now() - UNKNOWN_BUFFER_TTL_MS
+    const rooms = this.deps.store.getState().rooms
+    for (const { message, at } of buffered) {
+      if (at < cutoff) continue
+      const room = rooms.find((r) => r.id === message.room_id)
+      if (room) this.emitIncoming(message, room)
     }
   }
 
@@ -882,6 +914,7 @@ export class ChatController {
     this.readTimers.clear()
     this.readPending.clear()
     this.presenceAgain = false
+    this.unknownBuffer = []
     this.presenceLiveAt.clear()
     this.roomsAgain = false
     this.deps.store.pruneTyping(Infinity) // store có thể sống lâu hơn controller

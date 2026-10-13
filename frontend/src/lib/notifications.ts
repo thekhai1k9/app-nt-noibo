@@ -21,6 +21,8 @@ const BASE_TITLE = 'Kết Nối'
 
 /** Bản trong bộ nhớ: chỉ dùng khi localStorage không dùng được (chế độ riêng tư, bị chặn). */
 let memorySettings: NotifySettings = { ...DEFAULT_SETTINGS }
+/** Ghi localStorage lỗi: ưu tiên bản trong bộ nhớ để hộp thoại và chính sách luôn khớp nhau. */
+let writeFailed = false
 
 function sanitize(raw: unknown): NotifySettings {
   if (!raw || typeof raw !== 'object') return { ...DEFAULT_SETTINGS }
@@ -30,6 +32,7 @@ function sanitize(raw: unknown): NotifySettings {
 }
 
 export function loadSettings(): NotifySettings {
+  if (writeFailed) return { ...memorySettings }
   let text: string | null
   try {
     text = localStorage.getItem(STORAGE_KEY)
@@ -48,8 +51,9 @@ export function saveSettings(settings: NotifySettings): void {
   memorySettings = { ...settings }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+    writeFailed = false
   } catch {
-    // bỏ qua: vẫn còn bản trong bộ nhớ
+    writeFailed = true // vẫn còn bản trong bộ nhớ
   }
 }
 
@@ -87,15 +91,18 @@ export function shouldNotify(input: ShouldNotifyInput): { notify: boolean; reaso
 export function notificationBody(message: Message, showPreview: boolean): string {
   if (!showPreview) return 'Tin nhắn mới'
   const text = Array.from(makeSnippet(message.body)).slice(0, PREVIEW_MAX).join('')
-  return `${message.sender_name}: ${text}`
+  return `${cleanText(message.sender_name)}: ${text}`
 }
 
 // ---- thông báo trình duyệt ----
 
 export type NotificationSupport = 'unsupported' | 'insecure' | 'denied' | 'default' | 'granted'
 
+/** Chrome Android ném TypeError khi `new Notification`: coi như không hỗ trợ trong phiên này. */
+let constructorBroken = false
+
 export function notificationSupport(): NotificationSupport {
-  if (typeof Notification === 'undefined') return 'unsupported'
+  if (typeof Notification === 'undefined' || constructorBroken) return 'unsupported'
   if (typeof window !== 'undefined' && window.isSecureContext === false) return 'insecure'
   const p = Notification.permission
   return p === 'granted' || p === 'denied' ? p : 'default'
@@ -112,30 +119,50 @@ export async function requestPermission(): Promise<NotificationPermission | 'uns
   }
 }
 
+const active = new Map<string, { n: Notification; timer: ReturnType<typeof setTimeout> }>()
+
+/** Bỏ ký tự điều khiển/định dạng (bidi...) và rút gọn khoảng trắng, dùng cho tên người/phòng trong thông báo. */
+export function cleanText(text: string): string {
+  return makeSnippet(text)
+}
+
+function dropActive(tag: string): void {
+  const prev = active.get(tag)
+  if (!prev) return
+  clearTimeout(prev.timer)
+  active.delete(tag)
+  try {
+    prev.n.close()
+  } catch {
+    // bỏ qua
+  }
+}
+
 export function showNotification(opts: { title: string; body: string; tag: string; onClick?: () => void }): void {
   try {
-    if (typeof Notification === 'undefined') return
-    const n = new Notification(opts.title, { body: opts.body, tag: opts.tag, silent: true })
-    const timer = setTimeout(() => {
-      try {
-        n.close()
-      } catch {
-        // bỏ qua
-      }
-    }, AUTO_CLOSE_MS)
+    if (typeof Notification === 'undefined' || constructorBroken) return
+    dropActive(opts.tag)
+    const n = new Notification(cleanText(opts.title), { body: opts.body, tag: opts.tag, silent: true })
+    const timer = setTimeout(() => dropActive(opts.tag), AUTO_CLOSE_MS)
+    active.set(opts.tag, { n, timer })
     n.onclick = () => {
-      clearTimeout(timer)
       try {
         window.focus()
-        n.close()
       } catch {
         // bỏ qua
       }
+      if (active.get(opts.tag)?.n === n) dropActive(opts.tag)
       opts.onClick?.()
     }
-  } catch {
-    // bỏ qua: thông báo không bao giờ được làm hỏng luồng chat
+  } catch (err) {
+    if (err instanceof TypeError) constructorBroken = true
   }
+}
+
+/** Đồng hồ máy khách có thể lệch so với máy chủ: tin trực tiếp chưa bao giờ "cũ" hơn 5 giây khi máy khách chạy nhanh. */
+export function liveNow(createdAt: string, clockNow: number = Date.now()): number {
+  const created = Date.parse(createdAt)
+  return Number.isNaN(created) ? clockNow : Math.min(clockNow, created + 5000)
 }
 
 // ---- âm báo ----
@@ -164,8 +191,9 @@ export function playBeep(): void {
     if (now - lastBeepAt < BEEP_MIN_GAP_MS) return
     const ctx = audioContext()
     if (!ctx) return
-    lastBeepAt = now
     if (ctx.state === 'suspended') void Promise.resolve(ctx.resume()).catch(() => undefined)
+    if (ctx.state !== 'running') return // chưa được phép phát: không lên lịch, không tốn lượt giới hạn
+    lastBeepAt = now
     const osc = ctx.createOscillator()
     const gain = ctx.createGain()
     osc.type = 'sine'
@@ -228,4 +256,8 @@ export function resetNotificationState(): void {
   lastBeepAt = -Infinity
   titleOriginal = null
   memorySettings = { ...DEFAULT_SETTINGS }
+  writeFailed = false
+  constructorBroken = false
+  active.forEach((a) => clearTimeout(a.timer))
+  active.clear()
 }
