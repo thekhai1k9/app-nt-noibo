@@ -158,6 +158,9 @@ Giới hạn frame là **16 KiB tính theo byte UTF-8** (không phải số ký 
 | `cannot_chat_with_self` | REST | Mở chat 1-1 với chính mình |
 | `invalid_cursor` | REST | Truyền nhiều hơn một trong `before`/`after`/`around` |
 | `forbidden` | REST | Sửa/xoá tin của người khác, không phải admin, hoặc quản lý nhóm khi không phải chủ nhóm |
+| `conflict` | REST (409) | Hai thao tác quản lý nhóm đụng nhau và vẫn deadlock sau một lần thử lại; thử lại được |
+| `group_empty` | REST (409) | Admin khôi phục nhóm đã lưu trữ khi không còn thành viên nào (ví dụ người cuối đã rời) |
+| `rate_limited` | REST (429) | Quá giới hạn thao tác nhóm theo người dùng: `GROUP_CREATE_PER_MINUTE`, `GROUP_WRITE_PER_MINUTE` hoặc trần `GROUP_CREATE_PER_DAY` (xem "Giới hạn nhóm") |
 | `too_many_groups` | REST (409) | Tạo nhóm khi đã là chủ `MAX_OWNED_GROUPS` nhóm đang hoạt động |
 | `group_full` | REST (409) | Nhóm sẽ vượt `MAX_GROUP_MEMBERS` thành viên (tạo nhóm hoặc thêm thành viên) |
 | `cannot_remove_self` | REST (400) | Chủ nhóm tự gỡ mình bằng `DELETE /rooms/{id}/members/{user_id}`; dùng `POST /rooms/{id}/leave` |
@@ -240,6 +243,13 @@ pytest -v
 |---|---|---|
 | `MAX_OWNED_GROUPS` | 20 | Số nhóm **đang hoạt động** tối đa một người được làm chủ khi tạo nhóm mới (nhóm đã giải tán/lưu trữ không tính). Vượt: `409 too_many_groups`. Chỉ kiểm tra lúc tạo nhóm: nhận quyền chủ (chủ cũ rời hoặc bị admin gỡ) và admin khôi phục nhóm có thể làm một người vượt giới hạn này. |
 | `MAX_GROUP_MEMBERS` | 200 | Số thành viên tối đa của một nhóm, kể cả người tạo; áp dụng khi tạo nhóm, khi chủ nhóm thêm và khi admin thêm thành viên. Vượt: `409 group_full`. |
+| `GROUP_CREATE_PER_MINUTE` | 10 | Số lần `POST /rooms/group` tối đa mỗi người trong 60 giây (đếm cả lần bị từ chối). Vượt: `429 rate_limited`. |
+| `GROUP_WRITE_PER_MINUTE` | 30 | Số thao tác nhóm khác (đổi tên, thêm/gỡ thành viên, rời, giải tán) tối đa mỗi người trong 60 giây. Vượt: `429 rate_limited`. |
+| `GROUP_CREATE_PER_DAY` | 50 | Số nhóm một người tạo trong 24 giờ gần nhất, **tính cả nhóm đã giải tán/lưu trữ**, để tạo-giải tán liên tục không né được giới hạn. Vượt: `429 rate_limited`. |
+
+Bộ đếm theo phút nằm trong Redis (khoá có tiền tố `BUS_CHANNEL_PREFIX`); Redis lỗi thì **cho qua** (ghi log cảnh báo) để thao tác nhóm không hỏng theo. Trần theo ngày đếm từ PostgreSQL nên không phụ thuộc Redis.
+
+**Thời điểm mất quyền:** người bị gỡ/rời nhóm không thể gửi thêm tin vào nhóm đó ngay khi lệnh gỡ hoàn tất (việc gửi tin khoá dòng thành viên nên được tuần tự hoá với việc gỡ). Về phía nhận, kết nối WebSocket đang mở của họ ngừng nhận sự kiện của phòng sau khi hub xử lý `rooms_changed`; có thể còn một cửa sổ cỡ mili-giây giữa lúc gỡ xong và lúc hub cập nhật, trong đó họ vẫn nhận được vài sự kiện đã phát đi.
 
 ## Cấu hình môi trường: `APP_ENV` và `COOKIE_SECURE`
 

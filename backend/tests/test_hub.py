@@ -373,3 +373,20 @@ async def test_ephemeral_events_are_dropped_instead_of_closing_a_full_queue():
     assert conn.close_code is None
     await hub._dispatch(BusEvent("room", 10, {"type": "message", "n": 10}))
     assert conn.close_code == 4408  # tin that van dong ket noi khi tran
+
+
+async def test_reconcile_does_not_announce_rooms_to_a_connection_without_its_first_snapshot():
+    alice = await create_user("alice")
+    room = await create_room(member_ids=[alice])
+    hub = Hub(InMemoryBus(), SessionLocal)
+    conn = Connection(alice, [], initialized=False)  # endpoint WS chưa nạp snapshot đầu tiên
+    hub.register(conn)
+    await hub.reconcile()
+    assert conn.room_ids == {room}  # vẫn được cập nhật
+    assert drain(conn) == []  # nhưng không phát rooms_changed thừa
+    conn.initialized = True
+    async with SessionLocal() as s:
+        await s.delete(await s.get(RoomMember, (room, alice)))
+        await s.commit()
+    await hub.reconcile()
+    assert drain(conn) == [{"type": "rooms_changed"}]

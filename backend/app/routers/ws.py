@@ -184,13 +184,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     user = await _authenticate(websocket)
     if user is None:
         return
-    conn = Connection(user.id, user_name=user.full_name)
+    conn = Connection(user.id, user_name=user.full_name, initialized=False)
     hub.register(conn)
     try:
         async with SessionLocal() as session:
             version = conn.version
             ids = await service.user_room_ids(session, user.id)
         apply_room_snapshot(conn, version, ids)  # bỏ qua nếu hub đã áp dụng snapshot mới hơn trong lúc chờ
+        conn.initialized = True
         await websocket.send_json({"type": "ready", "user_id": user.id})
         await hub.on_connected(conn)
         tasks = {

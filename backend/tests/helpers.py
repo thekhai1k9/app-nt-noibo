@@ -53,6 +53,15 @@ async def recv_json(ws, timeout: float = 3, include_presence: bool = False):
             return event
 
 
+async def recv_type(ws, kind: str, timeout: float = 3):
+    """Nhận sự kiện tiếp theo có `type == kind`, bỏ qua mọi sự kiện khác (kể cả rooms_changed do đối soát)."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        event = await recv_json(ws, max(deadline - asyncio.get_running_loop().time(), 0.001))
+        if event.get("type") == kind:
+            return event
+
+
 async def expect_silence(ws, seconds: float = 0.4, include_presence: bool = False):
     """Khang dinh khong co su kien nao (mac dinh bo qua `presence`)."""
 

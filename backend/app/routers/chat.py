@@ -1,11 +1,11 @@
-import unicodedata
-
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat import service
+from app.chat.limits import group_create_limit, group_write_limit
+from app.chat.validation import check_group_name
 from app.chat.presence import Presence
 from app.chat.bus import MessageBus, RedisMessageBus, publish_room_safely, publish_user_safely
 from app.chat.schemas import MemberReceipt, MessageOut, MessagePage, RoomOut, to_message_out
@@ -44,14 +44,6 @@ class DirectRoomIn(BaseModel):
     user_id: UserId
 
 
-def _check_group_name(v: str) -> str:
-    if "\x00" in v:
-        raise ValueError("name must not contain NUL")
-    if all(unicodedata.category(ch) in ("Cc", "Cf", "Zs") for ch in v):
-        raise ValueError("name must contain visible characters")
-    return v
-
-
 class GroupCreateIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -62,7 +54,7 @@ class GroupCreateIn(BaseModel):
     @field_validator("name")
     @classmethod
     def _valid_name(cls, v: str) -> str:
-        return _check_group_name(v)
+        return check_group_name(v)
 
 
 class GroupRenameIn(BaseModel):
@@ -73,7 +65,7 @@ class GroupRenameIn(BaseModel):
     @field_validator("name")
     @classmethod
     def _valid_name(cls, v: str) -> str:
-        return _check_group_name(v)
+        return check_group_name(v)
 
 
 class GroupMemberIn(BaseModel):
@@ -157,7 +149,9 @@ async def open_direct_room(
     return await service.get_room_out(session, user.id, room.id)
 
 
-@router.post("/rooms/group", response_model=RoomOut, status_code=201)
+@router.post(
+    "/rooms/group", response_model=RoomOut, status_code=201, dependencies=[Depends(group_create_limit)]
+)
 async def create_group(
     body: GroupCreateIn,
     session: AsyncSession = Depends(get_session),
@@ -180,7 +174,7 @@ async def _notify_changed(bus: MessageBus, ordered_ids: list[int]) -> None:
             break  # bus hỏng: client đối soát sau
 
 
-@router.patch("/rooms/{room_id}", response_model=RoomOut)
+@router.patch("/rooms/{room_id}", response_model=RoomOut, dependencies=[Depends(group_write_limit)])
 async def rename_group(
     room_id: RoomIdPath,
     body: GroupRenameIn,
@@ -194,7 +188,9 @@ async def rename_group(
     return await service.get_room_out(session, me_id, room_id)
 
 
-@router.post("/rooms/{room_id}/members", response_model=list[MemberReceipt])
+@router.post(
+    "/rooms/{room_id}/members", response_model=list[MemberReceipt], dependencies=[Depends(group_write_limit)]
+)
 async def add_group_member(
     room_id: RoomIdPath,
     body: GroupMemberIn,
@@ -208,7 +204,11 @@ async def add_group_member(
     return await service.list_members(session, room_id, me_id)
 
 
-@router.delete("/rooms/{room_id}/members/{user_id}", response_model=list[MemberReceipt])
+@router.delete(
+    "/rooms/{room_id}/members/{user_id}",
+    response_model=list[MemberReceipt],
+    dependencies=[Depends(group_write_limit)],
+)
 async def remove_group_member(
     room_id: RoomIdPath,
     user_id: UserIdPath,
@@ -222,7 +222,7 @@ async def remove_group_member(
     return await service.list_members(session, room_id, me_id)
 
 
-@router.post("/rooms/{room_id}/leave", status_code=204)
+@router.post("/rooms/{room_id}/leave", status_code=204, dependencies=[Depends(group_write_limit)])
 async def leave_group(
     room_id: RoomIdPath,
     session: AsyncSession = Depends(get_session),
@@ -235,7 +235,7 @@ async def leave_group(
     await _notify_changed(bus, [me_id, *remaining])  # người rời trước
 
 
-@router.delete("/rooms/{room_id}", status_code=204)
+@router.delete("/rooms/{room_id}", status_code=204, dependencies=[Depends(group_write_limit)])
 async def dissolve_group(
     room_id: RoomIdPath,
     session: AsyncSession = Depends(get_session),

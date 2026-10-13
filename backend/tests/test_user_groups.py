@@ -357,8 +357,6 @@ async def test_owner_renames_and_members_get_rooms_changed(live_server):
         ta, tb, tc = await _tokens(http, "alice", "bob", "carol")
         room = await _make_group(http, auth_headers(ta), "Cũ", [b, c])
         ws = [(await ws_open(live_server.ws, t))[0] for t in (ta, tb, tc)]
-        for w in ws:  # để rooms_changed lúc tạo nhóm và presence ban đầu lắng xuống
-            await _drain(w, 0.6)
         r = await http.patch(f"/api/rooms/{room}", json={"name": "  Mới  "}, headers=auth_headers(ta))
         assert r.status_code == 200 and r.json()["name"] == "Mới" and r.json()["my_role"] == "owner"
         for w in ws:
@@ -435,8 +433,6 @@ async def test_removed_member_loses_access_immediately(live_server):
         wa, _ = await ws_open(live_server.ws, ta)
         wb, _ = await ws_open(live_server.ws, tb)
         wc, _ = await ws_open(live_server.ws, tc)
-        for w in (wa, wb, wc):
-            await _drain(w, 0.6)  # để presence ban đầu và rooms_changed lúc tạo nhóm lắng xuống
         await wc.send(json.dumps({"type": "send", "room_id": room, "body": "tin cũ của C", "client_id": "c-old"}))
         await _wait_for(wc, lambda e: e.get("type") == "message")
         assert (await http.get(f"/api/rooms/{room}/messages", headers=hc)).status_code == 200
@@ -484,19 +480,20 @@ async def test_events_to_removed_user_dont_leak_to_others(live_server):
         wa, _ = await ws_open(live_server.ws, ta)
         wb, _ = await ws_open(live_server.ws, tb)
         wc, _ = await ws_open(live_server.ws, tc)
-        for w in (wa, wb, wc):
-            await _drain(w, 0.6)
         r = await http.delete(f"/api/rooms/{room}/members/{c}", headers=auth_headers(ta))
         assert r.status_code == 200
         await _wait_for(wc, _is_rooms_changed)
         for w in (wa, wb):
             await _wait_for(w, _is_rooms_changed)
-            await _drain(w, 0.3)  # mọi sự kiện của C lúc còn trong phòng đã đến trước mốc này
         await wc.send(json.dumps({"type": "typing", "room_id": room}))
         await wc.close()  # C offline: presence chỉ tới các phòng C còn là thành viên (không còn phòng nào)
         await wb.close()  # đối chứng dương: presence của B vẫn tới A
         await _wait_for(wa, lambda e: e.get("type") == "presence" and e["user_id"] == b and e["online"] is False)
-        stray = [e for e in await _drain(wa, 0.8) if e.get("user_id") == c]
+        stray = [
+            e
+            for e in await _drain(wa, 0.8)
+            if e.get("user_id") == c and not (e["type"] == "presence" and e["online"])  # online cũ có thể đến muộn
+        ]
         assert stray == []
         await wa.close()
 
@@ -526,8 +523,6 @@ async def test_leaving_member_websocket_stops_receiving(live_server):
         room = await _make_group(http, auth_headers(ta), "G", [b])
         wa, _ = await ws_open(live_server.ws, ta)
         wb, _ = await ws_open(live_server.ws, tb)
-        for w in (wa, wb):
-            await _drain(w, 0.6)
         assert (await http.post(f"/api/rooms/{room}/leave", headers=auth_headers(tb))).status_code == 204
         await _wait_for(wb, _is_rooms_changed)
         await wa.send(json.dumps({"type": "send", "room_id": room, "body": "sau khi B rời", "client_id": "a1"}))
@@ -605,8 +600,6 @@ async def test_owner_dissolves_group(live_server):
         ta, tb, tc, troot = await _tokens(http, "alice", "bob", "carol", "root")
         room = await _make_group(http, auth_headers(ta), "Tan", [b, c])
         ws = [(await ws_open(live_server.ws, t))[0] for t in (ta, tb, tc)]
-        for w in ws:
-            await _drain(w, 0.6)
         assert (await http.delete(f"/api/rooms/{room}", headers=auth_headers(ta))).status_code == 204
         for w in ws:
             await _wait_for(w, _is_rooms_changed)
@@ -869,7 +862,8 @@ async def test_admin_removing_the_owner_notifies_everyone_affected(client, bus):
     assert notified[0] == a and sorted(notified) == sorted([a, b, c])  # người bị gỡ trước, rồi người thừa kế + còn lại
     bus.published.clear()  # gỡ người thường (nhóm có chủ): chỉ người bị gỡ như trước
     assert (await client.delete(f"/api/admin/rooms/{room}/members/{c}", headers=hroot)).status_code == 200
-    assert _changed_for(bus) == [c]
+    notified = _changed_for(bus)  # nhóm có chủ: mọi thành viên còn lại cũng được báo
+    assert notified[0] == c and sorted(notified) == sorted([b, c])
 
 
 async def test_admin_removing_the_last_owner_archives_but_ownerless_groups_stay(client):
@@ -934,3 +928,205 @@ async def test_message_insert_is_not_blocked_by_group_management_lock(client):
             message, _, created = await asyncio.wait_for(service.send_message(s, a, room, "xin chào", "m1"), 2)
         assert created
         await holder.rollback()
+
+
+# ---------- Review round 3 ----------
+
+
+async def _deactivate(user_id):
+    from app.models import User
+
+    async with SessionLocal() as s:
+        (await s.get(User, user_id)).is_active = False
+        await s.commit()
+
+
+async def test_ownership_skips_deactivated_members_on_leave(client):
+    a, b, c = await _users("alice", "bob", "carol")
+    ha = await _headers(client, "alice")
+    room = await _make_group(client, ha, "G", [b, c])  # hòa joined_at: bob (id nhỏ) sẽ được chọn nếu còn hoạt động
+    await _deactivate(b)
+    assert (await client.post(f"/api/rooms/{room}/leave", headers=ha)).status_code == 204
+    assert await _roles(room) == {b: "member", c: "owner"}
+
+
+async def test_ownership_skips_deactivated_members_on_admin_remove(client):
+    hroot = await _admin_headers(client)
+    a, b, c = await _users("alice", "bob", "carol")
+    ha = await _headers(client, "alice")
+    room = await _make_group(client, ha, "G", [b, c])
+    await _deactivate(b)
+    assert (await client.delete(f"/api/admin/rooms/{room}/members/{a}", headers=hroot)).status_code == 200
+    assert await _roles(room) == {b: "member", c: "owner"}
+    # chỉ còn người bị khoá: vẫn có chủ (phương án cuối cùng)
+    assert (await client.delete(f"/api/admin/rooms/{room}/members/{c}", headers=hroot)).status_code == 200
+    assert await _roles(room) == {b: "owner"}
+
+
+async def test_group_create_per_minute_limit(client, small_limits):
+    small_limits(GROUP_CREATE_PER_MINUTE=2)
+    await _users("alice", "bob")
+    ha, hb = await _headers_for(client, "alice", "bob")
+    for n in ("1", "2"):
+        await _make_group(client, ha, n)
+    r = await client.post("/api/rooms/group", json={"name": "3", "member_ids": []}, headers=ha)
+    assert (r.status_code, r.json()["detail"]) == (429, "rate_limited")
+    assert await _room_count() == 2
+    await _make_group(client, hb, "của bob")  # giới hạn theo từng người
+
+
+async def test_group_write_per_minute_limit(client, small_limits):
+    small_limits(GROUP_WRITE_PER_MINUTE=3)
+    a, b = await _users("alice", "bob")
+    ha, hb = await _headers_for(client, "alice", "bob")
+    room = await _make_group(client, ha, "G", [b])
+    for n in ("1", "2", "3"):
+        assert (await client.patch(f"/api/rooms/{room}", json={"name": n}, headers=ha)).status_code == 200
+    for r in (
+        await client.patch(f"/api/rooms/{room}", json={"name": "4"}, headers=ha),
+        await client.post(f"/api/rooms/{room}/members", json={"user_id": b}, headers=ha),
+        await client.delete(f"/api/rooms/{room}/members/{b}", headers=ha),
+        await client.post(f"/api/rooms/{room}/leave", headers=ha),
+        await client.delete(f"/api/rooms/{room}", headers=ha),
+    ):
+        assert (r.status_code, r.json()["detail"]) == (429, "rate_limited")
+    assert await _roles(room) == {a: "owner", b: "member"}  # không thao tác nào bị bỏ lọt
+    assert (await client.post(f"/api/rooms/{room}/leave", headers=hb)).status_code == 204  # người khác không bị ảnh hưởng
+
+
+async def test_group_create_daily_cap_counts_archived_groups(client, small_limits):
+    small_limits(GROUP_CREATE_PER_DAY=2)
+    await create_user("alice")
+    ha = await _headers(client, "alice")
+    first = await _make_group(client, ha, "1")
+    await _make_group(client, ha, "2")
+    assert (await client.delete(f"/api/rooms/{first}", headers=ha)).status_code == 204  # giải tán không né được trần
+    r = await client.post("/api/rooms/group", json={"name": "3", "member_ids": []}, headers=ha)
+    assert (r.status_code, r.json()["detail"]) == (429, "rate_limited")
+    async with SessionLocal() as s:  # nhóm cũ hơn 24 giờ thì không tính
+        await s.execute(update(Room).where(Room.id == first).values(created_at=func.now() - timedelta(hours=25)))
+        await s.commit()
+    await _make_group(client, ha, "3")
+
+
+async def test_group_rate_limiter_fails_open_when_redis_is_down(client, monkeypatch, small_limits):
+    from app.chat import limits
+
+    small_limits(GROUP_CREATE_PER_MINUTE=1, GROUP_WRITE_PER_MINUTE=1)
+
+    async def boom(*args, **kwargs):
+        raise RedisConnectionError("down")
+
+    monkeypatch.setattr(limits, "register_attempt", boom)
+    await create_user("alice")
+    ha = await _headers(client, "alice")
+    for n in ("1", "2", "3"):
+        room = await _make_group(client, ha, n)
+        assert (await client.patch(f"/api/rooms/{room}", json={"name": "x"}, headers=ha)).status_code == 200
+        assert (await client.patch(f"/api/rooms/{room}", json={"name": "y"}, headers=ha)).status_code == 200
+
+
+async def test_send_waits_for_an_in_flight_removal_then_is_rejected():
+    from app.chat import service
+
+    a, c = await _users("alice", "carol")
+    room = await create_room(name="G", member_ids=[a, c])
+    async with SessionLocal() as remover:
+        await remover.execute(
+            RoomMember.__table__.delete().where(RoomMember.room_id == room, RoomMember.user_id == c)
+        )  # đang gỡ C, chưa commit
+        async with SessionLocal() as s:
+            send = asyncio.ensure_future(service.send_message(s, c, room, "lén", "x1"))
+            done, _ = await asyncio.wait({send}, timeout=0.5)
+            assert not done  # phải chờ giao dịch gỡ, không được chèn tin chen vào giữa
+            await remover.commit()
+            with pytest.raises(service.ChatError) as info:
+                await asyncio.wait_for(send, 3)
+    assert info.value.code == "room_not_found"
+    async with SessionLocal() as s:
+        assert (await s.execute(select(func.count()).select_from(Message))).scalar_one() == 0
+
+
+async def test_send_vs_removal_race_never_inserts_after_removal(client):
+    from app.chat import service
+
+    await create_user("alice")
+    ha = await _headers(client, "alice")
+    for i in range(6):
+        c = await create_user(f"c{i}")
+        room = await _make_group(client, ha, "G", [c])
+
+        async def send():
+            async with SessionLocal() as s:
+                try:
+                    await service.send_message(s, c, room, "x", "k")
+                    return "sent"
+                except service.ChatError as err:
+                    return err.code
+
+        outcome, removal = await asyncio.gather(
+            send(), client.delete(f"/api/rooms/{room}/members/{c}", headers=ha)
+        )
+        assert removal.status_code == 200 and outcome in ("sent", "room_not_found")
+        async with SessionLocal() as s:
+            count = (await s.execute(select(func.count()).select_from(Message).where(Message.room_id == room))).scalar_one()
+        assert count == (1 if outcome == "sent" else 0)
+
+
+async def test_admin_paths_notify_all_members_of_user_created_groups(client, bus):
+    hroot = await _admin_headers(client)
+    a, b, c, d = await _users("alice", "bob", "carol", "dave")
+    ha = await _headers(client, "alice")
+    room = await _make_group(client, ha, "G", [b, c])
+    bus.published.clear()
+    assert (await client.post(f"/api/admin/rooms/{room}/members", json={"user_id": d}, headers=hroot)).status_code == 200
+    notified = _changed_for(bus)
+    assert notified[0] == d and sorted(notified) == sorted([a, b, c, d])
+    bus.published.clear()
+    assert (await client.delete(f"/api/admin/rooms/{room}/members/{c}", headers=hroot)).status_code == 200
+    notified = _changed_for(bus)
+    assert notified[0] == c and sorted(notified) == sorted([a, b, c, d])
+    # nhóm admin tạo (không có chủ): giữ hành vi cũ, chỉ báo người liên quan
+    plain = await create_room(name="Admin tạo", member_ids=[a, b])
+    bus.published.clear()
+    assert (await client.post(f"/api/admin/rooms/{plain}/members", json={"user_id": c}, headers=hroot)).status_code == 200
+    assert (await client.delete(f"/api/admin/rooms/{plain}/members/{b}", headers=hroot)).status_code == 200
+    assert _changed_for(bus) == [c, b]
+
+
+async def test_restore_of_emptied_group_is_refused(client):
+    hroot = await _admin_headers(client)
+    a = await create_user("alice")
+    ha = await _headers(client, "alice")
+    room = await _make_group(client, ha, "Trống")
+    assert (await client.post(f"/api/rooms/{room}/leave", headers=ha)).status_code == 204
+    r = await client.post(f"/api/admin/rooms/{room}/restore", headers=hroot)
+    assert (r.status_code, r.json()["detail"]) == (409, "group_empty")
+    assert await _archived_at(room) is not None
+
+
+BAD_NAMES = ["a\nb", "a\tb", "a\x1bb", "a‮b", "a⁦b", "ㅤ", "ㅤ​ ﾠ", "ᅠᅟ", "a b"]
+
+
+@pytest.mark.parametrize("name", BAD_NAMES)
+async def test_group_names_reject_control_bidi_and_blank_lookalikes(client, name):
+    hroot = await _admin_headers(client)
+    await create_user("alice")
+    ha = await _headers(client, "alice")
+    room = await _make_group(client, ha, "Tốt")
+    assert (await client.post("/api/rooms/group", json={"name": name}, headers=ha)).status_code == 422
+    assert (await client.patch(f"/api/rooms/{room}", json={"name": name}, headers=ha)).status_code == 422
+    assert (await client.post("/api/admin/rooms", json={"name": name}, headers=hroot)).status_code == 422
+    assert (await client.patch(f"/api/admin/rooms/{room}", json={"name": name}, headers=hroot)).status_code == 422
+    async with SessionLocal() as s:
+        assert (await s.get(Room, room)).name == "Tốt"
+
+
+async def test_group_names_allow_emoji_joiners_and_accents(client):
+    hroot = await _admin_headers(client)
+    await create_user("alice")
+    ha = await _headers(client, "alice")
+    name = "Gia đình \U0001F468‍\U0001F469‍\U0001F467"
+    r = await client.post("/api/rooms/group", json={"name": name}, headers=ha)
+    assert r.status_code == 201 and r.json()["name"] == name
+    assert (await client.post("/api/admin/rooms", json={"name": name}, headers=hroot)).status_code == 201

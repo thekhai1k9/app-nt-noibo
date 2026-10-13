@@ -1,12 +1,13 @@
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat import service
+from app.chat.validation import check_group_name
 from app.chat.bus import MessageBus, publish_user_safely
 from app.config import get_settings
 from app.db import get_session
@@ -46,11 +47,21 @@ class RoomCreateIn(BaseModel):
     branch_id: BranchId | None = None
     member_ids: list[UserId] = Field(default_factory=list, max_length=200)
 
+    @field_validator("name")
+    @classmethod
+    def _valid_name(cls, v: str) -> str:
+        return check_group_name(v)
+
 
 class RoomRenameIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     name: str = Field(min_length=1, max_length=100)
+
+    @field_validator("name")
+    @classmethod
+    def _valid_name(cls, v: str) -> str:
+        return check_group_name(v)
 
 
 class MemberIn(BaseModel):
@@ -211,6 +222,8 @@ async def restore_room(
     room_id: RoomIdPath, session: AsyncSession = Depends(get_session), bus: MessageBus = Depends(get_bus)
 ) -> AdminRoomDetail:
     room = await _group_or_404(session, room_id, archived=True, lock=True)
+    if not await _member_ids(session, room.id):  # nhóm bị lưu trữ vì người cuối đã rời: không có ai để khôi phục cho
+        raise HTTPException(status_code=409, detail="group_empty")
     room.archived_at = None
     await session.commit()
     await _notify(bus, await _member_ids(session, room.id))
@@ -218,18 +231,22 @@ async def restore_room(
 
 
 @service.retry_on_deadlock
-async def _add_member(session: AsyncSession, room_id: int, user_id: int) -> Room:
+async def _add_member(session: AsyncSession, room_id: int, user_id: int) -> tuple[Room, list[int]]:
     room = await _group_or_404(session, room_id, lock=True)
     # FOR SHARE: người dùng không bị xoá giữa lúc kiểm tra và lúc chèn (như create_group)
     target = (await session.execute(select(User).where(User.id == user_id).with_for_update(read=True))).scalar_one_or_none()
     if target is None or not target.is_active:
         raise HTTPException(status_code=404, detail="user_not_found")
     member_ids = await _member_ids(session, room.id)
+    notify = [user_id]
     if user_id not in member_ids:
         if len(member_ids) >= get_settings().max_group_members:
             raise HTTPException(status_code=409, detail="group_full")
         # Người mới vào không coi lịch sử là chưa đọc: đặt vị trí đã đọc = tin nhắn mới nhất hiện có.
         latest = (await session.execute(select(func.max(Message.id)).where(Message.room_id == room.id))).scalar()
+        owned = bool(await session.scalar(select(func.count()).select_from(RoomMember).where(RoomMember.room_id == room.id, RoomMember.role == "owner")))
+        if owned:  # nhóm có chủ (do người dùng tạo): số thành viên của mọi người đổi
+            notify = [user_id, *member_ids]
         session.add(RoomMember(room_id=room.id, user_id=user_id, last_read_message_id=latest))
         try:
             await session.commit()
@@ -242,7 +259,8 @@ async def _add_member(session: AsyncSession, room_id: int, user_id: int) -> Room
     else:
         await session.rollback()  # nhả khoá
         room = await _group_or_404(session, room_id)
-    return room
+        notify = [user_id]
+    return room, notify
 
 
 @service.retry_on_deadlock
@@ -260,8 +278,13 @@ async def _remove_member(session: AsyncSession, room_id: int, user_id: int) -> t
     heir, remaining = await service.after_member_removed(
         session, room.id, was_owner=was_owner, archive_if_empty=was_owner
     )
+    owned = was_owner or bool(
+        await session.scalar(
+            select(func.count()).select_from(RoomMember).where(RoomMember.room_id == room.id, RoomMember.role == "owner")
+        )
+    )
     await session.commit()
-    notify = [user_id, *remaining] if was_owner else [user_id]  # chủ đổi: vai trò/số thành viên của mọi người đổi
+    notify = [user_id, *remaining] if owned else [user_id]  # nhóm có chủ: số thành viên/vai trò của mọi người đổi
     room = await _group_or_404(session, room_id, archived=None)
     await session.refresh(room)  # archived_at có thể vừa đổi bằng UPDATE
     return room, notify
@@ -274,8 +297,8 @@ async def add_member(
     session: AsyncSession = Depends(get_session),
     bus: MessageBus = Depends(get_bus),
 ) -> AdminRoomDetail:
-    room = await _add_member(session, room_id, body.user_id)
-    await _notify(bus, [body.user_id])
+    room, notify = await _add_member(session, room_id, body.user_id)
+    await _notify(bus, notify)
     return await _detail(session, room)
 
 

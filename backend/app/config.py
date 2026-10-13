@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     room_purge_interval_seconds: float = Field(3600, gt=0)
     max_owned_groups: int = Field(20, gt=0)
     max_group_members: int = Field(200, gt=0)
+    group_create_per_minute: int = Field(10, gt=0)
+    group_write_per_minute: int = Field(30, gt=0)
+    group_create_per_day: int = Field(50, gt=0)
     bus_channel_prefix: str = "kn"
     max_message_length: int = 4000
     log_level: str = "INFO"

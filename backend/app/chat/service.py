@@ -1,5 +1,5 @@
 import functools
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -39,13 +39,19 @@ async def user_room_ids(session: AsyncSession, user_id: int) -> set[int]:
     return set(rows.scalars())
 
 
-async def require_member(session: AsyncSession, room_id: int, user_id: int) -> Room:
-    """Trả phòng nếu user là thành viên; nếu không (kể cả phòng không tồn tại) ném 404 room_not_found."""
-    row = await session.execute(
+async def require_member(session: AsyncSession, room_id: int, user_id: int, *, lock_membership: bool = False) -> Room:
+    """Trả phòng nếu user là thành viên; nếu không (kể cả phòng không tồn tại) ném 404 room_not_found.
+
+    lock_membership: khoá dòng thành viên FOR KEY SHARE đến hết giao dịch, nên một lần gỡ/rời (DELETE dòng đó)
+    đang diễn ra phải chờ giao dịch này, và nếu gỡ xong trước thì kiểm tra thấy dòng đã mất."""
+    query = (
         select(Room)
         .join(RoomMember, RoomMember.room_id == Room.id)
         .where(Room.id == room_id, RoomMember.user_id == user_id, Room.archived_at.is_(None))
     )
+    if lock_membership:
+        query = query.with_for_update(read=True, key_share=True, of=RoomMember)
+    row = await session.execute(query)
     room = row.scalar_one_or_none()
     if room is None:
         raise ChatError(404, "room_not_found")
@@ -103,7 +109,7 @@ async def send_message(
     user = await session.get(User, user_id)
     if user is None or not user.is_active:
         raise ChatError(401, "not_authenticated")
-    await require_member(session, room_id, user_id)
+    await require_member(session, room_id, user_id, lock_membership=True)
     stmt = (
         pg_insert(Message)
         .values(room_id=room_id, sender_id=user_id, body=body, client_id=client_id)
@@ -291,6 +297,20 @@ async def create_group(session: AsyncSession, user: User, name: str, member_ids:
     ).scalar_one()
     if owned >= settings.max_owned_groups:
         raise ChatError(409, "too_many_groups")
+    # Trần theo ngày tính cả nhóm đã lưu trữ: tạo rồi giải tán liên tục không né được giới hạn.
+    created_today = (
+        await session.execute(
+            select(func.count())
+            .select_from(Room)
+            .where(
+                Room.created_by == me_id,
+                Room.type == "group",
+                Room.created_at > func.now() - timedelta(hours=24),
+            )
+        )
+    ).scalar_one()
+    if created_today >= settings.group_create_per_day:
+        raise ChatError(429, "rate_limited")
     if invited:
         # FOR SHARE: giữ các hàng người dùng trong giao dịch này nên không bị xoá giữa lúc kiểm tra và lúc chèn.
         active = set(
@@ -398,8 +418,10 @@ async def transfer_ownership(session: AsyncSession, room_id: int) -> int | None:
     heir = (
         await session.execute(
             select(RoomMember.user_id)
+            .join(User, User.id == RoomMember.user_id)
             .where(RoomMember.room_id == room_id)
-            .order_by(RoomMember.joined_at, RoomMember.user_id)
+            # người đã bị khoá chỉ được chọn khi không còn ai khác
+            .order_by(User.is_active.desc(), RoomMember.joined_at, RoomMember.user_id)
             .limit(1)
         )
     ).scalar_one_or_none()

@@ -32,8 +32,18 @@ PRESENCE_OP_TIMEOUT_SECONDS = 1.0  # gioi han cho thao tac presence tren duong x
 class Connection:
     """Trạng thái của một WebSocket: hàng đợi gửi đi và tập phòng đang tham gia."""
 
-    def __init__(self, user_id: int, room_ids: Iterable[int] = (), queue_size: int = 100, user_name: str = ""):
+    def __init__(
+        self,
+        user_id: int,
+        room_ids: Iterable[int] = (),
+        queue_size: int = 100,
+        user_name: str = "",
+        initialized: bool = True,
+    ):
         self.user_id = user_id
+        # False cho tới khi endpoint WS nạp xong snapshot phòng đầu tiên: trước đó reconcile không báo rooms_changed
+        # (room_ids còn rỗng nên so với DB sẽ luôn "khác" và sinh sự kiện thừa ngay sau `ready`).
+        self.initialized = initialized
         self.user_name = user_name  # lấy từ tài khoản đã xác thực, không bao giờ từ frame
         self.typing_last: dict[int, float] = {}  # phòng -> time.monotonic() lần gửi typing gần nhất
         self.room_ids: set[int] = set(room_ids)
@@ -189,7 +199,7 @@ class Hub:
                 changed = new_rooms != conn.room_ids
                 conn.room_ids = new_rooms
                 conn.version += 1
-                if changed:
+                if changed and conn.initialized:
                     self._offer(conn, {"type": "rooms_changed"})
 
     async def _reconcile_guarded(self) -> None:

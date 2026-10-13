@@ -12,7 +12,7 @@ from tests.conftest import (
     create_user,
     login,
 )
-from tests.helpers import expect_silence, recv_json, wait_closed, ws_open
+from tests.helpers import expect_silence, recv_json, recv_type, wait_closed, ws_open
 
 
 async def _token(live, username):
@@ -216,12 +216,8 @@ async def test_adding_a_member_starts_delivery_on_their_open_connection(live_ser
         await http.post(f"/api/admin/rooms/{room}/members", json={"user_id": b}, headers=admin)
     assert (await recv_json(wb)) == {"type": "rooms_changed"}
     await _send(wa, room, "chào người mới", "n1")
-    # Hub có thể phát thêm rooms_changed (đối soát định kỳ thấy room_ids đổi trước/sau sự kiện bus):
-    # đợi đúng tin nhắn thay vì giả định nó là sự kiện kế tiếp.
-    for ws in (wa, wb):
-        while (event := await recv_json(ws))["type"] != "message":
-            assert event["type"] == "rooms_changed"
-    assert event["message"]["body"] == "chào người mới"
+    await recv_type(wa, "message")
+    assert (await recv_type(wb, "message"))["message"]["body"] == "chào người mới"
     await wa.close()
     await wb.close()
 
@@ -261,8 +257,8 @@ async def test_one_user_can_have_several_connections_and_all_receive(live_server
     wb, _ = await ws_open(live_server.ws, await _token(live_server, "bob"))
     await _send(wb, room, "gửi cho cả hai tab", "m1")
     await recv_json(wb)
-    assert (await recv_json(tab1))["message"]["body"] == "gửi cho cả hai tab"
-    assert (await recv_json(tab2))["message"]["body"] == "gửi cho cả hai tab"
+    assert (await recv_type(tab1, "message"))["message"]["body"] == "gửi cho cả hai tab"
+    assert (await recv_type(tab2, "message"))["message"]["body"] == "gửi cho cả hai tab"
     for ws in (tab1, tab2, wb):
         await ws.close()
 

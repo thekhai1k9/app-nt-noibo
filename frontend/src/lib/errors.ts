@@ -34,6 +34,7 @@ const MESSAGES: Record<string, string> = {
   too_many_groups: 'Bạn đang quản lý quá nhiều nhóm. Hãy giải tán bớt.',
   group_full: 'Nhóm đã đủ số thành viên tối đa.',
   cannot_remove_self: 'Hãy dùng "Rời nhóm" để tự rời.',
+  group_empty: 'Nhóm không còn thành viên nào nên không khôi phục được.',
   conflict: 'Có thay đổi đồng thời. Vui lòng thử lại.',
   network_error: 'Không kết nối được máy chủ.',
   unknown_error: 'Có lỗi xảy ra. Vui lòng thử lại.',

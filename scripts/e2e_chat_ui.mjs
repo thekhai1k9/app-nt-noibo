@@ -1224,6 +1224,17 @@ await step('23. Giải tán: Bob gõ sai tên -> nút tắt, đúng -> nhóm m�
 await step('24. Giới hạn MAX_OWNED_GROUPS=3: nhóm thứ 4 -> 409 too_many_groups (REST) và thông báo tiếng Việt trong hộp thoại; giải tán một nhóm thì tạo lại được', async () => {
   const owned = async () => (await must('GET', '/rooms', carolToken)).filter((r) => r.my_role === 'owner')
   if ((await owned()).length !== 0) throw new Error('Carol đã là chủ nhóm từ trước')
+  // Preflight: stack phải đặt MAX_OWNED_GROUPS=3, nếu không các bước dưới sai khó hiểu. Tạo tới khi bị 409 rồi giải tán hết.
+  const probe = []
+  let probeStatus = 0
+  for (let i = 1; i <= 8 && probeStatus !== 409; i++) {
+    const r = await http('POST', '/rooms/group', carolToken, { name: `UI dò giới hạn ${i} ${TAG}`, member_ids: [] })
+    probeStatus = r.status
+    if (r.status === 201) probe.push(r.data.id)
+    else if (r.status !== 409 || r.data?.detail !== 'too_many_groups') throw new Error(`dò giới hạn: POST /rooms/group -> ${r.status} ${JSON.stringify(r.data)}`)
+  }
+  for (const id of probe) await must('DELETE', `/rooms/${id}`, carolToken, undefined, [204])
+  if (probe.length !== 3) throw new Error(`Stack đang cho phép ${probe.length} nhóm mỗi chủ; scripts/e2e_chat_ui.mjs cần MAX_OWNED_GROUPS=3 trong .env (rồi docker compose up -d --build)`)
   const ids = []
   for (let i = 1; i <= 3; i++) ids.push((await must('POST', '/rooms/group', carolToken, { name: `UI giới hạn ${i} ${TAG}`, member_ids: [daveId] }, [201])).id)
   await expectStatus('POST', '/rooms/group', carolToken, { name: `UI giới hạn 4 ${TAG}`, member_ids: [] }, 409, 'too_many_groups', 'nhóm thứ 4 qua REST')
