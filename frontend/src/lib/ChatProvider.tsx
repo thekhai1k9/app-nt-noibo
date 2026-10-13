@@ -7,6 +7,8 @@ import { ChatController, type IncomingEvent } from './chatController'
 import { ChatStore, EMPTY_THREAD, type ChatState, type Thread } from './chatStore'
 import {
   armAudioUnlock,
+  closeAllNotifications,
+  setNotifyUser,
   liveNow,
   loadSettings,
   notificationSupport,
@@ -109,6 +111,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [instance, unread])
   useEffect(() => restoreTitle, [])
   useEffect(() => armAudioUnlock(), [])
+  useEffect(() => {
+    setNotifyUser(userId ?? null)
+    return () => {
+      closeAllNotifications()
+      setNotifyUser(null)
+    }
+  }, [userId])
 
   useEffect(() => {
     if (!instance || mustChange) return

@@ -375,6 +375,21 @@ export class ChatController {
     return this.send(meta.roomId, meta.body, { mentions: failed.mentions, mentionAll: failed.mention_all })
   }
 
+  /** Gửi lại tin lỗi do hết lượt `@all` nhưng không bật cờ `mention_all` (giữ nguyên chữ đã gõ, giữ trả lời và mention tên). Trả client_id mới. */
+  resendWithoutMentionAll(clientId: string): string | null {
+    const failed = Object.values(this.deps.store.getState().threads)
+      .flatMap((t) => t.items)
+      .find((m) => m.pending && m.client_id === clientId)
+    const meta = this.pendingMeta.get(clientId)
+    if (!failed || !meta) return null
+    this.discard(clientId)
+    const r = failed.reply_to
+    const replyTo = r
+      ? ({ id: r.id, room_id: meta.roomId, sender_id: r.sender_id, sender_name: r.sender_name, body: r.snippet, deleted: r.deleted } as Message)
+      : undefined
+    return this.send(meta.roomId, meta.body, { mentions: failed.mentions, mentionAll: false, replyTo })
+  }
+
   /** Bỏ hẳn một tin gửi lỗi. */
   discard(clientId: string): void {
     this.confirm(clientId)

@@ -219,5 +219,18 @@ describe('MessageItem', () => {
       rerender(<MessageItem {...props} onResendWithoutReply={onResend} message={{ ...failed, errorCode: 'rate_limited' }} mine />)
       expect(screen.getByRole('button', { name: 'Gửi lại tin nhắn' })).toBeInTheDocument()
     })
+
+    it('explains the @all limit and offers Gửi không kèm @all', async () => {
+      const onResend = vi.fn()
+      const failed = { ...base, sender_id: 1, client_id: 'c1', pending: 'failed' as const, errorCode: 'rate_limited', mention_all: true }
+      const { rerender } = render(<MessageItem {...props} onResendWithoutMentionAll={onResend} message={failed} mine />)
+      expect(screen.getByText('Bạn đã dùng hết lượt @all trong 10 phút gần đây. Hãy bỏ @all hoặc thử lại sau.')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Gửi lại tin nhắn' })).not.toBeInTheDocument()
+      await userEvent.click(screen.getByRole('button', { name: 'Gửi không kèm @all' }))
+      expect(onResend).toHaveBeenCalledWith('c1')
+      rerender(<MessageItem {...props} onResendWithoutMentionAll={onResend} message={{ ...failed, mention_all: false }} mine />)
+      expect(screen.getByRole('button', { name: 'Gửi lại tin nhắn' })).toBeInTheDocument()
+      expect(screen.getByText(/gửi quá nhanh/)).toBeInTheDocument()
+    })
   })
 })

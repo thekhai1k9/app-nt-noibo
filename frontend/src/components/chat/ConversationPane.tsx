@@ -127,6 +127,7 @@ function Conversation({ roomId }: { roomId: number }) {
         onRetrySend={(clientId) => controller.retry(clientId)}
         onDiscard={(clientId) => controller.discard(clientId)}
         onResendWithoutReply={(clientId) => controller.resendWithoutReply(clientId)}
+        onResendWithoutMentionAll={(clientId) => controller.resendWithoutMentionAll(clientId)}
         onReply={setReplyTo}
         onEdit={(id, body) => controller.edit(id, body)}
         onDelete={(id) => controller.remove(roomId, id)}

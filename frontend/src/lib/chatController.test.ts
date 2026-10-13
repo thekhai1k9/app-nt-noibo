@@ -1516,6 +1516,22 @@ describe('ChatController: replies and mentions', () => {
     expect(items.at(-1)).toMatchObject({ client_id: 'cid-2', reply_to: null, pending: 'sending' })
   })
 
+  it('resendWithoutMentionAll re-sends the same text without mention_all, keeping the reply and mentions', async () => {
+    const { controller, socket, store } = setup()
+    await controller.loadRooms()
+    await controller.openRoom(1)
+    controller.send(1, '@all họp @Bob', { replyTo: sourceMsg(), mentions: [{ user_id: 2, full_name: 'Bob' }], mentionAll: true })
+    controller.handleSocketEvent({ type: 'error', code: 'rate_limited', client_id: 'cid-1' })
+    expect(controller.resendWithoutMentionAll('cid-1')).toBe('cid-2')
+    const frame = socket.send.mock.calls.at(-1)![0] as Record<string, unknown>
+    expect(frame).toMatchObject({ type: 'send', room_id: 1, body: '@all họp @Bob', client_id: 'cid-2', mentions: [2] })
+    expect(frame).not.toHaveProperty('mention_all')
+    expect(frame).toHaveProperty('reply_to_id')
+    const items = store.getState().threads[1].items
+    expect(items.some((m) => m.client_id === 'cid-1')).toBe(false)
+    expect(items.at(-1)).toMatchObject({ client_id: 'cid-2', mention_all: false, pending: 'sending' })
+  })
+
   it('edit passes mentions through to the api', async () => {
     const { controller, api } = setup()
     api.editMessage.mockResolvedValue(msg(2, { body: 'new @Bob' }))

@@ -10,7 +10,20 @@ export interface NotifySettings {
 
 export const DEFAULT_SETTINGS: NotifySettings = { enabled: false, sound: true, showPreview: true, allGroupMessages: false }
 
-const STORAGE_KEY = 'kn.notify.v1'
+const STORAGE_PREFIX = 'kn.notify.v1'
+let currentUser: number | null = null
+
+/** Cài đặt theo từng người dùng (máy dùng chung): người mới nhận mặc định, không thừa hưởng cài đặt của người trước. */
+export function setNotifyUser(userId: number | null): void {
+  if (currentUser === userId) return
+  currentUser = userId
+  memorySettings = { ...DEFAULT_SETTINGS }
+  writeFailed = false
+}
+
+export function settingsKey(): string {
+  return `${STORAGE_PREFIX}.${currentUser ?? 'anon'}`
+}
 const MAX_AGE_MS = 60_000
 const PREVIEW_MAX = 140
 const AUTO_CLOSE_MS = 8000
@@ -35,7 +48,7 @@ export function loadSettings(): NotifySettings {
   if (writeFailed) return { ...memorySettings }
   let text: string | null
   try {
-    text = localStorage.getItem(STORAGE_KEY)
+    text = localStorage.getItem(settingsKey())
   } catch {
     return { ...memorySettings }
   }
@@ -50,7 +63,7 @@ export function loadSettings(): NotifySettings {
 export function saveSettings(settings: NotifySettings): void {
   memorySettings = { ...settings }
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+    localStorage.setItem(settingsKey(), JSON.stringify(settings))
     writeFailed = false
   } catch {
     writeFailed = true // vẫn còn bản trong bộ nhớ
@@ -77,6 +90,8 @@ export function shouldNotify(input: ShouldNotifyInput): { notify: boolean; reaso
   const { message, room, meId, settings } = input
   if (!settings.enabled) return no
   if (message.sender_id === meId || message.deleted) return no
+  // Lưới an toàn: ChatController chỉ gọi onIncoming cho tin WebSocket trực tiếp (bù tin/tin trùng bị loại từ cấu trúc),
+  // và ChatProvider truyền liveNow() nên luật 60 giây gần như không bao giờ kích hoạt cho tin trực tiếp.
   const created = Date.parse(message.created_at)
   if (!Number.isNaN(created) && input.now - created > MAX_AGE_MS) return no
   if (input.activeRoomId === room.id && input.windowVisible && input.windowFocused) return no
@@ -124,6 +139,11 @@ const active = new Map<string, { n: Notification; timer: ReturnType<typeof setTi
 /** Bỏ ký tự điều khiển/định dạng (bidi...) và rút gọn khoảng trắng, dùng cho tên người/phòng trong thông báo. */
 export function cleanText(text: string): string {
   return makeSnippet(text)
+}
+
+/** Đăng xuất/rời ứng dụng: đóng mọi thông báo đang mở để người sau không thấy nội dung. */
+export function closeAllNotifications(): void {
+  for (const tag of [...active.keys()]) dropActive(tag)
 }
 
 function dropActive(tag: string): void {
@@ -255,6 +275,7 @@ export function resetNotificationState(): void {
   audioCtx = null
   lastBeepAt = -Infinity
   titleOriginal = null
+  currentUser = null
   memorySettings = { ...DEFAULT_SETTINGS }
   writeFailed = false
   constructorBroken = false

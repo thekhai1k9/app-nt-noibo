@@ -71,7 +71,7 @@ beforeEach(() => {
     }),
   )
   Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility })
-  localStorage.setItem('kn.notify.v1', JSON.stringify({ ...DEFAULT_SETTINGS, enabled: true }))
+  localStorage.setItem('kn.notify.v1.1', JSON.stringify({ ...DEFAULT_SETTINGS, enabled: true }))
 })
 
 afterEach(() => {
@@ -91,7 +91,7 @@ describe('notifications in the chat layout', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Cài đặt thông báo' }))
     expect(screen.getByRole('dialog', { name: 'Cài đặt thông báo' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Bật thông báo trình duyệt' }))
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('kn.notify.v1')!).enabled).toBe(true))
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('kn.notify.v1.1')!).enabled).toBe(true))
     expect(screen.getByRole('switch', { name: 'Thông báo trình duyệt' })).toBeChecked()
     await userEvent.keyboard('{Escape}')
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -125,7 +125,7 @@ describe('notifications in the chat layout', () => {
   })
 
   it('hides the message text when previews are off', async () => {
-    localStorage.setItem('kn.notify.v1', JSON.stringify({ ...DEFAULT_SETTINGS, enabled: true, showPreview: false }))
+    localStorage.setItem('kn.notify.v1.1', JSON.stringify({ ...DEFAULT_SETTINGS, enabled: true, showPreview: false }))
     mockFetch(routes())
     renderApp('/')
     await screen.findByRole('link', { name: /Trần Quốc Huy/ })
@@ -191,7 +191,7 @@ describe('notifications in the chat layout', () => {
   })
 
   it('plays nothing when sound is off and popups are unavailable', async () => {
-    localStorage.setItem('kn.notify.v1', JSON.stringify({ ...DEFAULT_SETTINGS, enabled: false, sound: false }))
+    localStorage.setItem('kn.notify.v1.1', JSON.stringify({ ...DEFAULT_SETTINGS, enabled: false, sound: false }))
     mockFetch(routes())
     renderApp('/')
     await screen.findByRole('link', { name: /Trần Quốc Huy/ })
@@ -202,7 +202,7 @@ describe('notifications in the chat layout', () => {
   })
 
   it('shows the popup but no beep when only sound is off', async () => {
-    localStorage.setItem('kn.notify.v1', JSON.stringify({ ...DEFAULT_SETTINGS, enabled: true, sound: false }))
+    localStorage.setItem('kn.notify.v1.1', JSON.stringify({ ...DEFAULT_SETTINGS, enabled: true, sound: false }))
     mockFetch(routes())
     renderApp('/')
     await screen.findByRole('link', { name: /Trần Quốc Huy/ })

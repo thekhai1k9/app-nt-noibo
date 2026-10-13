@@ -22,6 +22,7 @@ interface Props {
   onRetrySend: (clientId: string) => void
   onDiscard?: (clientId: string) => void
   onResendWithoutReply?: (clientId: string) => void
+  onResendWithoutMentionAll?: (clientId: string) => void
   onReply?: (message: ChatMessage) => void
   onEdit: (messageId: number, body: string) => Promise<void>
   onDelete: (messageId: number) => Promise<void>
@@ -181,6 +182,7 @@ export function MessageList(props: Props) {
                 onRetry={props.onRetrySend}
                 onDiscard={props.onDiscard}
                 onResendWithoutReply={props.onResendWithoutReply}
+                onResendWithoutMentionAll={props.onResendWithoutMentionAll}
                 onReply={props.onReply}
                 onJumpToReply={message.reply_to && loadedIds.has(message.reply_to.id) ? jumpToMessage : undefined}
                 meId={meId}

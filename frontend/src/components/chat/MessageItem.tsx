@@ -15,6 +15,7 @@ interface Props {
   onRetry: (clientId: string) => void
   onDiscard?: (clientId: string) => void
   onResendWithoutReply?: (clientId: string) => void
+  onResendWithoutMentionAll?: (clientId: string) => void
   onReply?: (message: ChatMessage) => void
   /** Chỉ truyền khi tin gốc của trích dẫn đã được tải (cho phép cuộn tới). */
   onJumpToReply?: (messageId: number) => void
@@ -45,12 +46,13 @@ function renderBody(message: ChatMessage) {
   )
 }
 
-export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onResendWithoutReply, onReply, onJumpToReply, meId, flash = false, onEdit, onDelete }: Props) {
+export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onResendWithoutReply, onResendWithoutMentionAll, onReply, onJumpToReply, meId, flash = false, onEdit, onDelete }: Props) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(message.body)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [hint, setHint] = useState(false)
+  const allLimited = message.pending === 'failed' && message.errorCode === 'rate_limited' && message.mention_all
   const canAct = mine && !message.deleted && !message.pending
   const canReply = !!onReply && !message.deleted && !message.pending
   const mentionsMe = !mine && !message.deleted && (message.mention_all || (meId !== undefined && message.mentions.some((m) => m.user_id === meId)))
@@ -139,8 +141,12 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onR
           {message.pending === 'failed' && (
             <>
               <span className="msg-failed">Gửi lỗi</span>
-              <span>{errorMessage(new ApiError(0, message.errorCode ?? 'network_error'))}</span>
-              {message.errorCode === 'invalid_reply' && onResendWithoutReply ? (
+              <span>{errorMessage(new ApiError(0, allLimited ? 'mention_all_limited' : (message.errorCode ?? 'network_error')))}</span>
+              {allLimited && onResendWithoutMentionAll ? (
+                <button type="button" className="btn btn-ghost" aria-label="Gửi không kèm @all" onClick={() => message.client_id && onResendWithoutMentionAll(message.client_id)}>
+                  Gửi không kèm @all
+                </button>
+              ) : message.errorCode === 'invalid_reply' && onResendWithoutReply ? (
                 <button type="button" className="btn btn-ghost" aria-label="Gửi không kèm trả lời" onClick={() => message.client_id && onResendWithoutReply(message.client_id)}>
                   Gửi không kèm trả lời
                 </button>

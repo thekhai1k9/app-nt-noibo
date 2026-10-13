@@ -2,7 +2,7 @@ import { vi } from 'vitest'
 import { makeMessage, makeRoom } from '../test/utils'
 import {
   DEFAULT_SETTINGS, loadSettings, notificationBody, notificationSupport, playBeep, requestPermission, resetNotificationState,
-  liveNow, cleanText, restoreTitle, saveSettings, shouldNotify, showNotification, unreadTotal, updateTitle, type NotifySettings, type ShouldNotifyInput,
+  liveNow, cleanText, closeAllNotifications, setNotifyUser, restoreTitle, saveSettings, shouldNotify, showNotification, unreadTotal, updateTitle, type NotifySettings, type ShouldNotifyInput,
 } from './notifications'
 
 const NOW = Date.parse('2026-10-15T09:00:30.000Z')
@@ -53,9 +53,9 @@ describe('settings', () => {
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS)
     saveSettings({ ...on, sound: false })
     expect(loadSettings()).toEqual({ ...on, sound: false })
-    localStorage.setItem('kn.notify.v1', '{not json')
+    localStorage.setItem('kn.notify.v1.anon', '{not json')
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS)
-    localStorage.setItem('kn.notify.v1', JSON.stringify({ enabled: 'yes', sound: false }))
+    localStorage.setItem('kn.notify.v1.anon', JSON.stringify({ enabled: 'yes', sound: false }))
     expect(loadSettings()).toEqual({ ...DEFAULT_SETTINGS, sound: false })
   })
 
@@ -247,5 +247,42 @@ describe('extra notification behaviours', () => {
     ctx.state = 'running'
     playBeep()
     expect(osc.start).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('shared machines', () => {
+  beforeEach(() => resetNotificationState())
+  afterEach(() => vi.useRealTimers())
+
+  it('keeps settings per user and gives a new user the defaults', () => {
+    setNotifyUser(1)
+    saveSettings({ ...on, sound: false })
+    expect(localStorage.getItem('kn.notify.v1.1')).not.toBeNull()
+    setNotifyUser(2)
+    expect(loadSettings()).toEqual(DEFAULT_SETTINGS)
+    setNotifyUser(1)
+    expect(loadSettings()).toEqual({ ...on, sound: false })
+  })
+
+  it('ignores the legacy un-keyed settings', () => {
+    localStorage.setItem('kn.notify.v1', JSON.stringify({ ...on }))
+    setNotifyUser(3)
+    expect(loadSettings()).toEqual(DEFAULT_SETTINGS)
+  })
+
+  it('closes every open notification and clears timers', () => {
+    vi.useFakeTimers()
+    const made: { close: ReturnType<typeof vi.fn> }[] = []
+    vi.stubGlobal('Notification', function () {
+      const n = { close: vi.fn() }
+      made.push(n)
+      return n
+    })
+    showNotification({ title: 'A', body: 'x', tag: 'kn-room-1' })
+    showNotification({ title: 'B', body: 'y', tag: 'kn-room-2' })
+    closeAllNotifications()
+    expect(made.map((n) => n.close.mock.calls.length)).toEqual([1, 1])
+    vi.advanceTimersByTime(9000)
+    expect(made.map((n) => n.close.mock.calls.length)).toEqual([1, 1])
   })
 })
