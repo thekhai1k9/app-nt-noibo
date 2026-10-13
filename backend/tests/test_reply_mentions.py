@@ -653,3 +653,103 @@ async def test_patch_mentions_use_strict_integer_validation(client):
         assert r.status_code == 422, bad
     r = await client.patch(f"/api/messages/{msg}", json={"body": "chào @Bob", "mentions": list(range(1, 201))}, headers=ha)
     assert r.status_code == 200 and [m["user_id"] for m in r.json()["mentions"]] == [b]
+
+
+# ---------- review follow-ups: limiter ordering, standalone mentions ----------
+
+async def test_mention_all_limiter_runs_before_any_db_work(monkeypatch):
+    from app.chat import limits
+
+    (a, b), room = await _group("alice", "bob")
+    statements = _Counter()
+    seen = []
+
+    async def spy(redis, key, window):
+        seen.append((statements.n, key))
+        return 1
+
+    monkeypatch.setattr(limits, "register_attempt", spy)
+    event.listen(engine.sync_engine, "before_cursor_execute", statements)
+    try:
+        await _svc_send(a, room, "@all họp", mention_all=True)
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", statements)
+    assert len(seen) == 1 and seen[0][0] == 0, seen  # chưa có câu SQL nào
+    assert seen[0][1].endswith(f":mention-all-rl:{a}")
+
+
+async def test_stalled_limiter_does_not_hold_the_membership_lock(monkeypatch):
+    import asyncio
+
+    from app.chat import limits
+
+    (a, b), room = await _group("alice", "bob")
+    gate = asyncio.Event()
+
+    async def slow(redis, key, window):
+        await gate.wait()
+        return 1
+
+    monkeypatch.setattr(limits, "register_attempt", slow)
+
+    async def send():
+        async with SessionLocal() as s:
+            return await service.send_message(s, b, room, "@all chậm", None, mention_all=True)
+
+    task = asyncio.ensure_future(send())
+    await asyncio.sleep(0.3)  # đang kẹt trong bộ giới hạn
+    assert not task.done()
+    async with SessionLocal() as s:  # chính người gửi rời nhóm: không bị chặn bởi khoá thành viên
+        await asyncio.wait_for(service.leave_group(s, room, b), 3)
+    gate.set()
+    try:
+        await task
+        raise AssertionError("người đã rời không được gửi")
+    except service.ChatError as err:
+        assert err.code == "room_not_found"
+
+
+async def test_mention_requires_standalone_name(client):
+    a = await create_user("alice")
+    names = {"An": await create_user("an"), "Anh": await create_user("anh"), "Bob": await create_user("bob")}
+    cao = await create_user("cao.thi", )  # "Cao.Thi"
+    room = await create_room(member_ids=[a, *names.values(), cao])
+    ha = auth_headers(await token_for(client, "alice"))
+    cases = [
+        ("@Anh nè", [names["An"]], []),  # "@Anh" không phải mention của "An"
+        ("@Anh nè", [names["Anh"]], [names["Anh"]]),
+        ("xem https://x.vn/@Bob", [names["Bob"]], []),
+        ("email x@Bob", [names["Bob"]], []),
+        ("(@Bob)", [names["Bob"]], [names["Bob"]]),
+        ("@Bob, ơi", [names["Bob"]], [names["Bob"]]),
+        ("@Bob_x", [names["Bob"]], [names["Bob"]]),  # gạch dưới không phải chữ/số
+        ("@Bob2", [names["Bob"]], []),
+        ("@Cao.Thi nhé", [cao], [cao]),
+    ]
+    for body, ask, _ in cases:
+        await _svc_send(a, room, body, mentions=ask)
+    items = await _page(client, ha, room)
+    assert [[m["user_id"] for m in i["mentions"]] for i in items] == [want for _, _, want in cases]
+
+
+async def test_mention_standalone_rule_with_spaces_and_diacritics(client):
+    from app.db import SessionLocal as SL
+    from app.models import User
+
+    a = await create_user("alice")
+    b = await create_user("nguyen")
+    async with SL() as s:
+        (await s.get(User, b)).full_name = "Nguyễn Văn An"
+        await s.commit()
+    room = await create_room(member_ids=[a, b])
+    ha = auth_headers(await token_for(client, "alice"))
+    m1 = await _svc_send(a, room, "chào @Nguyễn Văn An!", mentions=[b])
+    await _svc_send(a, room, "chào @Nguyễn Văn Anh", mentions=[b])
+    await _svc_send(a, room, "chào @Nguyễn", mentions=[b])
+    items = await _page(client, ha, room)
+    assert [len(i["mentions"]) for i in items] == [1, 0, 0]
+    # sửa: giữ khi vẫn đứng riêng, bỏ khi dính chữ
+    r = await client.patch(f"/api/messages/{m1}", json={"body": "ok (@Nguyễn Văn An)"}, headers=ha)
+    assert len(r.json()["mentions"]) == 1
+    r = await client.patch(f"/api/messages/{m1}", json={"body": "ok @Nguyễn Văn Anna"}, headers=ha)
+    assert r.json()["mentions"] == []

@@ -123,6 +123,13 @@ def _sanitize_snippet(body: str) -> str:
     return cleaned[:SNIPPET_MAX].rstrip(" \u200d")
 
 
+def _is_mentioned(full_name: str, body: str) -> bool:
+    """"@{full_name}" đứng riêng: ký tự trước '@' không phải ký tự chữ/số/gạch dưới, '@' hay '/' (URL kiểu
+    https://x.vn/@Bob không tính) và ký tự ngay sau tên không phải chữ hay số ('@Anh' không tính cho "An")."""
+    pattern = r"(?<![\w@/])@" + re.escape(full_name) + r"(?![^\W_])"
+    return re.search(pattern, body) is not None
+
+
 def _valid_int(value, upper: int) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= upper
 
@@ -141,7 +148,7 @@ async def _filter_mentions(session: AsyncSession, room_id: int, mentions, body: 
             .where(RoomMember.room_id == room_id, RoomMember.user_id.in_(wanted))
         )
     ).all()
-    visible = {uid for uid, name in rows if f"@{name}" in body}
+    visible = {uid for uid, name in rows if _is_mentioned(name, body)}
     return [uid for uid in wanted if uid in visible][:MAX_MENTIONS]
 
 
@@ -173,6 +180,14 @@ async def send_message(
             raise ChatError(400, "invalid_client_id")
     if reply_to_id is not None and not _valid_int(reply_to_id, MAX_INT64):
         raise ChatError(400, "invalid_message")
+    if mention_all is True and MENTION_ALL_RE.search(body) is not None:
+        # Giới hạn @all gọi Redis (có thể chậm tới vài giây) nên PHẢI chạy trước mọi việc với DB: chưa mượn kết nối,
+        # chưa giữ khoá thành viên. Đánh đổi (chấp nhận): một lượt có thể tốn 1 chỗ dù sau đó bị từ chối
+        # (không phải thành viên, reply sai, phòng 1-1) hoặc là gửi lặp cùng client_id / thua cuộc đua; chỉ tốn chỗ
+        # của chính người gửi (khoá theo người gửi) nên không ai làm cạn chỗ của người khác.
+        from app.chat.limits import enforce_mention_all  # nhập muộn: limits nhập service (ChatError)
+
+        await enforce_mention_all(user_id)  # 429 trước khi tạo tin
     user = await session.get(User, user_id)
     if user is None or not user.is_active:
         raise ChatError(401, "not_authenticated")
@@ -202,10 +217,6 @@ async def send_message(
             raise ChatError(400, "invalid_reply")
     mention_ids = await _filter_mentions(session, room_id, mentions, body)
     all_flag = mention_all is True and room.type == "group" and MENTION_ALL_RE.search(body) is not None
-    if all_flag:
-        from app.chat.limits import enforce_mention_all  # nhập muộn: limits nhập service (ChatError)
-
-        await enforce_mention_all(user_id)  # 429 trước khi tạo tin
     stmt = (
         pg_insert(Message)
         .values(room_id=room_id, sender_id=user_id, body=body, client_id=client_id, reply_to_id=reply_to_id, mention_all=all_flag)
@@ -760,7 +771,7 @@ async def edit_message(
                 .where(MessageMention.message_id == message.id)
             )
         ).all()
-        drop = [uid for uid, name in old if f"@{name}" not in message.body]
+        drop = [uid for uid, name in old if not _is_mentioned(name, message.body)]
         if drop:
             await session.execute(
                 delete(MessageMention).where(MessageMention.message_id == message.id, MessageMention.user_id.in_(drop))
