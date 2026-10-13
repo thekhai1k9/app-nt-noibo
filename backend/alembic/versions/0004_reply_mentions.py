@@ -18,6 +18,7 @@ def upgrade() -> None:
         "messages",
         sa.Column("reply_to_id", sa.BigInteger(), sa.ForeignKey("messages.id", ondelete="SET NULL"), nullable=True),
     )
+    op.add_column("messages", sa.Column("mention_all", sa.Boolean(), nullable=False, server_default=sa.false()))
     op.create_index(
         "ix_messages_reply_to_id", "messages", ["reply_to_id"], postgresql_where=sa.text("reply_to_id IS NOT NULL")
     )
@@ -34,4 +35,5 @@ def downgrade() -> None:
     op.drop_index("ix_message_mentions_user_message", table_name="message_mentions")
     op.drop_table("message_mentions")
     op.drop_index("ix_messages_reply_to_id", table_name="messages")
+    op.drop_column("messages", "mention_all")
     op.drop_column("messages", "reply_to_id")

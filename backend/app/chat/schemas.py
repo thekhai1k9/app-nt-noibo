@@ -31,6 +31,7 @@ class MessageOut(BaseModel):
     deleted: bool
     reply_to: ReplyOut | None
     mentions: list[MentionOut]
+    mention_all: bool
 
 
 class RoomOut(BaseModel):
@@ -81,4 +82,5 @@ def to_message_out(
         deleted=deleted,
         reply_to=None if deleted else replies.get(msg.id),
         mentions=[] if deleted else list(mentions.get(msg.id, [])),
+        mention_all=False if deleted else bool(msg.mention_all),
     )

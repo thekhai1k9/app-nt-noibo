@@ -130,14 +130,14 @@ async def test_reply_is_idempotent_with_client_id(live_server):
     room = await create_room(member_ids=[a, b, c])
     one, two = await _svc_send(b, room, "một"), await _svc_send(b, room, "hai")
     ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
-    await _send(ws, room, "trả lời", "dup", reply_to_id=one, mentions=[b])
+    await _send(ws, room, "trả lời @Bob", "dup", reply_to_id=one, mentions=[b])
     first = (await recv_type(ws, "message"))["message"]
-    await _send(ws, room, "trả lời", "dup", reply_to_id=two, mentions=[c])
+    await _send(ws, room, "trả lời @Bob", "dup", reply_to_id=two, mentions=[c])
     again = (await recv_type(ws, "message"))["message"]
     assert again == first
     assert first["reply_to"]["id"] == one and [m["user_id"] for m in first["mentions"]] == [b]
     # gửi lặp với reply_to_id không hợp lệ cũng không phá tính idempotent
-    await _send(ws, room, "trả lời", "dup", reply_to_id=987654)
+    await _send(ws, room, "trả lời @Bob", "dup", reply_to_id=987654)
     assert (await recv_type(ws, "message"))["message"] == first
     mine = [m for m in await _rows(Message) if m.sender_id == a]
     assert len(mine) == 1 and mine[0].reply_to_id == one
@@ -152,7 +152,7 @@ async def test_mentions_keep_only_room_members(live_server):
     room = await create_room(member_ids=[a, b, c])
     ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
     junk = [d, 987654, b, b, c, a, 2**31 - 1]
-    await _send(ws, room, "@Bob @Carol", "m1", mentions=junk + list(range(1000, 1018)))  # 25 phần tử
+    await _send(ws, room, "@Alice @Bob @Carol @Dave", "m1", mentions=junk + list(range(1000, 1018)))  # 25 phần tử
     message = (await recv_type(ws, "message"))["message"]
     assert [m["user_id"] for m in message["mentions"]] == sorted([a, b, c])
     assert {m["user_id"]: m["full_name"] for m in message["mentions"]} == {a: "Alice", b: "Bob", c: "Carol"}
@@ -169,7 +169,8 @@ async def test_mentions_keep_only_room_members(live_server):
 async def test_mentions_are_capped_at_20_in_order():
     users = [await create_user(f"user{i:02d}") for i in range(25)]
     room = await create_room(member_ids=users)
-    mid = await _svc_send(users[0], room, "đông", mentions=list(reversed(users)))
+    body = " ".join(f"@User{i:02d}" for i in range(25))
+    mid = await _svc_send(users[0], room, body, mentions=list(reversed(users)))
     async with SessionLocal() as s:
         stored = set((await s.execute(select(MessageMention.user_id).where(MessageMention.message_id == mid))).scalars())
     assert stored == set(list(reversed(users))[:20])
@@ -212,7 +213,7 @@ async def test_edit_keeps_or_replaces_mentions(client, bus):
     r = await client.patch(f"/api/messages/{msg}", json={"body": "chào @bob"}, headers=ha)
     assert r.json()["mentions"] == []
 
-    r = await client.patch(f"/api/messages/{msg}", json={"body": "chào @Carol", "mentions": [c, b, b, 987654]}, headers=ha)
+    r = await client.patch(f"/api/messages/{msg}", json={"body": "chào @Bob @Carol", "mentions": [c, b, b, 987654, a]}, headers=ha)
     assert [m["user_id"] for m in r.json()["mentions"]] == [b, c]  # đã lọc, bỏ trùng/lạ
     assert r.json()["reply_to"]["id"] == src
 
@@ -253,7 +254,10 @@ async def test_page_loading_uses_constant_queries():
             kwargs["reply_to_id"] = ids[-1]
         if i % 3 == 0:
             kwargs["mentions"] = users[1:]
-        ids.append(await _svc_send(users[i % 5], room, f"tin {i}", **kwargs))
+            text = f"tin {i} @User1 @User2 @User3 @User4"
+        else:
+            text = f"tin {i}"
+        ids.append(await _svc_send(users[i % 5], room, text, **kwargs))
 
     async def load(limit):
         async with SessionLocal() as s:
@@ -423,8 +427,8 @@ async def test_purge_archived_room_with_replies_and_mentions_inside():
     keep = await create_room(member_ids=[a, b])
     prev = None
     for i in range(6):
-        prev = await _svc_send(a if i % 2 else b, room, f"chuỗi {i}", reply_to_id=prev, mentions=[a, b])
-    survivor = await _svc_send(a, keep, "giữ", mentions=[b])
+        prev = await _svc_send(a if i % 2 else b, room, f"chuỗi {i} @Alice @Bob", reply_to_id=prev, mentions=[a, b])
+    survivor = await _svc_send(a, keep, "giữ @Bob", mentions=[b])
     async with SessionLocal() as s:
         await s.execute(
             update(Room).where(Room.id == room).values(archived_at=datetime.now(timezone.utc) - timedelta(days=10))
@@ -447,3 +451,205 @@ async def test_deleting_a_source_row_nulls_the_reply_pointer():
         assert (await s.get(Message, child)).reply_to_id is None
         page = await service.list_messages(s, room)
     assert page.items[0].reply_to is None
+
+
+# ---------- 13 ----------
+
+async def test_mention_requires_visible_at_name(client):
+    a, b, c = await create_user("alice"), await create_user("bob"), await create_user("carol")
+    room = await create_room(member_ids=[a, b, c])
+    ha = auth_headers(await token_for(client, "alice"))
+    await _svc_send(a, room, "không có tên", mentions=[b, c])
+    await _svc_send(a, room, "chào @Bob thôi", mentions=[b, c])
+    await _svc_send(a, room, "chào @bob viết thường", mentions=[b])  # phân biệt hoa thường
+    items = await _page(client, ha, room)
+    assert [[m["user_id"] for m in i["mentions"]] for i in items] == [[], [b], []]
+
+
+# ---------- 14-18: @all ----------
+
+async def _group(*usernames):
+    ids = [await create_user(n) for n in usernames]
+    return ids, await create_room(member_ids=ids)
+
+
+def _unread(rooms, room):
+    return next(r["unread_mentions"] for r in rooms if r["id"] == room)
+
+
+async def test_mention_all_in_group_marks_everyone(client):
+    (a, b, c), room = await _group("alice", "bob", "carol")
+    hs = {u: auth_headers(await token_for(client, u)) for u in ("alice", "bob", "carol")}
+    mid = await _svc_send(a, room, "@all họp 9h", mention_all=True)
+    page = await _page(client, hs["alice"], room)
+    assert page[0]["mention_all"] is True and page[0]["mentions"] == []
+    got = {u: _unread((await client.get("/api/rooms", headers=h)).json(), room) for u, h in hs.items()}
+    assert got == {"alice": 0, "bob": 1, "carol": 1}
+    assert (await client.post(f"/api/rooms/{room}/read", json={"message_id": mid}, headers=hs["bob"])).status_code == 204
+    assert _unread((await client.get("/api/rooms", headers=hs["bob"])).json(), room) == 0
+    assert _unread((await client.get("/api/rooms", headers=hs["carol"])).json(), room) == 1
+    last = (await client.get("/api/rooms", headers=hs["carol"])).json()[0]["last_message"]
+    assert last["mention_all"] is True
+
+
+async def test_mention_all_rejected_in_direct_or_without_token(client):
+    (a, b, c), room = await _group("alice", "bob", "carol")
+    direct = await create_room("direct", member_ids=[a, b])
+    ha = auth_headers(await token_for(client, "alice"))
+    await _svc_send(a, direct, "@all trong 1-1", mention_all=True)
+    for body in ("email@all.com", "x@all", "@allen", "@@all", "@all_hands"):
+        await _svc_send(a, room, body, mention_all=True)
+    await _svc_send(a, room, "@all nhưng không bật cờ")
+    await _svc_send(a, room, "xin chào @ALL!", mention_all=True)  # không phân biệt hoa thường, dấu câu sau OK
+    assert [m["mention_all"] for m in await _page(client, ha, direct)] == [False]
+    assert [m["mention_all"] for m in await _page(client, ha, room)] == [False] * 6 + [True]
+
+
+async def test_mention_all_flag_must_be_a_bool_on_the_wire(live_server):
+    (a, b), room = await _group("alice", "bob")
+    ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
+    for n, bad in enumerate(("true", 1, "yes", [True])):
+        await _send(ws, room, "@all", f"b{n}", mention_all=bad)
+        assert (await recv_type(ws, "error"))["code"] == "invalid_message", bad
+    await _send(ws, room, "@all ok", "ok", mention_all=True)
+    assert (await recv_type(ws, "message"))["message"]["mention_all"] is True
+    await ws.close()
+
+
+async def test_mention_all_with_reply_and_idempotent_resend(live_server):
+    (a, b), room = await _group("alice", "bob")
+    src = await _svc_send(b, room, "câu hỏi")
+    ws, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
+    await _send(ws, room, "@all trả lời", "r", reply_to_id=src, mention_all=True)
+    first = (await recv_type(ws, "message"))["message"]
+    assert first["mention_all"] is True and first["reply_to"]["id"] == src
+    await _send(ws, room, "@all trả lời", "r")  # gửi lặp không cờ: bản đầu thắng
+    assert (await recv_type(ws, "message"))["message"] == first
+    await ws.close()
+
+
+async def test_mention_all_rate_limited(live_server, monkeypatch):
+    from app.chat import limits
+    from app.config import get_settings
+
+    monkeypatch.setenv("MENTION_ALL_PER_WINDOW", "2")
+    get_settings.cache_clear()
+    try:
+        (a, b), room = await _group("alice", "bob")
+        wa, _ = await ws_open(live_server.ws, await _token(live_server, "alice"))
+        wb, _ = await ws_open(live_server.ws, await _token(live_server, "bob"))
+        for n in range(3):
+            await _send(wa, room, f"@all {n}", f"a{n}", mention_all=True)
+        assert (await recv_type(wa, "message"))["message"]["mention_all"] is True
+        assert (await recv_type(wa, "message"))["message"]["mention_all"] is True
+        assert await recv_type(wa, "error") == {"type": "error", "code": "rate_limited", "client_id": "a2"}
+        async with SessionLocal() as s:
+            bodies = list((await s.execute(select(Message.body).where(Message.room_id == room))).scalars())
+        assert sorted(bodies) == ["@all 0", "@all 1"]
+        # tin thường vẫn gửi được, và người khác không bị ảnh hưởng
+        await _send(wa, room, "tin thường", "n1")
+        assert (await recv_type(wa, "message"))["message"]["body"] == "tin thường"
+        await _send(wb, room, "@all của Bob", "b1", mention_all=True)
+        assert (await recv_type(wb, "message"))["message"]["mention_all"] is True
+
+        # Redis lỗi thì cho qua
+        async def boom(*args, **kwargs):
+            raise ConnectionError("redis down")
+
+        monkeypatch.setattr(limits, "register_attempt", boom)
+        await _send(wa, room, "@all khi redis hỏng", "a9", mention_all=True)
+        assert (await recv_type(wa, "message"))["message"]["mention_all"] is True
+        await wa.close()
+        await wb.close()
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+
+
+async def test_edit_cannot_add_mention_all(client, bus):
+    (a, b), room = await _group("alice", "bob")
+    ha = auth_headers(await token_for(client, "alice"))
+    plain = await _svc_send(a, room, "bình thường", mention_all=True)
+    flagged = await _svc_send(a, room, "@all họp", mention_all=True)
+
+    r = await client.patch(f"/api/messages/{plain}", json={"body": "giờ có @all"}, headers=ha)
+    assert r.status_code == 200 and r.json()["mention_all"] is False
+    r = await client.patch(f"/api/messages/{flagged}", json={"body": "đã bỏ"}, headers=ha)
+    assert r.json()["mention_all"] is False
+    r = await client.patch(f"/api/messages/{flagged}", json={"body": "lại @all"}, headers=ha)
+    assert r.json()["mention_all"] is False  # đã mất cờ thì không lấy lại được
+
+    live = await _svc_send(a, room, "@all họp", mention_all=True)
+    reply = await _svc_send(a, room, "@all kèm trả lời", reply_to_id=live, mention_all=True)
+    r = await client.patch(f"/api/messages/{reply}", json={"body": "@all vẫn giữ"}, headers=ha)
+    assert r.json()["mention_all"] is True and r.json()["reply_to"]["id"] == live
+    scope, target, ev = bus.published[-1]
+    assert (scope, target, ev["type"]) == ("room", room, "message_updated")
+    assert ev["message"] == r.json() and ev["message"]["mention_all"] is True
+
+
+async def test_mention_all_not_counted_for_removed_member(client):
+    (a, b, c), room = await _group("alice", "bob", "carol")
+    hb, hc = auth_headers(await token_for(client, "bob")), auth_headers(await token_for(client, "carol"))
+    await _svc_send(a, room, "@all", mention_all=True)
+    async with SessionLocal() as s:
+        await s.execute(delete(RoomMember).where(RoomMember.room_id == room, RoomMember.user_id == c))
+        await s.commit()
+    assert (await client.get("/api/rooms", headers=hc)).json() == []
+    assert _unread((await client.get("/api/rooms", headers=hb)).json(), room) == 1
+
+
+async def test_unread_mentions_with_mention_all_stays_constant_queries():
+    users = [await create_user(f"u{i}") for i in range(3)]
+    for _ in range(2):
+        room = await create_room(member_ids=users)
+        await _svc_send(users[1], room, "@all", mention_all=True)
+
+    async def run():
+        async with SessionLocal() as s:
+            await service.list_rooms(s, users[0])
+
+    base = await _count_statements(run)
+    for _ in range(5):
+        room = await create_room(member_ids=users)
+        await _svc_send(users[1], room, "@all", mention_all=True)
+    assert await _count_statements(run) == base
+
+
+# ---------- snippet hardening / validation ----------
+
+async def test_snippet_drops_bidi_and_zero_width_characters(client):
+    a, b = await create_user("alice"), await create_user("bob")
+    room = await create_room(member_ids=[a, b])
+    ha = auth_headers(await token_for(client, "alice"))
+    family = "\U0001F468‍\U0001F469‍\U0001F467"
+    tricky = await _svc_send(a, room, "gốc‮đảo⁦x⁩ vô​hình﻿⁠ " + family)
+    invisible = await _svc_send(a, room, "​‎‮")
+    await _svc_send(b, room, "r1", reply_to_id=tricky)
+    await _svc_send(b, room, "r2", reply_to_id=invisible)
+    items = await _page(client, ha, room)
+    q1, q2 = items[-2]["reply_to"], items[-1]["reply_to"]
+    assert q1["snippet"] == "gốcđảox vôhình " + family and q1["deleted"] is False
+    assert q2 == {"id": invisible, "sender_id": a, "sender_name": "Alice", "snippet": "", "deleted": False}
+    for ch in q1["snippet"]:
+        assert unicodedata.category(ch) != "Cf" or ch == "‍"
+
+
+async def test_snippet_helper_edge_cases():
+    from app.chat.service import _sanitize_snippet
+
+    assert _sanitize_snippet("‍‍") == ""
+    assert _sanitize_snippet("a" * 119 + "‮" + "b" * 10) == "a" * 119 + "b"  # cắt SAU khi làm sạch
+    fam = "\U0001F468‍\U0001F469‍\U0001F467"
+    assert _sanitize_snippet(fam * 5) == fam * 5
+
+
+async def test_patch_mentions_use_strict_integer_validation(client):
+    (a, b), room = await _group("alice", "bob")
+    ha = auth_headers(await token_for(client, "alice"))
+    msg = await _svc_send(a, room, "chào @Bob", mentions=[b])
+    for bad in ("1", [True], ["2"], [1.5], [0], [-1], [2**31], list(range(1, 202)), "x", {"a": 1}):
+        r = await client.patch(f"/api/messages/{msg}", json={"body": "chào @Bob", "mentions": bad}, headers=ha)
+        assert r.status_code == 422, bad
+    r = await client.patch(f"/api/messages/{msg}", json={"body": "chào @Bob", "mentions": list(range(1, 201))}, headers=ha)
+    assert r.status_code == 200 and [m["user_id"] for m in r.json()["mentions"]] == [b]

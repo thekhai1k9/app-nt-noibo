@@ -1,5 +1,7 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Query, Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,7 +13,7 @@ from app.chat.bus import MessageBus, RedisMessageBus, publish_room_safely, publi
 from app.chat.schemas import MemberReceipt, MessageOut, MessagePage, RoomOut
 from app.db import get_session
 from app.deps import get_ready_user
-from app.ids import MessageId, MessageIdPath, MessageIdQuery, RoomIdPath, UserId, UserIdPath
+from app.ids import MAX_INT32, MessageId, MessageIdPath, MessageIdQuery, RoomIdPath, UserId, UserIdPath
 from app.config import get_settings
 from app.models import Branch, Room, RoomMember, User
 from app.redis_client import get_redis
@@ -78,7 +80,7 @@ class ReadIn(BaseModel):
 
 class MessageEditIn(BaseModel):
     body: str = Field(max_length=10_000)
-    mentions: list[UserId] | None = Field(default=None, max_length=200)
+    mentions: list[Annotated[StrictInt, Field(ge=1, le=MAX_INT32)]] | None = Field(default=None, max_length=200)
 
 
 @router.get("/users/directory", response_model=list[DirectoryUser])

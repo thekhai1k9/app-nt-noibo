@@ -26,6 +26,19 @@ async def _enforce(redis, kind: str, user_id: int, limit: int) -> None:
         raise ChatError(429, "rate_limited")
 
 
+async def enforce_mention_all(user_id: int) -> None:
+    """Giới hạn tin @all theo người gửi (mọi phòng cộng lại); vượt thì 429 rate_limited, Redis lỗi thì cho qua."""
+    settings = get_settings()
+    key = f"{settings.bus_channel_prefix}:mention-all-rl:{user_id}"
+    try:
+        count = await register_attempt(get_redis(), key, settings.mention_all_window_seconds)
+    except Exception:
+        log.warning("mention_all rate limiter unavailable; allowing message", exc_info=True)
+        return
+    if count > settings.mention_all_per_window:
+        raise ChatError(429, "rate_limited")
+
+
 async def group_create_limit(user: User = Depends(get_ready_user), redis=Depends(get_redis)) -> None:
     await _enforce(redis, "create", user.id, get_settings().group_create_per_minute)
 

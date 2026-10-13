@@ -3,7 +3,7 @@ import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,7 @@ from app.models import Message, MessageMention, Room, RoomMember, User
 
 MAX_PAGE = 100
 MAX_MENTIONS = 20
+MENTION_ALL_RE = re.compile(r"(?<![\w@])@all(?!\w)", re.IGNORECASE)
 SNIPPET_MAX = 120
 MAX_CLIENT_ID = 64
 GROUP_LOCK_CLASS = 5001  # khoá advisory theo người tạo nhóm
@@ -104,34 +105,44 @@ def _clean_body(body: str) -> str:
 
 
 def _sanitize_snippet(body: str) -> str:
-    """Trích dẫn an toàn: ký tự điều khiển (Cc, gồm xuống dòng/tab) và dấu ngắt dòng/đoạn Unicode (Zl/Zp) thành
-    khoảng trắng, gộp khoảng trắng liên tiếp, cắt tối đa SNIPPET_MAX *code point* Unicode. Chuỗi Python đánh chỉ mục
-    theo code point nên không bao giờ cắt giữa một cặp thay thế; ranh giới cắt là ranh giới code point, nên emoji
-    ghép bằng ZWJ có thể mất phần đuôi (ZWJ treo ở cuối sau khi cắt bị bỏ)."""
-    cleaned = "".join(" " if unicodedata.category(ch) in ("Cc", "Zl", "Zp") else ch for ch in body)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned[:SNIPPET_MAX].rstrip(" ‍")
+    """Trích dẫn an toàn. Ký tự điều khiển (Cc, gồm xuống dòng/tab) và dấu ngắt dòng/đoạn (Zl/Zp) thành khoảng trắng;
+    ký tự định dạng/bidi/độ rộng bằng không (Cf: U+202A-202E, U+2066-2069, U+200B, U+200E/F, U+2060, U+FEFF...) bị bỏ,
+    TRỪ ZWJ (U+200D) vì emoji ghép cần nó. Sau đó gộp khoảng trắng, rồi mới cắt tối đa SNIPPET_MAX code point Unicode
+    (chuỗi Python đánh chỉ mục theo code point nên không cắt giữa cặp thay thế; emoji ghép ZWJ có thể mất phần đuôi;
+    ZWJ treo ở hai đầu bị bỏ). Kết quả có thể rỗng (ví dụ nội dung chỉ gồm ký tự vô hình)."""
+    out = []
+    for ch in body:
+        cat = unicodedata.category(ch)
+        if cat in ("Cc", "Zl", "Zp"):
+            out.append(" ")
+        elif cat == "Cf" and ch != "\u200d":
+            continue
+        else:
+            out.append(ch)
+    cleaned = re.sub(r"\s+", " ", "".join(out)).strip(" \u200d")
+    return cleaned[:SNIPPET_MAX].rstrip(" \u200d")
 
 
 def _valid_int(value, upper: int) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= upper
 
 
-async def _filter_mentions(session: AsyncSession, room_id: int, mentions) -> list[int]:
-    """Giữ các id là thành viên của đúng phòng này (phòng chưa lưu trữ do require_member đã đảm bảo): bỏ id sai
-    kiểu/ngoài khoảng, trùng, id lạ (không phân biệt "không tồn tại" với "không ở phòng này" nên không lộ gì);
-    giữ thứ tự, tối đa 20."""
+async def _filter_mentions(session: AsyncSession, room_id: int, mentions, body: str) -> list[int]:
+    """Giữ các id là thành viên của đúng phòng này (phòng chưa lưu trữ do require_member đã đảm bảo) VÀ có chữ
+    "@{full_name}" nguyên văn trong `body`. Bỏ im lặng id sai kiểu/ngoài khoảng, trùng, id lạ (không phân biệt "không
+    tồn tại" với "không ở phòng này" nên không lộ gì); giữ thứ tự yêu cầu, tối đa 20 id hợp lệ đầu tiên."""
     wanted = [uid for uid in dict.fromkeys(mentions or ()) if _valid_int(uid, MAX_INT32)]
     if not wanted:
         return []
-    members = set(
-        (
-            await session.execute(
-                select(RoomMember.user_id).where(RoomMember.room_id == room_id, RoomMember.user_id.in_(wanted))
-            )
-        ).scalars()
-    )
-    return [uid for uid in wanted if uid in members][:MAX_MENTIONS]
+    rows = (
+        await session.execute(
+            select(RoomMember.user_id, User.full_name)
+            .join(User, User.id == RoomMember.user_id)
+            .where(RoomMember.room_id == room_id, RoomMember.user_id.in_(wanted))
+        )
+    ).all()
+    visible = {uid for uid, name in rows if f"@{name}" in body}
+    return [uid for uid in wanted if uid in visible][:MAX_MENTIONS]
 
 
 async def _write_mentions(session: AsyncSession, message_id: int, user_ids: list[int]) -> None:
@@ -152,6 +163,7 @@ async def send_message(
     *,
     reply_to_id: int | None = None,
     mentions=(),
+    mention_all: bool = False,
 ) -> tuple[Message, str, bool]:
     body = _clean_body(body)
     if client_id is not None:
@@ -164,7 +176,7 @@ async def send_message(
     user = await session.get(User, user_id)
     if user is None or not user.is_active:
         raise ChatError(401, "not_authenticated")
-    await require_member(session, room_id, user_id, lock_membership=True)
+    room = await require_member(session, room_id, user_id, lock_membership=True)
     if client_id is not None:
         # Gửi lặp: bản đầu thắng, không kiểm tra lại reply/mentions (tin gốc có thể đã bị xoá sau lần gửi đầu).
         existing = (
@@ -188,10 +200,15 @@ async def send_message(
         ).scalar_one_or_none()
         if valid is None:
             raise ChatError(400, "invalid_reply")
-    mention_ids = await _filter_mentions(session, room_id, mentions)
+    mention_ids = await _filter_mentions(session, room_id, mentions, body)
+    all_flag = mention_all is True and room.type == "group" and MENTION_ALL_RE.search(body) is not None
+    if all_flag:
+        from app.chat.limits import enforce_mention_all  # nhập muộn: limits nhập service (ChatError)
+
+        await enforce_mention_all(user_id)  # 429 trước khi tạo tin
     stmt = (
         pg_insert(Message)
-        .values(room_id=room_id, sender_id=user_id, body=body, client_id=client_id, reply_to_id=reply_to_id)
+        .values(room_id=room_id, sender_id=user_id, body=body, client_id=client_id, reply_to_id=reply_to_id, mention_all=all_flag)
         .on_conflict_do_nothing(constraint="uq_messages_room_sender_client")
         .returning(Message)
     )
@@ -374,19 +391,19 @@ async def list_rooms(session: AsyncSession, user_id: int, only_room_id: int | No
     unread = dict(unread_rows.all())
 
     mention_rows = await session.execute(
-        select(RoomMember.room_id, func.count())
-        .select_from(MessageMention)
-        .join(Message, Message.id == MessageMention.message_id)
-        .join(
-            RoomMember,
-            and_(RoomMember.room_id == Message.room_id, RoomMember.user_id == MessageMention.user_id),
-        )
+        select(RoomMember.room_id, func.count(Message.id))
+        .select_from(RoomMember)
+        .join(Message, Message.room_id == RoomMember.room_id)
         .where(
-            MessageMention.user_id == user_id,
+            RoomMember.user_id == user_id,
             RoomMember.room_id.in_(room_ids),
             Message.id > func.coalesce(RoomMember.last_read_message_id, 0),
             Message.sender_id != user_id,
             Message.deleted_at.is_(None),
+            or_(
+                Message.mention_all.is_(True),
+                exists().where(MessageMention.message_id == Message.id, MessageMention.user_id == user_id),
+            ),
         )
         .group_by(RoomMember.room_id)
     )
@@ -734,6 +751,7 @@ async def edit_message(
     message.body = _clean_body(body)
     message.edited_at = datetime.now(timezone.utc)
     sender = await session.get(User, user_id)
+    message.mention_all = bool(message.mention_all) and MENTION_ALL_RE.search(message.body) is not None
     if mentions is None:
         old = (
             await session.execute(
@@ -748,7 +766,7 @@ async def edit_message(
                 delete(MessageMention).where(MessageMention.message_id == message.id, MessageMention.user_id.in_(drop))
             )
     else:
-        keep = await _filter_mentions(session, message.room_id, mentions)
+        keep = await _filter_mentions(session, message.room_id, mentions, message.body)
         await session.execute(delete(MessageMention).where(MessageMention.message_id == message.id))
         await _write_mentions(session, message.id, keep)
     await session.commit()

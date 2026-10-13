@@ -121,6 +121,6 @@ async def test_migration_0004_downgrades_and_upgrades_cleanly(scratch_alembic):
             idx = (await conn.execute(text("SELECT indexname FROM pg_indexes WHERE indexname LIKE '%reply%' OR indexname LIKE '%mention%'"))).scalars().all()
     finally:
         await engine.dispose()
-    assert "message_mentions" not in tables and "reply_to_id" not in cols and idx == []
+    assert "message_mentions" not in tables and "reply_to_id" not in cols and "mention_all" not in cols and idx == []
     await asyncio.to_thread(command.upgrade, cfg, "head")
     assert await _diff_against_models(scratch_url) == []

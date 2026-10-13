@@ -111,6 +111,7 @@ async def _handle_send(conn: Connection, hub: Hub, data: dict, window: deque) ->
         or not (raw_client_id is None or isinstance(raw_client_id, str))
         or not _valid_reply_to(data.get("reply_to_id"))
         or not _valid_mentions(data.get("mentions"))
+        or not (data.get("mention_all") is None or isinstance(data.get("mention_all"), bool))
     ):
         conn.offer({"type": "error", "code": "invalid_message", "client_id": client_id})
         return
@@ -124,6 +125,7 @@ async def _handle_send(conn: Connection, hub: Hub, data: dict, window: deque) ->
                 raw_client_id,
                 reply_to_id=data.get("reply_to_id"),
                 mentions=data.get("mentions") or (),
+                mention_all=data.get("mention_all") is True,
             )
             (out,) = await service.messages_out(session, [(message, sender_name)])
     except ChatError as err:

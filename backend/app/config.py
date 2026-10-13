@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     group_create_per_minute: int = Field(10, gt=0)
     group_write_per_minute: int = Field(30, gt=0)
     group_create_per_day: int = Field(50, gt=0)
+    mention_all_per_window: int = Field(10, gt=0)
+    mention_all_window_seconds: int = Field(600, gt=0)
     bus_channel_prefix: str = "kn"
     max_message_length: int = 4000
     log_level: str = "INFO"
