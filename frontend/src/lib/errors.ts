@@ -27,6 +27,7 @@ const MESSAGES: Record<string, string> = {
   unknown_type: 'Không gửi được tin nhắn. Vui lòng thử lại.',
   unsupported_frame: 'Không gửi được tin nhắn. Vui lòng thử lại.',
   internal_error: 'Máy chủ gặp lỗi khi gửi tin. Vui lòng thử lại.',
+  invalid_reply: 'Không trả lời được tin này.',
   rate_limited: 'Bạn gửi quá nhanh. Hãy đợi vài giây rồi thử lại.',
   cannot_chat_with_self: 'Bạn không thể nhắn tin cho chính mình.',
   invalid_cursor: 'Yêu cầu tải tin nhắn không hợp lệ.',

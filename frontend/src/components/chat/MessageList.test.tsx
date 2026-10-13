@@ -6,7 +6,7 @@ import { MessageList } from './MessageList'
 
 const m = (id: number, over: Partial<ChatMessage> = {}): ChatMessage => ({
   id, room_id: 1, sender_id: 2, sender_name: 'Bob', body: `tin ${id}`, kind: 'text', client_id: null,
-  created_at: '2026-10-15T09:00:00.000Z', edited_at: null, deleted: false, ...over,
+  created_at: '2026-10-15T09:00:00.000Z', edited_at: null, deleted: false, reply_to: null, mentions: [], mention_all: false, ...over,
 })
 
 const base = {

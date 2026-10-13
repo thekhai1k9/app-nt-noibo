@@ -1,4 +1,4 @@
-import { dayLabel, formatDateTime, formatTime, initials, listTime, sameDay } from './format'
+import { makeSnippet, dayLabel, formatDateTime, formatTime, initials, listTime, sameDay } from './format'
 
 const now = new Date(2026, 9, 15, 12, 0, 0) // 15/10/2026 12:00 giờ địa phương
 const at = (y: number, m: number, d: number, h = 9, min = 5) => new Date(y, m - 1, d, h, min).toISOString()
@@ -55,5 +55,16 @@ describe('format', () => {
     expect(dayLabel(at(2026, 9, 30, 23, 30), first)).toBe('Hôm qua')
     expect(listTime(at(2026, 9, 30, 23, 30), first)).toBe('Hôm qua')
     expect(dayLabel(at(2026, 9, 29, 12, 0), first)).toBe('29/09/2026')
+  })
+})
+
+describe('makeSnippet', () => {
+  it('collapses whitespace, drops bidi/zero-width, keeps ZWJ, and truncates by code point', () => {
+    expect(makeSnippet('a\nb\t c')).toBe('a b c')
+    expect(makeSnippet('x\u202Ey\u200Bz')).toBe('xyz')
+    expect(makeSnippet('\u200B\u202E')).toBe('')
+    expect(makeSnippet('\u{1F468}\u200D\u{1F469}')).toBe('\u{1F468}\u200D\u{1F469}')
+    const long = '\u{1F600}'.repeat(130)
+    expect(Array.from(makeSnippet(long))).toHaveLength(120)
   })
 })

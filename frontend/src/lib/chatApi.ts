@@ -35,8 +35,8 @@ export const chatApi = {
     api<RoomMember[]>(`/rooms/${roomId}/members/${userId}`, { method: 'DELETE' }),
   leaveGroup: (roomId: number) => api(`/rooms/${roomId}/leave`, { method: 'POST' }),
   dissolveGroup: (roomId: number) => api(`/rooms/${roomId}`, { method: 'DELETE' }),
-  editMessage: (messageId: number, body: string) =>
-    api<Message>(`/messages/${messageId}`, { method: 'PATCH', json: { body } }),
+  editMessage: (messageId: number, body: string, mentions?: number[]) =>
+    api<Message>(`/messages/${messageId}`, { method: 'PATCH', json: mentions === undefined ? { body } : { body, mentions } }),
   deleteMessage: (messageId: number) => api(`/messages/${messageId}`, { method: 'DELETE' }),
   directory: (q: string) => api<DirectoryUser[]>(`/users/directory${q ? `?q=${encodeURIComponent(q)}` : ''}`),
 }

@@ -1,6 +1,7 @@
 import type { ChatApi } from './chatApi'
 import { EMPTY_THREAD, type ChatMessage, type ChatStore } from './chatStore'
-import type { Message, Room, RoomMember, ServerEvent } from './types'
+import { makeSnippet } from './format'
+import type { Mention, Message, Room, RoomMember, ServerEvent } from './types'
 
 export interface ChatControllerDeps {
   store: ChatStore
@@ -25,6 +26,15 @@ const READ_DEBOUNCE_MS = 1000
 interface PendingMeta {
   roomId: number
   body: string
+  replyToId?: number
+  mentionIds?: number[]
+  mentionAll?: boolean
+}
+
+export interface SendOptions {
+  replyTo?: Message
+  mentions?: Mention[]
+  mentionAll?: boolean
 }
 
 export class ChatController {
@@ -93,7 +103,7 @@ export class ChatController {
     this.pruneRemovedRooms(new Set(rooms.map((r) => r.id)))
     // Bản chụp cũ có thể khôi phục huy hiệu chưa đọc của phòng đã đánh dấu đọc.
     for (const r of this.deps.store.getState().rooms) {
-      if (r.unread_count > 0 && r.last_message && (this.lastMarked.get(r.id) ?? 0) >= r.last_message.id) {
+      if ((r.unread_count > 0 || r.unread_mentions > 0) && r.last_message && (this.lastMarked.get(r.id) ?? 0) >= r.last_message.id) {
         this.deps.store.clearUnread(r.id)
       }
     }
@@ -243,10 +253,13 @@ export class ChatController {
 
   // ---- gửi lạc quan ----
 
-  send(roomId: number, rawBody: string): string | null {
+  send(roomId: number, rawBody: string, opts: SendOptions = {}): string | null {
     const body = rawBody.trim()
     if (!body) return null
     const clientId = (this.deps.newClientId ?? (() => crypto.randomUUID()))()
+    const replyTo = opts.replyTo && opts.replyTo.id >= 1 ? opts.replyTo : undefined
+    const mentions = opts.mentions ?? []
+    const mentionAll = opts.mentionAll === true
     const message: ChatMessage = {
       id: this.nextLocalId--,
       room_id: roomId,
@@ -258,10 +271,21 @@ export class ChatController {
       created_at: new Date().toISOString(),
       edited_at: null,
       deleted: false,
+      reply_to: replyTo
+        ? { id: replyTo.id, sender_id: replyTo.sender_id, sender_name: replyTo.sender_name, snippet: replyTo.deleted ? '' : makeSnippet(replyTo.body), deleted: replyTo.deleted }
+        : null,
+      mentions: mentions.map((m) => ({ user_id: m.user_id, full_name: m.full_name })),
+      mention_all: mentionAll,
       pending: 'sending',
     }
     this.lastTypingSent.delete(roomId) // vừa gửi tin: lần soạn kế tiếp báo ngay
-    this.pendingMeta.set(clientId, { roomId, body })
+    this.pendingMeta.set(clientId, {
+      roomId,
+      body,
+      ...(replyTo ? { replyToId: replyTo.id } : {}),
+      ...(mentions.length > 0 ? { mentionIds: mentions.map((m) => m.user_id) } : {}),
+      ...(mentionAll ? { mentionAll: true } : {}),
+    })
     this.deps.store.addPending(roomId, message)
     this.transmit(clientId)
     return clientId
@@ -277,7 +301,16 @@ export class ChatController {
     const meta = this.pendingMeta.get(clientId)
     if (!meta) return
     // Chỉ hẹn giờ báo lỗi khi tin thực sự đã được gửi đi; khi offline tin nằm chờ và sẽ được gửi lại lúc `ready`.
-    if (this.deps.socket.send({ type: 'send', room_id: meta.roomId, body: meta.body, client_id: clientId })) {
+    const frame = {
+      type: 'send',
+      room_id: meta.roomId,
+      body: meta.body,
+      client_id: clientId,
+      ...(meta.replyToId !== undefined ? { reply_to_id: meta.replyToId } : {}),
+      ...(meta.mentionIds ? { mentions: meta.mentionIds } : {}),
+      ...(meta.mentionAll ? { mention_all: true as const } : {}),
+    }
+    if (this.deps.socket.send(frame)) {
       this.armTimeout(clientId)
     }
   }
@@ -349,9 +382,15 @@ export class ChatController {
         break
       case 'message_updated':
         this.deps.store.replaceMessage(event.message)
+        this.deps.store.refreshQuotes(
+          event.message.room_id,
+          event.message.id,
+          event.message.deleted ? { snippet: '', deleted: true } : { snippet: makeSnippet(event.message.body), deleted: false },
+        )
         break
       case 'message_deleted':
         this.deps.store.markDeleted(event.room_id, event.message_id)
+        this.deps.store.refreshQuotes(event.room_id, event.message_id, { snippet: '', deleted: true })
         break
       case 'error':
         if (event.client_id && this.pendingMeta.has(event.client_id)) {
@@ -437,7 +476,8 @@ export class ChatController {
     const viewing = this.isViewing(message.room_id)
     this.clearTypingEntry(message.room_id, message.sender_id)
     this.deps.store.upsertMessage(message)
-    const known = this.deps.store.bumpRoom(message, !mine && !viewing)
+    const mentionsMe = message.mention_all || message.mentions.some((m) => m.user_id === this.deps.meId)
+    const known = this.deps.store.bumpRoom(message, !mine && !viewing, mentionsMe)
     if (!known) void this.loadRooms()
     if (!mine && viewing) this.markReadIfViewing(message.room_id)
   }
@@ -677,13 +717,16 @@ export class ChatController {
 
   // ---- sửa, xoá, chat mới ----
 
-  async edit(messageId: number, body: string): Promise<void> {
-    this.deps.store.replaceMessage(await this.deps.api.editMessage(messageId, body))
+  async edit(messageId: number, body: string, mentions?: number[]): Promise<void> {
+    const updated = await this.deps.api.editMessage(messageId, body, mentions)
+    this.deps.store.replaceMessage(updated)
+    this.deps.store.refreshQuotes(updated.room_id, updated.id, { snippet: makeSnippet(updated.body), deleted: false })
   }
 
   async remove(roomId: number, messageId: number): Promise<void> {
     await this.deps.api.deleteMessage(messageId)
     this.deps.store.markDeleted(roomId, messageId)
+    this.deps.store.refreshQuotes(roomId, messageId, { snippet: '', deleted: true })
   }
 
   async openDirect(userId: number): Promise<Room> {

@@ -12,6 +12,9 @@ const msg = (id: number, over: Partial<Message> = {}): Message => ({
   created_at: `2026-10-15T09:${String(id % 60).padStart(2, '0')}:00.000Z`,
   edited_at: null,
   deleted: false,
+  reply_to: null,
+  mentions: [],
+  mention_all: false,
   ...over,
 })
 
@@ -30,6 +33,7 @@ const room = (id: number, over: Partial<Room> = {}): Room => ({
   peer_id: null,
   last_message: null,
   unread_count: 0,
+  unread_mentions: 0,
   last_activity: '2026-10-15T08:00:00.000Z',
   my_role: 'member',
   ...over,
@@ -279,5 +283,61 @@ describe('ChatStore members, presence and typing', () => {
     store.removeThreads([1])
     expect(Object.keys(store.getState().members)).toEqual(['2'])
     expect(Object.keys(store.getState().typing)).toEqual(['2'])
+  })
+})
+
+describe('ChatStore replies and mentions', () => {
+  const reply = (id: number) => ({ id, sender_id: 3, sender_name: 'Cy', snippet: 'gốc', deleted: false })
+
+  it('refreshQuotes updates only loaded messages quoting that id, with new snapshots', () => {
+    const store = new ChatStore()
+    store.applyLatest(1, { items: [msg(1), msg(2, { reply_to: reply(1) }), msg(3, { reply_to: reply(9) })], has_more_before: false, has_more_after: false })
+    const before = store.getState().threads[1].items
+    store.refreshQuotes(1, 1, { snippet: 'mới', deleted: false })
+    const after = store.getState().threads[1].items
+    expect(after[1].reply_to).toMatchObject({ id: 1, snippet: 'mới' })
+    expect(after[2]).toBe(before[2])
+    expect(after[1]).not.toBe(before[1])
+    expect(before[1].reply_to?.snippet).toBe('gốc')
+    store.refreshQuotes(1, 1, { snippet: '', deleted: true })
+    expect(store.getState().threads[1].items[1].reply_to).toMatchObject({ snippet: '', deleted: true })
+  })
+
+  it('refreshQuotes is a no-op (no notification) when nothing quotes the id', () => {
+    const store = new ChatStore()
+    store.applyLatest(1, { items: [msg(1)], has_more_before: false, has_more_after: false })
+    const listener = vi.fn()
+    store.subscribe(listener)
+    store.refreshQuotes(1, 5, { deleted: true })
+    store.refreshQuotes(7, 5, { deleted: true })
+    expect(listener).not.toHaveBeenCalled()
+  })
+
+  it('hasLoaded reports only real loaded messages', () => {
+    const store = new ChatStore()
+    store.applyLatest(1, { items: [msg(4)], has_more_before: false, has_more_after: false })
+    expect(store.hasLoaded(1, 4)).toBe(true)
+    expect(store.hasLoaded(1, 5)).toBe(false)
+    expect(store.hasLoaded(2, 4)).toBe(false)
+  })
+
+  it('bumpRoom counts unread_mentions only when asked and unread is counted', () => {
+    const store = new ChatStore()
+    store.setRooms([room(1)])
+    store.bumpRoom(msg(1), true, true)
+    store.bumpRoom(msg(2), true, false)
+    store.bumpRoom(msg(3), false, true)
+    const r = store.getState().rooms[0]
+    expect(r.unread_count).toBe(2)
+    expect(r.unread_mentions).toBe(1)
+  })
+
+  it('clearUnread resets unread_mentions and setRooms does not let a stale snapshot lower it', () => {
+    const store = new ChatStore()
+    store.setRooms([room(1, { last_message: msg(10), unread_count: 3, unread_mentions: 2 })])
+    store.setRooms([room(1, { last_message: msg(8), unread_count: 1, unread_mentions: 0 })])
+    expect(store.getState().rooms[0]).toMatchObject({ unread_count: 3, unread_mentions: 2 })
+    store.clearUnread(1)
+    expect(store.getState().rooms[0]).toMatchObject({ unread_count: 0, unread_mentions: 0 })
   })
 })

@@ -33,6 +33,20 @@ export interface ResetPasswordOut {
   temp_password: string
 }
 
+export interface Reply {
+  id: number
+  sender_id: number
+  sender_name: string
+  /** Rỗng khi tin gốc đã xoá (deleted=true) hoặc chỉ gồm ký tự vô hình (deleted=false). */
+  snippet: string
+  deleted: boolean
+}
+
+export interface Mention {
+  user_id: number
+  full_name: string
+}
+
 export interface Message {
   id: number
   room_id: number
@@ -44,6 +58,9 @@ export interface Message {
   created_at: string
   edited_at: string | null
   deleted: boolean
+  reply_to: Reply | null
+  mentions: Mention[]
+  mention_all: boolean
 }
 
 export interface Room {
@@ -55,6 +72,7 @@ export interface Room {
   peer_id: number | null
   last_message: Message | null
   unread_count: number
+  unread_mentions: number
   last_activity: string
   my_role: 'owner' | 'member' | null
 }

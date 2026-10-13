@@ -14,12 +14,15 @@ const msg = (id: number, over: Partial<Message> = {}): Message => ({
   created_at: `2026-10-15T09:${String(id % 60).padStart(2, '0')}:00.000Z`,
   edited_at: null,
   deleted: false,
+  reply_to: null,
+  mentions: [],
+  mention_all: false,
   ...over,
 })
 const page = (ids: number[], more = false): MessagePage => ({ items: ids.map((i) => msg(i)), has_more_before: more, has_more_after: more })
 const room = (id: number, over: Partial<Room> = {}): Room => ({
   id, type: 'group', name: `P${id}`, branch_id: null, member_count: 3, peer_id: null,
-  last_message: null, unread_count: 0, last_activity: '2026-10-15T08:00:00.000Z', my_role: 'member', ...over,
+  last_message: null, unread_count: 0, unread_mentions: 0, last_activity: '2026-10-15T08:00:00.000Z', my_role: 'member', ...over,
 })
 
 function setup(opts: { visible?: boolean; open?: boolean } = {}) {
@@ -1373,5 +1376,88 @@ describe('ChatController: groups', () => {
     const [a, b] = await Promise.all([controller.createGroup('A', [2]), controller.createGroup('B', [3])])
     expect([a.id, b.id]).toEqual([8, 9])
     expect(api.createGroup).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('ChatController: replies and mentions', () => {
+  const sourceMsg = () => msg(2, { sender_id: 3, sender_name: 'Cy', body: 'dòng 1\ndòng 2' })
+
+  it('sends reply_to_id/mentions/mention_all and builds the optimistic message', async () => {
+    const { controller, socket, store } = setup()
+    await controller.openRoom(1)
+    controller.send(1, 'trả lời @Bob @all', { replyTo: sourceMsg(), mentions: [{ user_id: 2, full_name: 'Bob' }], mentionAll: true })
+    expect(socket.send).toHaveBeenCalledWith({ type: 'send', room_id: 1, body: 'trả lời @Bob @all', client_id: 'cid-1', reply_to_id: 2, mentions: [2], mention_all: true })
+    const p = store.getState().threads[1].items.at(-1)!
+    expect(p.reply_to).toEqual({ id: 2, sender_id: 3, sender_name: 'Cy', snippet: 'dòng 1 dòng 2', deleted: false })
+    expect(p.mentions).toEqual([{ user_id: 2, full_name: 'Bob' }])
+    expect(p.mention_all).toBe(true)
+  })
+
+  it('omits the optional frame keys and uses empty fields when no options are given', async () => {
+    const { controller, socket, store } = setup()
+    await controller.openRoom(1)
+    controller.send(1, 'hi', { mentions: [] })
+    expect(socket.send).toHaveBeenCalledWith({ type: 'send', room_id: 1, body: 'hi', client_id: 'cid-1' })
+    expect(store.getState().threads[1].items.at(-1)).toMatchObject({ reply_to: null, mentions: [], mention_all: false })
+  })
+
+  it('replays the same reply_to_id/mentions/mention_all on resend after ready and on retry', async () => {
+    const { controller, socket, setOpen } = setup({ open: false })
+    await controller.openRoom(1)
+    controller.send(1, 'x @Bob', { replyTo: sourceMsg(), mentions: [{ user_id: 2, full_name: 'Bob' }], mentionAll: true })
+    socket.send.mockClear()
+    setOpen(true)
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    await flush()
+    const frame = { type: 'send', room_id: 1, body: 'x @Bob', client_id: 'cid-1', reply_to_id: 2, mentions: [2], mention_all: true }
+    expect(socket.send).toHaveBeenCalledWith(frame)
+    controller.handleSocketEvent({ type: 'error', code: 'rate_limited', client_id: 'cid-1' })
+    socket.send.mockClear()
+    controller.retry('cid-1')
+    expect(socket.send).toHaveBeenCalledWith(frame)
+  })
+
+  it.each(['invalid_reply', 'rate_limited'])('marks the pending message failed with errorCode %s', async (code) => {
+    const { controller, store } = setup()
+    await controller.openRoom(1)
+    controller.send(1, 'x', { replyTo: sourceMsg() })
+    controller.handleSocketEvent({ type: 'error', code, client_id: 'cid-1' })
+    expect(store.getState().threads[1].items.at(-1)).toMatchObject({ pending: 'failed', errorCode: code })
+  })
+
+  it('refreshes quotes of loaded replies on message_updated and message_deleted of the source', async () => {
+    const { controller, store, api } = setup()
+    const q = { id: 2, sender_id: 3, sender_name: 'Cy', snippet: 'cũ', deleted: false }
+    api.messages.mockResolvedValueOnce({ items: [msg(2), msg(5, { reply_to: q }), msg(6, { reply_to: { ...q, id: 3 } })], has_more_before: false, has_more_after: false })
+    await controller.openRoom(1)
+    controller.handleSocketEvent({ type: 'message_updated', message: msg(2, { body: 'mới\nsửa', edited_at: '2026-10-15T10:00:00.000Z' }) })
+    expect(store.getState().threads[1].items.find((m) => m.id === 5)!.reply_to).toMatchObject({ snippet: 'mới sửa', deleted: false })
+    expect(store.getState().threads[1].items.find((m) => m.id === 6)!.reply_to?.snippet).toBe('cũ')
+    controller.handleSocketEvent({ type: 'message_updated', message: msg(2, { body: '\u200B' }) })
+    expect(store.getState().threads[1].items.find((m) => m.id === 5)!.reply_to).toMatchObject({ snippet: '', deleted: false })
+    controller.handleSocketEvent({ type: 'message_deleted', room_id: 1, message_id: 2 })
+    expect(store.getState().threads[1].items.find((m) => m.id === 5)!.reply_to).toMatchObject({ snippet: '', deleted: true })
+  })
+
+  it('counts unread_mentions for mentions of me and @all by others only when not viewing', async () => {
+    const { controller, store } = setup({ visible: false })
+    await controller.loadRooms()
+    const me = { user_id: 1, full_name: 'Tôi' }
+    controller.handleSocketEvent({ type: 'message', message: msg(10, { mentions: [me] }) })
+    controller.handleSocketEvent({ type: 'message', message: msg(11, { mentions: [{ user_id: 9, full_name: 'X' }] }) })
+    controller.handleSocketEvent({ type: 'message', message: msg(12, { mention_all: true }) })
+    controller.handleSocketEvent({ type: 'message', message: msg(13, { sender_id: 1, mentions: [me], mention_all: true }) })
+    const r = store.getState().rooms.find((x) => x.id === 1)!
+    expect(r.unread_count).toBe(3)
+    expect(r.unread_mentions).toBe(2)
+  })
+
+  it('does not count mentions in the room being viewed', async () => {
+    const { controller, store } = setup()
+    await controller.loadRooms()
+    controller.setActiveRoom(1)
+    await controller.openRoom(1)
+    controller.handleSocketEvent({ type: 'message', message: msg(10, { mention_all: true }) })
+    expect(store.getState().rooms.find((x) => x.id === 1)!.unread_mentions).toBe(0)
   })
 })

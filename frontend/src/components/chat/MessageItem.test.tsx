@@ -7,6 +7,7 @@ import { MessageItem } from './MessageItem'
 const base: ChatMessage = {
   id: 7, room_id: 1, sender_id: 2, sender_name: 'Lê Thu Hà', body: 'xin chào https://example.com',
   kind: 'text', client_id: null, created_at: '2026-10-15T09:05:00.000Z', edited_at: null, deleted: false,
+  reply_to: null, mentions: [], mention_all: false,
 }
 const props = { showSender: true, onRetry: vi.fn(), onEdit: vi.fn().mockResolvedValue(undefined), onDelete: vi.fn().mockResolvedValue(undefined) }
 

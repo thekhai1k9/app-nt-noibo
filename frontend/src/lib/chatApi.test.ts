@@ -84,3 +84,11 @@ describe('chatApi: groups', () => {
     ])
   })
 })
+
+it('sends mentions with an edit only when given', async () => {
+  const { calls } = mockFetch({ 'PATCH /api/messages/9': { json: { id: 9 } } })
+  await chatApi.editMessage(9, 'a', [3, 4])
+  await chatApi.editMessage(9, 'b', [])
+  await chatApi.editMessage(9, 'c')
+  expect(calls.map((c) => c.body)).toEqual([{ body: 'a', mentions: [3, 4] }, { body: 'b', mentions: [] }, { body: 'c' }])
+})

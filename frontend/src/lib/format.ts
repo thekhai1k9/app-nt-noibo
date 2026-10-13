@@ -55,3 +55,15 @@ export function formatDateTime(iso: string): string {
   if (!isValid(d)) return ''
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
+
+export const SNIPPET_MAX = 120
+
+/** Trích dẫn giống máy chủ: Cc/Zl/Zp thành khoảng trắng, bỏ Cf (trừ ZWJ), gộp khoảng trắng, cắt theo ký tự Unicode. Có thể rỗng. */
+export function makeSnippet(body: string): string {
+  const cleaned = body
+    .replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, ' ')
+    .replace(/(?!\u200d)\p{Cf}/gu, '')
+    .replace(/\s+/g, ' ')
+    .replace(/^[ \u200d]+|[ \u200d]+$/g, '')
+  return Array.from(cleaned).slice(0, SNIPPET_MAX).join('').replace(/[ \u200d]+$/, '')
+}

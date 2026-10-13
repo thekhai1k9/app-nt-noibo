@@ -1,4 +1,4 @@
-import type { Message, MessagePage, Room, RoomMember } from './types'
+import type { Message, MessagePage, Reply, Room, RoomMember } from './types'
 import type { SocketStatus } from './ws'
 
 export interface ChatMessage extends Message {
@@ -90,6 +90,7 @@ export class ChatStore {
           last_message: cur.last_message,
           last_activity: cur.last_activity > r.last_activity ? cur.last_activity : r.last_activity,
           unread_count: Math.max(r.unread_count, cur.unread_count),
+          unread_mentions: Math.max(r.unread_mentions, cur.unread_mentions),
         }
       }
       return r
@@ -170,6 +171,30 @@ export class ChatStore {
     this.set({ threads, rooms })
   }
 
+  /** Cập nhật trích dẫn của mọi tin đã tải (và xem trước phòng) đang trả lời `messageId`; không đổi gì thì không phát sự kiện. */
+  refreshQuotes(roomId: number, messageId: number, patch: Partial<Pick<Reply, 'snippet' | 'deleted'>>): void {
+    const apply = <T extends Message>(m: T): T => (m.reply_to?.id === messageId ? { ...m, reply_to: { ...m.reply_to, ...patch } } : m)
+    const thread = this.state.threads[roomId]
+    const items = thread?.items.map(apply)
+    const threadChanged = !!thread && items!.some((m, i) => m !== thread.items[i])
+    const rooms = this.state.rooms.map((r) => {
+      if (r.id !== roomId || !r.last_message) return r
+      const lm = apply(r.last_message)
+      return lm === r.last_message ? r : { ...r, last_message: lm }
+    })
+    const roomsChanged = rooms.some((r, i) => r !== this.state.rooms[i])
+    if (!threadChanged && !roomsChanged) return
+    this.set({
+      ...(threadChanged ? { threads: { ...this.state.threads, [roomId]: { ...thread!, items: items! } } } : {}),
+      ...(roomsChanged ? { rooms } : {}),
+    })
+  }
+
+  /** Tin có nằm trong danh sách đã tải của phòng không (cho phép bấm trích dẫn để cuộn tới). */
+  hasLoaded(roomId: number, messageId: number): boolean {
+    return !!this.state.threads[roomId]?.items.some((m) => !m.pending && m.id === messageId)
+  }
+
   addPending(roomId: number, message: ChatMessage): void {
     this.updateThread(roomId, (t) => ({ ...t, items: [...t.items, message] }))
   }
@@ -198,7 +223,7 @@ export class ChatStore {
   }
 
   /** Cập nhật xem trước/hoạt động/chưa đọc của phòng. Trả false nếu phòng chưa có trong danh sách. */
-  bumpRoom(message: Message, countUnread: boolean): boolean {
+  bumpRoom(message: Message, countUnread: boolean, countMention = false): boolean {
     const room = this.state.rooms.find((r) => r.id === message.room_id)
     if (!room) return false
     const newer = !room.last_message || message.id > room.last_message.id
@@ -207,7 +232,9 @@ export class ChatStore {
       rooms: sortRooms(
         this.state.rooms.map((r) =>
           r.id === room.id
-            ? { ...r, last_message: message, last_activity: message.created_at, unread_count: r.unread_count + (countUnread ? 1 : 0) }
+            ? { ...r, last_message: message, last_activity: message.created_at, unread_count: r.unread_count + (countUnread ? 1 : 0),
+                unread_mentions: r.unread_mentions + (countUnread && countMention ? 1 : 0),
+              }
             : r,
         ),
       ),
@@ -216,7 +243,7 @@ export class ChatStore {
   }
 
   clearUnread(roomId: number): void {
-    this.set({ rooms: this.state.rooms.map((r) => (r.id === roomId && r.unread_count !== 0 ? { ...r, unread_count: 0 } : r)) })
+    this.set({ rooms: this.state.rooms.map((r) => (r.id === roomId && (r.unread_count !== 0 || r.unread_mentions !== 0) ? { ...r, unread_count: 0, unread_mentions: 0 } : r)) })
   }
 
   removeRoom(roomId: number): void {

@@ -32,3 +32,8 @@ it('has distinct Vietnamese messages for the group error codes', () => {
   expect(errorMessage(new ApiError(400, 'cannot_remove_self'))).toBe('Hãy dùng "Rời nhóm" để tự rời.')
   expect(errorMessage(new ApiError(409, 'conflict'))).toBe('Có thay đổi đồng thời. Vui lòng thử lại.')
 })
+
+it('has Vietnamese messages for reply and rate-limit errors', () => {
+  expect(errorMessage(new ApiError(400, 'invalid_reply'))).toBe('Không trả lời được tin này.')
+  expect(errorMessage(new ApiError(429, 'rate_limited'))).toContain('quá nhanh')
+})

@@ -53,7 +53,7 @@ export function renderApp(
 export function makeRoom(overrides: Partial<Room> = {}): Room {
   return {
     id: 1, type: 'group', name: 'Dự án kho', branch_id: null, member_count: 3, peer_id: null,
-    last_message: null, unread_count: 0, last_activity: '2026-10-15T08:00:00.000Z',
+    last_message: null, unread_count: 0, unread_mentions: 0, last_activity: '2026-10-15T08:00:00.000Z',
     my_role: overrides.type === 'direct' ? null : 'member', ...overrides,
   }
 }
@@ -61,6 +61,7 @@ export function makeRoom(overrides: Partial<Room> = {}): Room {
 export function makeMessage(overrides: Partial<Message> = {}): Message {
   return {
     id: 1, room_id: 1, sender_id: 2, sender_name: 'Lê Thu Hà', body: 'xin chào', kind: 'text', client_id: null,
-    created_at: '2026-10-15T09:00:00.000Z', edited_at: null, deleted: false, ...overrides,
+    created_at: '2026-10-15T09:00:00.000Z', edited_at: null, deleted: false,
+    reply_to: null, mentions: [], mention_all: false, ...overrides,
   }
 }
