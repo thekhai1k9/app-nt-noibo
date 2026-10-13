@@ -20,6 +20,7 @@ const CATCH_UP_MAX_PAGES = 20
 const PENDING_READ_TTL_MS = 5 * 60_000
 const TYPING_TTL_MS = 5000
 const TYPING_SEND_INTERVAL_MS = 3000
+const READ_DEBOUNCE_MS = 1000
 
 interface PendingMeta {
   roomId: number
@@ -50,6 +51,9 @@ export class ChatController {
   private presenceAgain = false
   private roomsRun: Promise<void> | null = null
   private roomsAgain = false
+  /** Đánh dấu đã đọc: gửi ngay lần đầu, các lần trong 1 giây sau gộp thành một lần cuối với id mới nhất. */
+  private readonly readTimers = new Map<number, ReturnType<typeof setTimeout>>()
+  private readonly readPending = new Set<number>()
   private presenceSeq = 0
   private readonly presenceLiveAt = new Map<number, number>()
 
@@ -129,6 +133,7 @@ export class ChatController {
       this.pendingReads.delete(id)
       this.membersAgain.delete(id)
       this.lastTypingSent.delete(id)
+      this.dropReadTimer(id)
     }
   }
 
@@ -234,6 +239,7 @@ export class ChatController {
       deleted: false,
       pending: 'sending',
     }
+    this.lastTypingSent.delete(roomId) // vừa gửi tin: lần soạn kế tiếp báo ngay
     this.pendingMeta.set(clientId, { roomId, body })
     this.deps.store.addPending(roomId, message)
     this.transmit(clientId)
@@ -448,8 +454,9 @@ export class ChatController {
     const list = this.deps.store.getState().members[roomId]
     if (list?.some((m) => m.user_id === userId)) {
       this.deps.store.applyRead(roomId, userId, messageId)
-    } else if (this.isKnownRoom(roomId)) {
-      // Danh sách chưa tải, hoặc người này chưa có trong đó (mới vào phòng): đệm mốc và tải lại danh sách.
+    } else if (this.isKnownRoom(roomId) && (list || this.membersInFlight.has(roomId))) {
+      // Người này chưa có trong danh sách (mới vào phòng) hoặc danh sách đang tải: đệm mốc và tải lại danh sách.
+      // Danh sách chưa tải và không có lần tải nào: bỏ qua, lần tải đầu sẽ lấy mốc mới từ REST.
       const pending = this.pendingReads.get(roomId) ?? new Map<number, { id: number; at: number }>()
       pending.set(userId, { id: Math.max(pending.get(userId)?.id ?? 0, messageId), at: this.now() })
       this.pendingReads.set(roomId, pending)
@@ -563,16 +570,21 @@ export class ChatController {
   // ---- đã đọc ----
 
   setActiveRoom(roomId: number | null): void {
+    if (this.activeRoom !== null && this.activeRoom !== roomId) this.flushRead(this.activeRoom)
     this.activeRoom = roomId
   }
 
   /** Rời phòng: chỉ xoá phòng đang xem nếu vẫn là phòng đó (tránh cleanup muộn ghi đè phòng mới). */
   leaveRoom(roomId: number): void {
+    this.flushRead(roomId)
     if (this.activeRoom === roomId) this.activeRoom = null
   }
 
   onVisible(): void {
-    if (this.activeRoom !== null) this.markReadIfViewing(this.activeRoom)
+    if (this.activeRoom !== null) {
+      this.flushRead(this.activeRoom)
+      this.markReadIfViewing(this.activeRoom)
+    }
   }
 
   private isViewing(roomId: number): boolean {
@@ -582,6 +594,15 @@ export class ChatController {
 
   private markReadIfViewing(roomId: number): void {
     if (!this.isViewing(roomId)) return
+    if (this.readTimers.has(roomId)) {
+      this.readPending.add(roomId) // đang trong khoảng gộp: gửi id mới nhất khi hết hạn / rời phòng
+      this.deps.store.clearUnread(roomId)
+      return
+    }
+    this.sendRead(roomId, true)
+  }
+
+  private sendRead(roomId: number, startTimer: boolean): void {
     const last = this.lastRealId(roomId)
     if (last === null || (this.lastMarked.get(roomId) ?? 0) >= last) return
     this.lastMarked.set(roomId, last)
@@ -589,6 +610,29 @@ export class ChatController {
     this.deps.api.markRead(roomId, last).catch(() => {
       this.lastMarked.delete(roomId)
     })
+    if (!startTimer || this.disposed) return
+    this.readTimers.set(
+      roomId,
+      setTimeout(() => {
+        this.readTimers.delete(roomId)
+        if (this.readPending.delete(roomId)) this.sendRead(roomId, true)
+      }, READ_DEBOUNCE_MS),
+    )
+  }
+
+  /** Gửi ngay phần đã gộp (rời phòng, đổi phòng, tab hiện lại). */
+  private flushRead(roomId: number): void {
+    const timer = this.readTimers.get(roomId)
+    if (timer) clearTimeout(timer)
+    this.readTimers.delete(roomId)
+    if (this.readPending.delete(roomId)) this.sendRead(roomId, false)
+  }
+
+  private dropReadTimer(roomId: number): void {
+    const timer = this.readTimers.get(roomId)
+    if (timer) clearTimeout(timer)
+    this.readTimers.delete(roomId)
+    this.readPending.delete(roomId)
   }
 
   // ---- sửa, xoá, chat mới ----
@@ -618,6 +662,9 @@ export class ChatController {
     this.membersInFlight.clear()
     this.pendingReads.clear()
     this.membersAgain.clear()
+    this.readTimers.forEach((timer) => clearTimeout(timer))
+    this.readTimers.clear()
+    this.readPending.clear()
     this.presenceAgain = false
     this.presenceLiveAt.clear()
     this.roomsAgain = false

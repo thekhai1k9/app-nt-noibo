@@ -248,6 +248,7 @@ describe('ChatController: unread counts and read markers', () => {
     controller.setActiveRoom(1)
     await controller.openRoom(1)
     api.markRead.mockClear()
+    vi.advanceTimersByTime(1000) // het khoang gop cua lan danh dau luc mo phong
     controller.handleSocketEvent({ type: 'message', message: msg(10, { room_id: 1 }) })
     expect(store.getState().rooms.find((r) => r.id === 1)!.unread_count).toBe(0)
     expect(api.markRead).toHaveBeenCalledWith(1, 10)
@@ -514,6 +515,7 @@ describe('ChatController: REST reconciliation, buffering, discard', () => {
     await controller.loadRooms()
     controller.setActiveRoom(1)
     await controller.openRoom(1)
+    vi.advanceTimersByTime(1000)
     controller.handleSocketEvent({ type: 'message', message: msg(10) })
     expect(api.markRead).toHaveBeenLastCalledWith(1, 10)
     api.rooms.mockResolvedValueOnce([room(1, { last_message: msg(10), unread_count: 1 }), room(2)])
@@ -1012,5 +1014,67 @@ describe('ChatController: review follow-ups', () => {
     api.rooms.mockResolvedValue([room(1)])
     await controller.loadRooms()
     expect((controller as unknown as { pendingReads: Map<number, unknown> }).pendingReads.has(2)).toBe(false)
+  })
+
+  it('coalesces mark-read calls: 5 messages in 500 ms send one POST with the last id', async () => {
+    const { controller, api } = setup()
+    await controller.loadRooms()
+    controller.setActiveRoom(1)
+    await controller.openRoom(1)
+    vi.advanceTimersByTime(1000)
+    api.markRead.mockClear()
+    for (let i = 10; i < 15; i++) {
+      controller.handleSocketEvent({ type: 'message', message: msg(i) })
+      vi.advanceTimersByTime(100)
+    }
+    expect(api.markRead).toHaveBeenCalledTimes(1) // lan dau gui ngay
+    expect(api.markRead).toHaveBeenLastCalledWith(1, 10)
+    vi.advanceTimersByTime(1000)
+    expect(api.markRead).toHaveBeenCalledTimes(2)
+    expect(api.markRead).toHaveBeenLastCalledWith(1, 14)
+    vi.advanceTimersByTime(5000)
+    expect(api.markRead).toHaveBeenCalledTimes(2)
+  })
+
+  it('leaving the room flushes the coalesced mark-read immediately', async () => {
+    const { controller, api } = setup()
+    await controller.loadRooms()
+    controller.setActiveRoom(1)
+    await controller.openRoom(1)
+    vi.advanceTimersByTime(1000)
+    controller.handleSocketEvent({ type: 'message', message: msg(10) })
+    controller.handleSocketEvent({ type: 'message', message: msg(11) })
+    expect(api.markRead).toHaveBeenLastCalledWith(1, 10)
+    controller.leaveRoom(1)
+    expect(api.markRead).toHaveBeenLastCalledWith(1, 11)
+    vi.advanceTimersByTime(5000)
+    expect(api.markRead.mock.calls.filter((c) => c[1] === 11)).toHaveLength(1)
+  })
+
+  it('dispose clears the mark-read coalescing timer', async () => {
+    const { controller, api } = setup()
+    await controller.loadRooms()
+    controller.setActiveRoom(1)
+    await controller.openRoom(1)
+    controller.dispose()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(api.markRead).toHaveBeenCalled()
+  })
+
+  it('typing is reported again right after sending a message', async () => {
+    const { controller, socket } = setup()
+    controller.sendTyping(1)
+    controller.sendTyping(1)
+    expect(socket.send.mock.calls.filter((c) => c[0].type === 'typing')).toHaveLength(1)
+    controller.send(1, 'xin chào')
+    controller.sendTyping(1)
+    expect(socket.send.mock.calls.filter((c) => c[0].type === 'typing')).toHaveLength(2)
+  })
+
+  it('does not buffer a read for a room whose members were never requested', async () => {
+    const { controller } = setup()
+    await controller.loadRooms()
+    controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 9, message_id: 4 })
+    expect((controller as unknown as { pendingReads: Map<number, unknown> }).pendingReads.has(1)).toBe(false)
   })
 })
