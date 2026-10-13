@@ -26,6 +26,15 @@ export const chatApi = {
   members: (roomId: number) => api<RoomMember[]>(`/rooms/${roomId}/members`),
   presence: () => api<{ online_user_ids: number[] }>('/presence'),
   openDirect: (userId: number) => api<Room>('/rooms/direct', { method: 'POST', json: { user_id: userId } }),
+  createGroup: (name: string, memberIds: number[]) =>
+    api<Room>('/rooms/group', { method: 'POST', json: { name, member_ids: memberIds } }),
+  renameGroup: (roomId: number, name: string) => api<Room>(`/rooms/${roomId}`, { method: 'PATCH', json: { name } }),
+  addMember: (roomId: number, userId: number) =>
+    api<RoomMember[]>(`/rooms/${roomId}/members`, { method: 'POST', json: { user_id: userId } }),
+  removeMember: (roomId: number, userId: number) =>
+    api<RoomMember[]>(`/rooms/${roomId}/members/${userId}`, { method: 'DELETE' }),
+  leaveGroup: (roomId: number) => api(`/rooms/${roomId}/leave`, { method: 'POST' }),
+  dissolveGroup: (roomId: number) => api(`/rooms/${roomId}`, { method: 'DELETE' }),
   editMessage: (messageId: number, body: string) =>
     api<Message>(`/messages/${messageId}`, { method: 'PATCH', json: { body } }),
   deleteMessage: (messageId: number) => api(`/messages/${messageId}`, { method: 'DELETE' }),

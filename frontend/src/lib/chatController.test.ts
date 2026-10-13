@@ -19,7 +19,7 @@ const msg = (id: number, over: Partial<Message> = {}): Message => ({
 const page = (ids: number[], more = false): MessagePage => ({ items: ids.map((i) => msg(i)), has_more_before: more, has_more_after: more })
 const room = (id: number, over: Partial<Room> = {}): Room => ({
   id, type: 'group', name: `P${id}`, branch_id: null, member_count: 3, peer_id: null,
-  last_message: null, unread_count: 0, last_activity: '2026-10-15T08:00:00.000Z', ...over,
+  last_message: null, unread_count: 0, last_activity: '2026-10-15T08:00:00.000Z', my_role: 'member', ...over,
 })
 
 function setup(opts: { visible?: boolean; open?: boolean } = {}) {
@@ -29,6 +29,12 @@ function setup(opts: { visible?: boolean; open?: boolean } = {}) {
     messages: vi.fn().mockResolvedValue(page([1, 2, 3])),
     markRead: vi.fn().mockResolvedValue(undefined),
     openDirect: vi.fn(),
+    createGroup: vi.fn(),
+    renameGroup: vi.fn(),
+    addMember: vi.fn(),
+    removeMember: vi.fn(),
+    leaveGroup: vi.fn().mockResolvedValue(undefined),
+    dissolveGroup: vi.fn().mockResolvedValue(undefined),
     editMessage: vi.fn(),
     deleteMessage: vi.fn().mockResolvedValue(undefined),
     directory: vi.fn(),
@@ -36,8 +42,8 @@ function setup(opts: { visible?: boolean; open?: boolean } = {}) {
     members: vi.fn((roomId: number) => {
       if (!(roomId >= 1)) return Promise.reject(new Error('bad room id'))
       return Promise.resolve([
-        { user_id: 1, full_name: 'Tôi', last_read_message_id: null as number | null },
-        { user_id: 2, full_name: 'Bob', last_read_message_id: null as number | null },
+        { user_id: 1, full_name: 'Tôi', last_read_message_id: null as number | null, role: 'member' as 'member' | 'owner' },
+        { user_id: 2, full_name: 'Bob', last_read_message_id: null as number | null, role: 'member' as 'member' | 'owner' },
       ])
     }),
     presence: vi.fn().mockResolvedValue({ online_user_ids: [] as number[] }),
@@ -257,7 +263,7 @@ describe('ChatController: unread counts and read markers', () => {
   it('counts as unread when the room is open but the tab is hidden, then marks read when it becomes visible', async () => {
     let visible = false
     const store = new ChatStore()
-    const api = { rooms: vi.fn().mockResolvedValue([room(1)]), messages: vi.fn().mockResolvedValue(page([1])), markRead: vi.fn().mockResolvedValue(undefined), openDirect: vi.fn(), editMessage: vi.fn(), deleteMessage: vi.fn(), directory: vi.fn(), members: vi.fn().mockResolvedValue([]), presence: vi.fn().mockResolvedValue({ online_user_ids: [] }) }
+    const api = { rooms: vi.fn().mockResolvedValue([room(1)]), messages: vi.fn().mockResolvedValue(page([1])), markRead: vi.fn().mockResolvedValue(undefined), openDirect: vi.fn(), createGroup: vi.fn(), renameGroup: vi.fn(), addMember: vi.fn(), removeMember: vi.fn(), leaveGroup: vi.fn(), dissolveGroup: vi.fn(), editMessage: vi.fn(), deleteMessage: vi.fn(), directory: vi.fn(), members: vi.fn().mockResolvedValue([]), presence: vi.fn().mockResolvedValue({ online_user_ids: [] }) }
     const controller = new ChatController({ store, api, socket: { send: vi.fn(() => true) }, meId: 1, meName: 'Tôi', isVisible: () => visible })
     await controller.loadRooms()
     controller.setActiveRoom(1)
@@ -739,13 +745,13 @@ describe('ChatController: read receipts, typing, presence', () => {
   it('a read event that lands while members are loading is applied on top of the stale snapshot', async () => {
     const { controller, store, api } = setup()
     await controller.loadRooms()
-    let resolve: (m: { user_id: number; full_name: string; last_read_message_id: number | null }[]) => void = () => {}
+    let resolve: (m: { user_id: number; full_name: string; last_read_message_id: number | null; role: 'member' | 'owner' }[]) => void = () => {}
     api.members.mockImplementationOnce(() => new Promise((r) => { resolve = r }))
     // the re-run scheduled by the in-flight read sees the server's up-to-date marker
-    api.members.mockResolvedValue([{ user_id: 2, full_name: 'Bob', last_read_message_id: 8 }])
+    api.members.mockResolvedValue([{ user_id: 2, full_name: 'Bob', last_read_message_id: 8, role: 'member' as const }])
     const p = controller.loadMembers(1)
     controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 2, message_id: 8 })
-    resolve([{ user_id: 2, full_name: 'Bob', last_read_message_id: 3 }])
+    resolve([{ user_id: 2, full_name: 'Bob', last_read_message_id: 3, role: 'member' as const }])
     await p
     expect(store.getState().members[1][0].last_read_message_id).toBe(8)
   })
@@ -848,13 +854,13 @@ describe('ChatController: read receipts, typing, presence', () => {
 })
 
 describe('ChatController: review follow-ups', () => {
-  type Mem = { user_id: number; full_name: string; last_read_message_id: number | null }
+  type Mem = { user_id: number; full_name: string; last_read_message_id: number | null; role: 'member' }
   const deferred = () => {
     let resolve: (m: Mem[]) => void = () => {}
     const promise = new Promise<Mem[]>((r) => { resolve = r })
     return { promise, resolve }
   }
-  const m = (user_id: number, last: number | null = null): Mem => ({ user_id, full_name: `U${user_id}`, last_read_message_id: last })
+  const m = (user_id: number, last: number | null = null): Mem => ({ user_id, full_name: `U${user_id}`, last_read_message_id: last, role: 'member' })
 
   it('a loadMembers call during an in-flight load re-runs exactly once, so a member added meanwhile is not lost', async () => {
     const { controller, store, api } = setup()
@@ -949,8 +955,8 @@ describe('ChatController: review follow-ups', () => {
       await controller.loadMembers(1) // still no user 9
       expect(buffered(controller).has(1)).toBe(!expire)
       api.members.mockResolvedValue([
-        { user_id: 1, full_name: 'Tôi', last_read_message_id: null },
-        { user_id: 9, full_name: 'Newcomer', last_read_message_id: null },
+        { user_id: 1, full_name: 'Tôi', last_read_message_id: null, role: 'member' as 'member' | 'owner' },
+        { user_id: 9, full_name: 'Newcomer', last_read_message_id: null, role: 'member' as 'member' | 'owner' },
       ])
       await controller.loadMembers(1)
       expect(store.getState().members[1].find((x) => x.user_id === 9)?.last_read_message_id).toBe(expire ? null : 4)
@@ -994,13 +1000,13 @@ describe('ChatController: review follow-ups', () => {
   it('a read that lands while the first members load is in flight is re-run and applied', async () => {
     const { controller, store, api } = setup()
     await controller.loadRooms()
-    let release!: (v: { user_id: number; full_name: string; last_read_message_id: number | null }[]) => void
+    let release!: (v: { user_id: number; full_name: string; last_read_message_id: number | null; role: 'member' | 'owner' }[]) => void
     api.members.mockImplementationOnce(() => new Promise((r) => (release = r)))
     void controller.loadMembers(1)
     controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 2, message_id: 3 })
     release([
-      { user_id: 1, full_name: 'Tôi', last_read_message_id: null },
-      { user_id: 2, full_name: 'Bob', last_read_message_id: null },
+      { user_id: 1, full_name: 'Tôi', last_read_message_id: null, role: 'member' as 'member' | 'owner' },
+      { user_id: 2, full_name: 'Bob', last_read_message_id: null, role: 'member' as 'member' | 'owner' },
     ])
     await flush()
     expect(api.members.mock.calls.length).toBeGreaterThanOrEqual(2)
@@ -1081,7 +1087,7 @@ describe('ChatController: review follow-ups', () => {
   function hiddenSetup() {
     let visible = true
     const store = new ChatStore()
-    const api = { rooms: vi.fn().mockResolvedValue([room(1)]), messages: vi.fn().mockResolvedValue(page([1, 2, 3])), markRead: vi.fn().mockResolvedValue(undefined), openDirect: vi.fn(), editMessage: vi.fn(), deleteMessage: vi.fn(), directory: vi.fn(), members: vi.fn().mockResolvedValue([]), presence: vi.fn().mockResolvedValue({ online_user_ids: [] }) }
+    const api = { rooms: vi.fn().mockResolvedValue([room(1)]), messages: vi.fn().mockResolvedValue(page([1, 2, 3])), markRead: vi.fn().mockResolvedValue(undefined), openDirect: vi.fn(), createGroup: vi.fn(), renameGroup: vi.fn(), addMember: vi.fn(), removeMember: vi.fn(), leaveGroup: vi.fn(), dissolveGroup: vi.fn(), editMessage: vi.fn(), deleteMessage: vi.fn(), directory: vi.fn(), members: vi.fn().mockResolvedValue([]), presence: vi.fn().mockResolvedValue({ online_user_ids: [] }) }
     const controller = new ChatController({ store, api, socket: { send: vi.fn(() => true) }, meId: 1, meName: 'Tôi', isVisible: () => visible })
     return { store, api, controller, setVisible: (v: boolean) => { visible = v } }
   }
@@ -1142,5 +1148,99 @@ describe('ChatController: review follow-ups', () => {
       await flush()
       expect(api.markRead.mock.calls).toEqual(visibleAtDispose ? [[1, 10], [1, 11]] : [[1, 10]])
     }
+  })
+})
+
+describe('ChatController: groups', () => {
+  const owner = (id: number) => room(id, { my_role: 'owner' })
+
+  it('createGroup upserts the room from the response and returns it', async () => {
+    const { controller, api, store } = setup()
+    api.createGroup.mockResolvedValueOnce(owner(9))
+    api.rooms.mockResolvedValue([room(1), owner(9)]) // the server list includes the new room
+    const created = await controller.createGroup('Kho', [2, 3])
+    expect(api.createGroup).toHaveBeenCalledWith('Kho', [2, 3])
+    expect(created.id).toBe(9)
+    expect(store.getState().rooms.find((r) => r.id === 9)?.my_role).toBe('owner')
+  })
+
+  it('does not touch the store when the API fails, and rethrows', async () => {
+    const { controller, api, store } = setup()
+    await controller.loadRooms()
+    const before = store.getState().rooms
+    api.createGroup.mockRejectedValueOnce(new Error('too_many_groups'))
+    await expect(controller.createGroup('Kho', [])).rejects.toThrow('too_many_groups')
+    expect(store.getState().rooms).toBe(before)
+  })
+
+  it('shares one request between duplicate calls while it is running', async () => {
+    const { controller, api } = setup()
+    let resolve!: (r: Room) => void
+    api.createGroup.mockImplementationOnce(() => new Promise<Room>((r) => (resolve = r)))
+    const a = controller.createGroup('Kho', [2])
+    const b = controller.createGroup('Kho', [2])
+    resolve(owner(9))
+    expect((await a).id).toBe(9)
+    expect((await b).id).toBe(9)
+    expect(api.createGroup).toHaveBeenCalledTimes(1)
+  })
+
+  it('renameGroup upserts the returned room', async () => {
+    const { controller, api, store } = setup()
+    await controller.loadRooms()
+    api.renameGroup.mockResolvedValueOnce(room(1, { name: 'Tên mới' }))
+    await controller.renameGroup(1, 'Tên mới')
+    expect(store.getState().rooms.find((r) => r.id === 1)?.name).toBe('Tên mới')
+  })
+
+  it('addMember and removeMember store the returned member list', async () => {
+    const { controller, api, store } = setup()
+    await controller.loadRooms()
+    api.addMember.mockResolvedValueOnce([
+      { user_id: 1, full_name: 'Tôi', last_read_message_id: null, role: 'owner' },
+      { user_id: 5, full_name: 'Hà', last_read_message_id: null, role: 'member' },
+    ])
+    await controller.addMember(1, 5)
+    expect(api.addMember).toHaveBeenCalledWith(1, 5)
+    expect(store.getState().members[1].map((m) => m.user_id)).toEqual([1, 5])
+    api.removeMember.mockResolvedValueOnce([{ user_id: 1, full_name: 'Tôi', last_read_message_id: null, role: 'owner' }])
+    await controller.removeMember(1, 5)
+    expect(store.getState().members[1].map((m) => m.user_id)).toEqual([1])
+  })
+
+  it('removeMember failure leaves members untouched', async () => {
+    const { controller, api, store } = setup()
+    await controller.openRoom(1)
+    const before = store.getState().members[1]
+    api.removeMember.mockRejectedValueOnce(new Error('forbidden'))
+    await expect(controller.removeMember(1, 2)).rejects.toThrow('forbidden')
+    expect(store.getState().members[1]).toBe(before)
+  })
+
+  it.each(['leaveGroup', 'dissolveGroup'] as const)('%s reloads rooms and prunes the thread, members and typing of that room', async (method) => {
+    const { controller, api, store } = setup()
+    await controller.loadRooms()
+    await controller.openRoom(1)
+    controller.handleSocketEvent({ type: 'typing', room_id: 1, user_id: 2, user_name: 'Bob' })
+    controller.setActiveRoom(1)
+    api.rooms.mockResolvedValue([room(2)])
+    await controller[method](1)
+    expect(api[method]).toHaveBeenCalledWith(1)
+    const s = store.getState()
+    expect(s.rooms.map((r) => r.id)).toEqual([2])
+    expect(s.threads[1]).toBeUndefined()
+    expect(s.members[1]).toBeUndefined()
+    expect(s.typing[1]).toBeUndefined()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('leaveGroup failure keeps the room and thread', async () => {
+    const { controller, api, store } = setup()
+    await controller.loadRooms()
+    await controller.openRoom(1)
+    api.leaveGroup.mockRejectedValueOnce(new Error('forbidden'))
+    await expect(controller.leaveGroup(1)).rejects.toThrow('forbidden')
+    expect(store.getState().rooms.map((r) => r.id).sort()).toEqual([1, 2])
+    expect(store.getState().threads[1]).toBeDefined()
   })
 })

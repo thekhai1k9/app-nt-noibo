@@ -53,7 +53,8 @@ export function renderApp(
 export function makeRoom(overrides: Partial<Room> = {}): Room {
   return {
     id: 1, type: 'group', name: 'Dự án kho', branch_id: null, member_count: 3, peer_id: null,
-    last_message: null, unread_count: 0, last_activity: '2026-10-15T08:00:00.000Z', ...overrides,
+    last_message: null, unread_count: 0, last_activity: '2026-10-15T08:00:00.000Z',
+    my_role: overrides.type === 'direct' ? null : 'member', ...overrides,
   }
 }
 

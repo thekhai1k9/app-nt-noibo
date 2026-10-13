@@ -31,6 +31,7 @@ const room = (id: number, over: Partial<Room> = {}): Room => ({
   last_message: null,
   unread_count: 0,
   last_activity: '2026-10-15T08:00:00.000Z',
+  my_role: 'member',
   ...over,
 })
 
@@ -218,7 +219,7 @@ describe('ChatStore rooms', () => {
 })
 
 describe('ChatStore members, presence and typing', () => {
-  const mem = (user_id: number, last: number | null) => ({ user_id, full_name: `U${user_id}`, last_read_message_id: last })
+  const mem = (user_id: number, last: number | null) => ({ user_id, full_name: `U${user_id}`, last_read_message_id: last, role: 'member' as const })
 
   it('applyRead only increases and is ignored before members load or for unknown users', () => {
     const store = new ChatStore()

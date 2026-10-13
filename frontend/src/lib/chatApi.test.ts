@@ -57,3 +57,30 @@ describe('chatApi', () => {
     expect(calls.map((c) => c.path)).toEqual(['/api/users/directory?q=ha%20le%20%26%20co', '/api/users/directory'])
   })
 })
+
+describe('chatApi: groups', () => {
+  it('uses the exact paths, methods and bodies for the six group calls', async () => {
+    const { calls } = mockFetch({
+      'POST /api/rooms/group': { status: 201, json: { id: 7 } },
+      'PATCH /api/rooms/7': { json: { id: 7 } },
+      'POST /api/rooms/7/members': { json: [] },
+      'DELETE /api/rooms/7/members/9': { json: [] },
+      'POST /api/rooms/7/leave': { status: 204 },
+      'DELETE /api/rooms/7': { status: 204 },
+    })
+    await chatApi.createGroup('Kho', [2, 3])
+    await chatApi.renameGroup(7, 'Kho mới')
+    await chatApi.addMember(7, 9)
+    await chatApi.removeMember(7, 9)
+    await chatApi.leaveGroup(7)
+    await chatApi.dissolveGroup(7)
+    expect(calls.map((c) => [c.method, c.path, c.body])).toEqual([
+      ['POST', '/api/rooms/group', { name: 'Kho', member_ids: [2, 3] }],
+      ['PATCH', '/api/rooms/7', { name: 'Kho mới' }],
+      ['POST', '/api/rooms/7/members', { user_id: 9 }],
+      ['DELETE', '/api/rooms/7/members/9', undefined],
+      ['POST', '/api/rooms/7/leave', undefined],
+      ['DELETE', '/api/rooms/7', undefined],
+    ])
+  })
+})

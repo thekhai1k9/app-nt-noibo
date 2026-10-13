@@ -31,6 +31,10 @@ const MESSAGES: Record<string, string> = {
   cannot_chat_with_self: 'Bạn không thể nhắn tin cho chính mình.',
   invalid_cursor: 'Yêu cầu tải tin nhắn không hợp lệ.',
   member_not_found: 'Người này không ở trong nhóm.',
+  too_many_groups: 'Bạn đang quản lý quá nhiều nhóm. Hãy giải tán bớt.',
+  group_full: 'Nhóm đã đủ số thành viên tối đa.',
+  cannot_remove_self: 'Hãy dùng "Rời nhóm" để tự rời.',
+  conflict: 'Có thay đổi đồng thời. Vui lòng thử lại.',
   network_error: 'Không kết nối được máy chủ.',
   unknown_error: 'Có lỗi xảy ra. Vui lòng thử lại.',
 }

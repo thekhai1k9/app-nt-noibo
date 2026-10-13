@@ -1,6 +1,6 @@
 import type { ChatApi } from './chatApi'
 import { EMPTY_THREAD, type ChatMessage, type ChatStore } from './chatStore'
-import type { Message, Room, ServerEvent } from './types'
+import type { Message, Room, RoomMember, ServerEvent } from './types'
 
 export interface ChatControllerDeps {
   store: ChatStore
@@ -47,6 +47,7 @@ export class ChatController {
   /** Sự kiện read đến khi danh sách thành viên chưa tải: áp lại sau khi tải để bản REST cũ không làm lùi mốc. */
   private readonly pendingReads = new Map<number, Map<number, { id: number; at: number }>>()
   private readonly membersAgain = new Set<number>()
+  private readonly groupOps = new Map<string, Promise<unknown>>()
   private presenceRun: Promise<void> | null = null
   private presenceAgain = false
   private roomsRun: Promise<void> | null = null
@@ -663,6 +664,81 @@ export class ChatController {
     void this.loadRooms()
     this.deps.store.upsertRoom(room)
     return room
+  }
+
+  // ---- nhóm ----
+
+  /** Mỗi thao tác nhóm chỉ chạy một lần cùng lúc theo khoá; gọi trùng nhận lại cùng một kết quả. */
+  private groupOp<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const existing = this.groupOps.get(key)
+    if (existing) return existing as Promise<T>
+    const p = run().finally(() => {
+      if (this.groupOps.get(key) === p) this.groupOps.delete(key)
+    })
+    this.groupOps.set(key, p)
+    return p
+  }
+
+  createGroup(name: string, memberIds: number[]): Promise<Room> {
+    return this.groupOp('create', async () => {
+      const room = await this.deps.api.createGroup(name, memberIds)
+      // Bản chụp /rooms cũ đang bay (không có phòng này) sẽ bị bỏ; tải lại để có bản mới.
+      void this.loadRooms()
+      this.deps.store.upsertRoom(room)
+      return room
+    })
+  }
+
+  renameGroup(roomId: number, name: string): Promise<Room> {
+    return this.groupOp(`rename:${roomId}`, async () => {
+      const room = await this.deps.api.renameGroup(roomId, name)
+      this.deps.store.upsertRoom(room)
+      return room
+    })
+  }
+
+  addMember(roomId: number, userId: number): Promise<void> {
+    return this.groupOp(`add:${roomId}:${userId}`, async () => {
+      this.applyMemberList(roomId, await this.deps.api.addMember(roomId, userId))
+      void this.loadRooms() // member_count đổi
+    })
+  }
+
+  removeMember(roomId: number, userId: number): Promise<void> {
+    return this.groupOp(`remove:${roomId}:${userId}`, async () => {
+      this.applyMemberList(roomId, await this.deps.api.removeMember(roomId, userId))
+      this.pendingReads.get(roomId)?.delete(userId)
+      this.clearTypingEntry(roomId, userId)
+      void this.loadRooms()
+    })
+  }
+
+  /** Danh sách thành viên từ phản hồi ghi; một lần tải cũ đang bay sẽ chạy lại để không ghi đè bằng bản cũ. */
+  private applyMemberList(roomId: number, list: RoomMember[]): void {
+    if (this.disposed) return
+    this.deps.store.setMembers(roomId, list)
+    if (this.membersInFlight.has(roomId)) this.membersAgain.add(roomId)
+  }
+
+  leaveGroup(roomId: number): Promise<void> {
+    return this.groupOp(`leave:${roomId}`, async () => {
+      await this.deps.api.leaveGroup(roomId)
+      await this.afterRoomGone(roomId)
+    })
+  }
+
+  dissolveGroup(roomId: number): Promise<void> {
+    return this.groupOp(`dissolve:${roomId}`, async () => {
+      await this.deps.api.dissolveGroup(roomId)
+      await this.afterRoomGone(roomId)
+    })
+  }
+
+  /** Phòng không còn với mình: thôi coi là phòng đang xem để lần tải danh sách dọn thread/thành viên/đệm qua prune. */
+  private async afterRoomGone(roomId: number): Promise<void> {
+    this.dropReadTimer(roomId) // đã rời: không đánh dấu đã đọc một phòng không còn là của mình
+    if (this.activeRoom === roomId) this.activeRoom = null
+    await this.loadRooms()
   }
 
   dispose(): void {

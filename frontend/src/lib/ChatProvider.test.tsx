@@ -7,7 +7,7 @@ import type { Room } from './types'
 
 const room: Room = {
   id: 1, type: 'group', name: 'P', branch_id: null, member_count: 3, peer_id: null,
-  last_message: null, unread_count: 0, last_activity: '2026-10-15T08:00:00.000Z',
+  last_message: null, unread_count: 0, last_activity: '2026-10-15T08:00:00.000Z', my_role: 'member',
 }
 
 function Probe() {
@@ -37,7 +37,7 @@ describe('chat hooks', () => {
     expect(screen.getByTestId('members').textContent).toBe('')
     expect(screen.getByTestId('online').textContent).toBe('false')
     act(() => {
-      store.setMembers(1, [{ user_id: 2, full_name: 'Bob', last_read_message_id: 4 }])
+      store.setMembers(1, [{ user_id: 2, full_name: 'Bob', last_read_message_id: 4, role: 'member' }])
       store.setPresence(2, true)
       store.setTyping(1, 2, 'Bob', Date.now() + 5000)
       store.setTyping(1, 1, 'Tôi', Date.now() + 5000)

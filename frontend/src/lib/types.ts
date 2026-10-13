@@ -56,12 +56,14 @@ export interface Room {
   last_message: Message | null
   unread_count: number
   last_activity: string
+  my_role: 'owner' | 'member' | null
 }
 
 export interface RoomMember {
   user_id: number
   full_name: string
   last_read_message_id: number | null
+  role: 'owner' | 'member'
 }
 
 export interface MessagePage {

@@ -213,3 +213,8 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
 .seen-row { align-self: flex-end; padding: 0 4px; }
 .seen-label { font-size: 12px; color: var(--muted); }
 .typing-indicator { padding: 0 20px 4px; font-size: 13px; color: var(--muted); min-height: 20px; }
+
+.chip { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px 0 12px; min-height: 44px; border-radius: 22px; background: #eef2ff; font-size: 14px; }
+.chip-remove { min-width: 44px; min-height: 44px; border: 0; background: transparent; font-size: 18px; cursor: pointer; border-radius: 22px; }
+.pick-row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 8px; cursor: pointer; border-radius: 8px; }
+.pick-row input { width: 20px; height: 20px; flex: none; }

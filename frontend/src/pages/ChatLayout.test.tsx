@@ -457,3 +457,128 @@ describe('realtime status UI', () => {
     expect(ws.sentJson.filter((m) => m.type === 'typing')).toEqual([{ type: 'typing', room_id: 1 }])
   })
 })
+
+describe('new chat dialog: group tab', () => {
+  const people = [
+    { id: 3, username: 'huy', full_name: 'Trần Quốc Huy', branch_id: 2, branch_name: 'TP.HCM' },
+    { id: 4, username: 'an', full_name: 'Vũ Minh An', branch_id: 1, branch_name: 'Hà Nội' },
+  ]
+  const directory = (req: { path: string }) => ({
+    json: req.path.includes('q=an') ? [people[1]] : people,
+  })
+
+  async function openGroupTab() {
+    await userEvent.click(await screen.findByRole('button', { name: 'Cuộc trò chuyện mới' }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('tab', { name: 'Tạo nhóm' }))
+    return dialog
+  }
+
+  it('has two tabs and switching keeps the typed group name and selection', async () => {
+    mockFetch(routes({ 'GET /api/users/directory': directory }))
+    renderApp('/')
+    const dialog = await openGroupTab()
+    expect(within(dialog).getByRole('tab', { name: 'Tạo nhóm' })).toHaveAttribute('aria-selected', 'true')
+    await userEvent.type(within(dialog).getByLabelText('Tên nhóm'), 'Kho')
+    await userEvent.click(await within(dialog).findByRole('checkbox', { name: /Trần Quốc Huy/ }))
+    await userEvent.click(within(dialog).getByRole('tab', { name: 'Nhắn riêng' }))
+    expect(within(dialog).getByLabelText('Tìm người')).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('tab', { name: 'Tạo nhóm' }))
+    expect(within(dialog).getByLabelText('Tên nhóm')).toHaveValue('Kho')
+    expect(within(dialog).getByRole('button', { name: 'Bỏ Trần Quốc Huy' })).toBeInTheDocument()
+  })
+
+  it('keeps the selection across searches, lets chips deselect, and creates with the exact payload', async () => {
+    const { calls } = mockFetch(
+      routes({
+        'GET /api/users/directory': directory,
+        'POST /api/rooms/group': { status: 201, json: makeRoom({ id: 2, name: 'Kho', my_role: 'owner' }) },
+        'GET /api/rooms/2/messages': { json: { items: [], has_more_before: false, has_more_after: false } },
+        'GET /api/rooms/2/members': { json: [] },
+      }),
+    )
+    renderApp('/')
+    const dialog = await openGroupTab()
+    await userEvent.type(within(dialog).getByLabelText('Tên nhóm'), '  Kho  ')
+    await userEvent.click(await within(dialog).findByRole('checkbox', { name: /Trần Quốc Huy/ }))
+    await userEvent.type(within(dialog).getByLabelText('Tìm người để thêm'), 'an')
+    await waitFor(() => expect(within(dialog).queryByRole('checkbox', { name: /Trần Quốc Huy/ })).not.toBeInTheDocument())
+    await userEvent.click(await within(dialog).findByRole('checkbox', { name: /Vũ Minh An/ }))
+    expect(within(dialog).getByRole('button', { name: 'Bỏ Trần Quốc Huy' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Bỏ Vũ Minh An' })).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Bỏ Vũ Minh An' }))
+    expect(within(dialog).queryByRole('button', { name: 'Bỏ Vũ Minh An' })).not.toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Tạo nhóm' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(calls.find((c) => c.path === '/api/rooms/group')?.body).toEqual({ name: 'Kho', member_ids: [3] })
+    expect(await screen.findByText('Chưa có tin nhắn. Hãy gửi lời chào!')).toBeInTheDocument()
+  })
+
+  it('disables creation for an empty or blank name, but allows zero other members', async () => {
+    const { calls } = mockFetch(
+      routes({
+        'GET /api/users/directory': directory,
+        'POST /api/rooms/group': { status: 201, json: makeRoom({ id: 2, name: 'Solo', my_role: 'owner' }) },
+        'GET /api/rooms/2/messages': { json: { items: [], has_more_before: false, has_more_after: false } },
+        'GET /api/rooms/2/members': { json: [] },
+      }),
+    )
+    renderApp('/')
+    const dialog = await openGroupTab()
+    const create = within(dialog).getByRole('button', { name: 'Tạo nhóm' })
+    expect(create).toBeDisabled()
+    await userEvent.type(within(dialog).getByLabelText('Tên nhóm'), '   ')
+    expect(create).toBeDisabled()
+    await userEvent.type(within(dialog).getByLabelText('Tên nhóm'), 'Solo')
+    expect(create).toBeEnabled()
+    await userEvent.click(create)
+    await waitFor(() => expect(calls.find((c) => c.path === '/api/rooms/group')?.body).toEqual({ name: 'Solo', member_ids: [] }))
+  })
+
+  it('shows the Vietnamese too_many_groups error and stays open', async () => {
+    mockFetch(
+      routes({
+        'GET /api/users/directory': directory,
+        'POST /api/rooms/group': { status: 409, json: { detail: 'too_many_groups' } },
+      }),
+    )
+    renderApp('/')
+    const dialog = await openGroupTab()
+    await userEvent.type(within(dialog).getByLabelText('Tên nhóm'), 'Kho')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Tạo nhóm' }))
+    expect(await within(dialog).findByText('Bạn đang quản lý quá nhiều nhóm. Hãy giải tán bớt.')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Tạo nhóm' })).toBeEnabled()
+  })
+
+  it('ignores Escape, Đóng and backdrop while creating, and blocks double submit', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    const { fn, calls } = mockFetch(
+      routes({
+        'GET /api/users/directory': directory,
+        'POST /api/rooms/group': { status: 201, json: makeRoom({ id: 2, name: 'Kho', my_role: 'owner' }) },
+        'GET /api/rooms/2/messages': { json: { items: [], has_more_before: false, has_more_after: false } },
+        'GET /api/rooms/2/members': { json: [] },
+      }),
+    )
+    const original = fn.getMockImplementation()!
+    fn.mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/rooms/group')) await gate
+      return original(input, init)
+    })
+    renderApp('/')
+    const trigger = await screen.findByRole('button', { name: 'Cuộc trò chuyện mới' })
+    const dialog = await openGroupTab()
+    await userEvent.type(within(dialog).getByLabelText('Tên nhóm'), 'Kho')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Tạo nhóm' }))
+    expect(within(dialog).getByRole('button', { name: /Đang tạo/ })).toBeDisabled()
+    await userEvent.keyboard('{Escape}')
+    await userEvent.click(document.querySelector('.dialog-backdrop') as HTMLElement)
+    expect(within(dialog).getByRole('button', { name: 'Đóng' })).toBeDisabled()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    release()
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(calls.filter((c) => c.path === '/api/rooms/group')).toHaveLength(1)
+    expect(trigger).toHaveFocus()
+  })
+})

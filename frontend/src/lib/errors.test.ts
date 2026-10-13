@@ -25,3 +25,10 @@ it('has Vietnamese messages for the chat error codes', () => {
     expect(errorMessage(new ApiError(400, code)), code).not.toBe('Có lỗi xảy ra. Vui lòng thử lại.')
   }
 })
+
+it('has distinct Vietnamese messages for the group error codes', () => {
+  expect(errorMessage(new ApiError(409, 'too_many_groups'))).toBe('Bạn đang quản lý quá nhiều nhóm. Hãy giải tán bớt.')
+  expect(errorMessage(new ApiError(409, 'group_full'))).toBe('Nhóm đã đủ số thành viên tối đa.')
+  expect(errorMessage(new ApiError(400, 'cannot_remove_self'))).toBe('Hãy dùng "Rời nhóm" để tự rời.')
+  expect(errorMessage(new ApiError(409, 'conflict'))).toBe('Có thay đổi đồng thời. Vui lòng thử lại.')
+})
