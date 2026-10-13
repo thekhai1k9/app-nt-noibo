@@ -80,7 +80,14 @@ export function RoomSidebar() {
               </span>
               <span className="row" style={{ justifyContent: 'space-between', flexWrap: 'nowrap' }}>
                 <span className="muted ellipsis" style={{ fontSize: 13 }}>{preview(room)}</span>
-                {room.unread_count > 0 && <span className="unread-badge">{room.unread_count}</span>}
+                {(room.unread_count > 0 || room.unread_mentions > 0) && (
+                  <span className="room-badges">
+                    {room.unread_mentions > 0 && (
+                      <span className="unread-badge mention-badge" role="img" aria-label={`${room.unread_mentions} lần được nhắc`}>@</span>
+                    )}
+                    {room.unread_count > 0 && <span className="unread-badge">{room.unread_count}</span>}
+                  </span>
+                )}
               </span>
             </span>
           </NavLink>

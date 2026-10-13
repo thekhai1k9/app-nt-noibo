@@ -146,4 +146,65 @@ describe('MessageItem', () => {
     expect(onEdit).not.toHaveBeenCalled()
     expect(screen.queryByLabelText('Sửa nội dung tin nhắn')).not.toBeInTheDocument()
   })
+  describe('replies and mentions', () => {
+    const quote = { id: 3, sender_id: 1, sender_name: 'Tôi', snippet: 'gốc', deleted: false }
+
+    it('offers Trả lời for settled messages only', async () => {
+      const onReply = vi.fn()
+      const { rerender } = render(<MessageItem {...props} onReply={onReply} message={base} mine={false} />)
+      await userEvent.click(screen.getByRole('button', { name: 'Trả lời' }))
+      expect(onReply).toHaveBeenCalledWith(base)
+      rerender(<MessageItem {...props} onReply={onReply} message={{ ...base, deleted: true }} mine={false} />)
+      expect(screen.queryByRole('button', { name: 'Trả lời' })).not.toBeInTheDocument()
+      rerender(<MessageItem {...props} onReply={onReply} message={{ ...base, pending: 'sending' }} mine />)
+      expect(screen.queryByRole('button', { name: 'Trả lời' })).not.toBeInTheDocument()
+      rerender(<MessageItem {...props} onReply={onReply} message={{ ...base, pending: 'failed' }} mine />)
+      expect(screen.queryByRole('button', { name: 'Trả lời' })).not.toBeInTheDocument()
+    })
+
+    it('renders the quote, a jump button only when the source is loaded', async () => {
+      const onJump = vi.fn()
+      const { rerender } = render(<MessageItem {...props} message={{ ...base, reply_to: quote }} mine={false} />)
+      expect(screen.getByText('gốc')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Đến tin được trả lời' })).not.toBeInTheDocument()
+      rerender(<MessageItem {...props} onJumpToReply={onJump} message={{ ...base, reply_to: quote }} mine={false} />)
+      await userEvent.click(screen.getByRole('button', { name: 'Đến tin được trả lời' }))
+      expect(onJump).toHaveBeenCalledWith(3)
+    })
+
+    it('shows the deleted placeholder in a quote of a deleted source', () => {
+      render(<MessageItem {...props} message={{ ...base, reply_to: { ...quote, snippet: '', deleted: true } }} mine={false} />)
+      expect(screen.getByText('Tin nhắn đã bị xoá')).toBeInTheDocument()
+    })
+
+    it('highlights mentions, including names with regex characters, and @all', () => {
+      render(<MessageItem {...props} message={{ ...base, body: 'chào @A+B (C) và @all nhé', mentions: [{ user_id: 5, full_name: 'A+B (C)' }], mention_all: true }} mine={false} />)
+      const marks = Array.from(document.querySelectorAll('.mention')).map((e) => [e.textContent, e.classList.contains('mention-all')])
+      expect(marks).toEqual([['@A+B (C)', false], ['@all', true]])
+      expect(document.querySelector('.bubble')!.textContent).toBe('chào @A+B (C) và @all nhé')
+    })
+
+    it('marks messages that mention me or everyone, but not my own', () => {
+      const msg = { ...base, body: 'ê @Tôi', mentions: [{ user_id: 1, full_name: 'Tôi' }] }
+      const { rerender, container } = render(<MessageItem {...props} meId={1} message={msg} mine={false} />)
+      expect(container.querySelector('.msg-mentions-me')).not.toBeNull()
+      rerender(<MessageItem {...props} meId={9} message={msg} mine={false} />)
+      expect(container.querySelector('.msg-mentions-me')).toBeNull()
+      rerender(<MessageItem {...props} meId={9} message={{ ...base, body: '@all', mention_all: true }} mine={false} />)
+      expect(container.querySelector('.msg-mentions-me')).not.toBeNull()
+      rerender(<MessageItem {...props} meId={1} message={{ ...base, sender_id: 1, body: '@all', mention_all: true }} mine />)
+      expect(container.querySelector('.msg-mentions-me')).toBeNull()
+    })
+
+    it('replaces Thử lại with Gửi không kèm trả lời for an invalid_reply failure', async () => {
+      const onResend = vi.fn()
+      const failed = { ...base, sender_id: 1, client_id: 'c1', pending: 'failed' as const, errorCode: 'invalid_reply' }
+      const { rerender } = render(<MessageItem {...props} onResendWithoutReply={onResend} message={failed} mine />)
+      expect(screen.queryByRole('button', { name: 'Gửi lại tin nhắn' })).not.toBeInTheDocument()
+      await userEvent.click(screen.getByRole('button', { name: 'Gửi không kèm trả lời' }))
+      expect(onResend).toHaveBeenCalledWith('c1')
+      rerender(<MessageItem {...props} onResendWithoutReply={onResend} message={{ ...failed, errorCode: 'rate_limited' }} mine />)
+      expect(screen.getByRole('button', { name: 'Gửi lại tin nhắn' })).toBeInTheDocument()
+    })
+  })
 })

@@ -458,6 +458,116 @@ describe('realtime status UI', () => {
   })
 })
 
+describe('replies and mentions', () => {
+  const box = () => screen.getByLabelText('Nhập tin nhắn')
+  const sends = (ws: FakeWebSocket) => ws.sentJson.filter((m) => m.type === 'send')
+
+  it('replies to a message: bar, wire frame, optimistic quote, and the bar clears after sending', async () => {
+    mockFetch(routes())
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const ws = await connect()
+    await userEvent.click(screen.getAllByRole('button', { name: 'Trả lời' })[0])
+    expect(screen.getAllByRole('status').map((e) => e.textContent)).toContain('Đang trả lời Lê Thu Hà: chào cả nhà')
+    await userEvent.type(box(), 'đồng ý{Enter}')
+    const frame = sends(ws)[0]
+    expect(frame).toMatchObject({ room_id: 1, body: 'đồng ý', reply_to_id: 4 })
+    expect(screen.queryByRole('button', { name: 'Huỷ trả lời' })).not.toBeInTheDocument()
+    const mine = screen.getByText('đồng ý').closest('.msg') as HTMLElement
+    expect(within(mine).getByText('chào cả nhà')).toBeInTheDocument()
+    expect(within(mine).getByRole('button', { name: 'Đến tin được trả lời' })).toBeInTheDocument()
+  })
+
+  it('drops the pending reply when switching rooms', async () => {
+    mockFetch(routes())
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    await userEvent.click(screen.getAllByRole('button', { name: 'Trả lời' })[0])
+    expect(screen.getByRole('button', { name: 'Huỷ trả lời' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('link', { name: /Trần Quốc Huy/ }))
+    await userEvent.click(await screen.findByRole('link', { name: /Dự án kho/ }))
+    await screen.findByText('chào cả nhà')
+    expect(screen.queryByRole('button', { name: 'Huỷ trả lời' })).not.toBeInTheDocument()
+  })
+
+  it('picks a member from the @ suggestions and sends the mention id', async () => {
+    const { calls } = mockFetch(routes())
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const ws = await connect()
+    await waitFor(() => expect(calls.some((c) => c.path === '/api/rooms/1/members')).toBe(true))
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+    await userEvent.type(box(), '@Th')
+    await screen.findByRole('listbox')
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['LHLê Thu Hà'])
+    await userEvent.keyboard('{Enter}')
+    expect(sends(ws)).toHaveLength(0)
+    await userEvent.type(box(), 'xem giúp{Enter}')
+    expect(sends(ws)[0]).toMatchObject({ body: '@Lê Thu Hà xem giúp', mentions: [2] })
+    expect(sends(ws)[0]).not.toHaveProperty('mention_all')
+  })
+
+  it('sends @all as mention_all in a group', async () => {
+    const { calls } = mockFetch(routes())
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const ws = await connect()
+    await waitFor(() => expect(calls.some((c) => c.path === '/api/rooms/1/members')).toBe(true))
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+    await userEvent.type(box(), '@')
+    expect((await screen.findAllByRole('option'))[0]).toHaveTextContent('@all')
+    await userEvent.keyboard('{Enter}')
+    await userEvent.type(box(), 'họp lúc 9h{Enter}')
+    expect(sends(ws)[0]).toMatchObject({ body: '@all họp lúc 9h', mention_all: true })
+    expect(sends(ws)[0]).not.toHaveProperty('mentions')
+  })
+
+  it('shows an @ badge for a mention of me in another room', async () => {
+    mockFetch(routes())
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const ws = await connect()
+    await act(async () =>
+      ws.receive({ type: 'message', message: makeMessage({ id: 10, room_id: 2, sender_id: 3, sender_name: 'Trần Quốc Huy', body: 'ê @Phạm Đức Long', mentions: [{ user_id: 1, full_name: 'Phạm Đức Long' }] }) }),
+    )
+    const item = await screen.findByRole('link', { name: /Trần Quốc Huy/ })
+    await waitFor(() => expect(within(item).getByLabelText('1 lần được nhắc')).toBeInTheDocument())
+  })
+
+  it('turns a loaded quote into the deleted placeholder when its source is deleted', async () => {
+    mockFetch(routes())
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const ws = await connect()
+    const quote = { id: 4, sender_id: 2, sender_name: 'Lê Thu Hà', snippet: 'chào cả nhà', deleted: false }
+    await act(async () => ws.receive({ type: 'message', message: makeMessage({ id: 6, body: 'trả lời đây', reply_to: quote }) }))
+    const reply = (await screen.findByText('trả lời đây')).closest('.msg') as HTMLElement
+    expect(within(reply).getByText('chào cả nhà')).toBeInTheDocument()
+    await act(async () => ws.receive({ type: 'message_deleted', room_id: 1, message_id: 4 }))
+    await waitFor(() => expect(within(reply).getByText('Tin nhắn đã bị xoá')).toBeInTheDocument())
+    expect(within(reply).queryByText('chào cả nhà')).not.toBeInTheDocument()
+  })
+
+  it('offers to resend without the reply after an invalid_reply error', async () => {
+    mockFetch(routes())
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const ws = await connect()
+    await userEvent.click(screen.getAllByRole('button', { name: 'Trả lời' })[0])
+    await userEvent.type(box(), 'đồng ý{Enter}')
+    const first = sends(ws)[0]
+    await act(async () => ws.receive({ type: 'error', code: 'invalid_reply', client_id: first.client_id as string }))
+    expect(await screen.findByText('Không trả lời được tin này.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Gửi lại tin nhắn' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Gửi không kèm trả lời' }))
+    const second = sends(ws)[1]
+    expect(second).toMatchObject({ body: 'đồng ý' })
+    expect(second).not.toHaveProperty('reply_to_id')
+    expect(second.client_id).not.toBe(first.client_id)
+    expect(screen.getAllByText('đồng ý')).toHaveLength(1)
+  })
+})
+
 describe('new chat dialog: group tab', () => {
   const people = [
     { id: 3, username: 'huy', full_name: 'Trần Quốc Huy', branch_id: 2, branch_name: 'TP.HCM' },

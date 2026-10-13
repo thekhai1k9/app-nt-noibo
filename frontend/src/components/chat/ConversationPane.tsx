@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useAuth } from '../../lib/auth'
 import { useChatController, useMembers, useOnline, useRooms, useThread, useTyping } from '../../lib/ChatProvider'
+import type { Message } from '../../lib/types'
 import { Composer } from './Composer'
 import { ConnectionBanner } from './ConnectionBanner'
 import { GroupPanel } from './GroupPanel'
@@ -49,6 +50,8 @@ function Conversation({ roomId }: { roomId: number }) {
   const meId = user?.id ?? 0
   const isGroup = room?.type === 'group'
   const [panelOpen, setPanelOpen] = useState(false)
+  // Conversation được mount lại theo phòng (key={roomId}) nên replyTo tự xoá khi đổi phòng.
+  const [replyTo, setReplyTo] = useState<Message | null>(null)
   const infoRef = useRef<HTMLButtonElement>(null)
   const wasOpen = useRef(false)
   const showPanel = panelOpen && isGroup
@@ -76,6 +79,9 @@ function Conversation({ roomId }: { roomId: number }) {
     void controller.openRoom(roomId)
     return () => controller.leaveRoom(roomId)
   }, [controller, roomId])
+
+  // Lấy bản mới nhất của tin đang trả lời (có thể đã bị xoá/sửa sau khi chọn).
+  const liveReply = replyTo ? (thread.items.find((m) => !m.pending && m.id === replyTo.id) ?? replyTo) : null
 
   if (loaded && !room) return <NotFound />
 
@@ -120,11 +126,24 @@ function Conversation({ roomId }: { roomId: number }) {
         onRetryLoad={() => void controller.openRoom(roomId)}
         onRetrySend={(clientId) => controller.retry(clientId)}
         onDiscard={(clientId) => controller.discard(clientId)}
+        onResendWithoutReply={(clientId) => controller.resendWithoutReply(clientId)}
+        onReply={setReplyTo}
         onEdit={(id, body) => controller.edit(id, body)}
         onDelete={(id) => controller.remove(roomId, id)}
       />
       <TypingIndicator names={typingNames} />
-      <Composer onSend={(body) => controller.send(roomId, body)} onTyping={() => controller.sendTyping(roomId)} />
+      <Composer
+        reply={liveReply}
+        onCancelReply={() => setReplyTo(null)}
+        members={members}
+        meId={meId}
+        isGroup={isGroup}
+        onSend={(body, extras) => {
+          controller.send(roomId, body, extras)
+          setReplyTo(null)
+        }}
+        onTyping={() => controller.sendTyping(roomId)}
+      />
     </>
   )
 }

@@ -1,10 +1,12 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { ErrorAlert } from '../ErrorAlert'
 import type { ChatMessage } from '../../lib/chatStore'
 import { ApiError } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import { formatTime, initials } from '../../lib/format'
 import { linkify } from '../../lib/linkify'
+import { splitMentions } from '../../lib/mentions'
+import { QuoteBlock } from './QuoteBlock'
 
 interface Props {
   message: ChatMessage
@@ -12,17 +14,37 @@ interface Props {
   showSender: boolean
   onRetry: (clientId: string) => void
   onDiscard?: (clientId: string) => void
+  onResendWithoutReply?: (clientId: string) => void
+  onReply?: (message: ChatMessage) => void
+  /** Chỉ truyền khi tin gốc của trích dẫn đã được tải (cho phép cuộn tới). */
+  onJumpToReply?: (messageId: number) => void
+  meId?: number
+  flash?: boolean
   onEdit: (messageId: number, body: string) => Promise<void>
   onDelete: (messageId: number) => Promise<void>
 }
 
-export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onEdit, onDelete }: Props) {
+function renderBody(message: ChatMessage) {
+  if (message.mentions.length === 0 && !message.mention_all) return linkify(message.body)
+  return splitMentions(message.body, message.mentions, message.mention_all).map((part, index) =>
+    part.mention ? (
+      <span key={index} className={`mention${part.mention === 'all' ? ' mention-all' : ''}`}>{part.text}</span>
+    ) : (
+      <Fragment key={index}>{linkify(part.text)}</Fragment>
+    ),
+  )
+}
+
+export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onResendWithoutReply, onReply, onJumpToReply, meId, flash = false, onEdit, onDelete }: Props) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(message.body)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [hint, setHint] = useState(false)
   const canAct = mine && !message.deleted && !message.pending
+  const canReply = !!onReply && !message.deleted && !message.pending
+  const mentionsMe = !mine && !message.deleted && (message.mention_all || (meId !== undefined && message.mentions.some((m) => m.user_id === meId)))
+  const reply = message.deleted ? null : message.reply_to
 
   async function save() {
     const body = draft.trim()
@@ -57,7 +79,7 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onE
   }
 
   return (
-    <div className={`msg${mine ? ' mine' : ''}`} data-message-id={message.id}>
+    <div className={`msg${mine ? ' mine' : ''}${flash ? ' msg-flash' : ''}`} data-message-id={message.id}>
       {!mine && (
         <span className="avatar" aria-hidden="true">
           {initials(message.sender_name)}
@@ -65,7 +87,8 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onE
       )}
       <div className="msg-col">
         {showSender && !mine && <div className="msg-sender">{message.sender_name}</div>}
-        <div className={`bubble${message.pending === 'failed' ? ' bubble-failed' : ''}${editing ? ' bubble-editing' : ''}`}>
+        <div className={`bubble${message.pending === 'failed' ? ' bubble-failed' : ''}${editing ? ' bubble-editing' : ''}${mentionsMe ? ' msg-mentions-me' : ''}`}>
+          {reply && !editing && <QuoteBlock reply={reply} onJump={onJumpToReply ? () => onJumpToReply(reply.id) : undefined} />}
           {message.deleted ? (
             <em>Tin nhắn đã bị xoá</em>
           ) : editing ? (
@@ -89,7 +112,7 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onE
               </div>
             </div>
           ) : (
-            linkify(message.body)
+            renderBody(message)
           )}
         </div>
         <div className="msg-foot">
@@ -100,15 +123,26 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onE
             <>
               <span className="msg-failed">Gửi lỗi</span>
               <span>{errorMessage(new ApiError(0, message.errorCode ?? 'network_error'))}</span>
-              <button type="button" className="btn btn-ghost" aria-label="Gửi lại tin nhắn" onClick={() => message.client_id && onRetry(message.client_id)}>
-                Thử lại
-              </button>
+              {message.errorCode === 'invalid_reply' && onResendWithoutReply ? (
+                <button type="button" className="btn btn-ghost" aria-label="Gửi không kèm trả lời" onClick={() => message.client_id && onResendWithoutReply(message.client_id)}>
+                  Gửi không kèm trả lời
+                </button>
+              ) : (
+                <button type="button" className="btn btn-ghost" aria-label="Gửi lại tin nhắn" onClick={() => message.client_id && onRetry(message.client_id)}>
+                  Thử lại
+                </button>
+              )}
               {onDiscard && (
                 <button type="button" className="btn btn-ghost" aria-label="Bỏ khỏi danh sách" onClick={() => message.client_id && onDiscard(message.client_id)}>
                   Bỏ
                 </button>
               )}
             </>
+          )}
+          {canReply && !editing && (
+            <button type="button" className="btn btn-ghost msg-reply" aria-label="Trả lời" onClick={() => onReply(message)}>
+              Trả lời
+            </button>
           )}
           {canAct && !editing && (
             <>

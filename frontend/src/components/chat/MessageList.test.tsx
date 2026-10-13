@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import type { ChatMessage } from '../../lib/chatStore'
@@ -197,5 +197,40 @@ describe('MessageList', () => {
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+  describe('quote jump', () => {
+    const q = { id: 2, sender_id: 2, sender_name: 'Bob', snippet: 'tin 2', deleted: false }
+    const proto = Element.prototype as { scrollIntoView?: unknown }
+
+    it('scrolls the source to the center and flashes it for 1.5 s, only when it is loaded', async () => {
+      const scrollIntoView = vi.fn()
+      proto.scrollIntoView = scrollIntoView
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      try {
+        render(<MessageList {...base} items={[m(2), m(3, { reply_to: q }), m(4, { reply_to: { ...q, id: 99 } })]} />)
+        expect(screen.getAllByRole('button', { name: 'Đến tin được trả lời' })).toHaveLength(1)
+        await userEvent.click(screen.getByRole('button', { name: 'Đến tin được trả lời' }))
+        expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' })
+        const target = document.querySelector('[data-message-id="2"]')!
+        expect(target).toHaveClass('msg-flash')
+        await act(async () => { await vi.advanceTimersByTimeAsync(1600) })
+        expect(target).not.toHaveClass('msg-flash')
+      } finally {
+        vi.useRealTimers()
+        delete proto.scrollIntoView
+      }
+    })
+
+    it('does not scroll by itself when items change', () => {
+      const scrollIntoView = vi.fn()
+      proto.scrollIntoView = scrollIntoView
+      try {
+        const { rerender } = render(<MessageList {...base} items={[m(2), m(3, { reply_to: q })]} />)
+        rerender(<MessageList {...base} items={[m(2), m(3, { reply_to: { ...q, deleted: true, snippet: '' } })]} />)
+        expect(scrollIntoView).not.toHaveBeenCalled()
+      } finally {
+        delete proto.scrollIntoView
+      }
+    })
   })
 })

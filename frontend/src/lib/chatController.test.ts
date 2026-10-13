@@ -1384,6 +1384,7 @@ describe('ChatController: replies and mentions', () => {
 
   it('sends reply_to_id/mentions/mention_all and builds the optimistic message', async () => {
     const { controller, socket, store } = setup()
+    await controller.loadRooms()
     await controller.openRoom(1)
     controller.send(1, 'trả lời @Bob @all', { replyTo: sourceMsg(), mentions: [{ user_id: 2, full_name: 'Bob' }], mentionAll: true })
     expect(socket.send).toHaveBeenCalledWith({ type: 'send', room_id: 1, body: 'trả lời @Bob @all', client_id: 'cid-1', reply_to_id: 2, mentions: [2], mention_all: true })
@@ -1403,13 +1404,14 @@ describe('ChatController: replies and mentions', () => {
 
   it('replays the same reply_to_id/mentions/mention_all on resend after ready and on retry', async () => {
     const { controller, socket, setOpen } = setup({ open: false })
+    await controller.loadRooms()
     await controller.openRoom(1)
-    controller.send(1, 'x @Bob', { replyTo: sourceMsg(), mentions: [{ user_id: 2, full_name: 'Bob' }], mentionAll: true })
+    controller.send(1, 'x @Bob @all', { replyTo: sourceMsg(), mentions: [{ user_id: 2, full_name: 'Bob' }], mentionAll: true })
     socket.send.mockClear()
     setOpen(true)
     controller.handleSocketEvent({ type: 'ready', user_id: 1 })
     await flush()
-    const frame = { type: 'send', room_id: 1, body: 'x @Bob', client_id: 'cid-1', reply_to_id: 2, mentions: [2], mention_all: true }
+    const frame = { type: 'send', room_id: 1, body: 'x @Bob @all', client_id: 'cid-1', reply_to_id: 2, mentions: [2], mention_all: true }
     expect(socket.send).toHaveBeenCalledWith(frame)
     controller.handleSocketEvent({ type: 'error', code: 'rate_limited', client_id: 'cid-1' })
     socket.send.mockClear()
@@ -1459,5 +1461,72 @@ describe('ChatController: replies and mentions', () => {
     await controller.openRoom(1)
     controller.handleSocketEvent({ type: 'message', message: msg(10, { mention_all: true }) })
     expect(store.getState().rooms.find((x) => x.id === 1)!.unread_mentions).toBe(0)
+  })
+  it('normalises: dedupes mentions, drops those not in the body, ignores foreign/invalid replyTo', async () => {
+    const { controller, socket, store } = setup()
+    await controller.loadRooms()
+    await controller.openRoom(1)
+    const bob = { user_id: 2, full_name: 'Bob' }
+    controller.send(1, 'hi @Bob', { mentions: [bob, bob, { user_id: 3, full_name: 'Cy' }], replyTo: msg(2, { room_id: 2 }) })
+    expect(socket.send).toHaveBeenLastCalledWith({ type: 'send', room_id: 1, body: 'hi @Bob', client_id: 'cid-1', mentions: [2] })
+    expect(store.getState().threads[1].items.at(-1)!.reply_to).toBeNull()
+    controller.send(1, 'yo', { replyTo: msg(-3) })
+    expect(socket.send).toHaveBeenLastCalledWith({ type: 'send', room_id: 1, body: 'yo', client_id: 'cid-2' })
+  })
+
+  it('gates mentionAll on group rooms and a standalone @all in the body', async () => {
+    const { controller, socket, api } = setup()
+    api.rooms.mockResolvedValue([room(1), room(2, { type: 'direct' })])
+    await controller.loadRooms()
+    const sent = () => socket.send.mock.calls.at(-1)![0] as Record<string, unknown>
+    controller.send(1, 'cả nhà @ALL ơi', { mentionAll: true })
+    expect(sent().mention_all).toBe(true)
+    for (const body of ['mail@all.com', 'x @allison', 'a@@all', 'không có']) {
+      controller.send(1, body, { mentionAll: true })
+      expect('mention_all' in sent()).toBe(false)
+    }
+    controller.send(2, '@all', { mentionAll: true })
+    expect('mention_all' in sent()).toBe(false)
+    controller.send(99, '@all', { mentionAll: true })
+    expect('mention_all' in sent()).toBe(false)
+  })
+
+  it('never puts undefined keys on the wire', async () => {
+    const { controller, socket } = setup()
+    await controller.loadRooms()
+    controller.send(1, 'plain')
+    controller.send(1, 'x @Bob', { mentions: [{ user_id: 2, full_name: 'Bob' }], replyTo: msg(2) })
+    for (const [frame] of socket.send.mock.calls) {
+      const text = JSON.stringify(frame)
+      expect(Object.keys(JSON.parse(text))).toEqual(Object.keys(frame as object))
+    }
+  })
+
+  it('resendWithoutReply re-sends the text without reply_to under a new client_id and removes the failed one', async () => {
+    const { controller, socket, store } = setup()
+    await controller.loadRooms()
+    await controller.openRoom(1)
+    controller.send(1, 'x @Bob', { replyTo: sourceMsg(), mentions: [{ user_id: 2, full_name: 'Bob' }] })
+    controller.handleSocketEvent({ type: 'error', code: 'invalid_reply', client_id: 'cid-1' })
+    expect(controller.resendWithoutReply('cid-1')).toBe('cid-2')
+    expect(socket.send).toHaveBeenLastCalledWith({ type: 'send', room_id: 1, body: 'x @Bob', client_id: 'cid-2', mentions: [2] })
+    const items = store.getState().threads[1].items
+    expect(items.some((m) => m.client_id === 'cid-1')).toBe(false)
+    expect(items.at(-1)).toMatchObject({ client_id: 'cid-2', reply_to: null, pending: 'sending' })
+  })
+
+  it('edit passes mentions through to the api', async () => {
+    const { controller, api } = setup()
+    api.editMessage.mockResolvedValue(msg(2, { body: 'new @Bob' }))
+    await controller.edit(2, 'new @Bob', [2])
+    expect(api.editMessage).toHaveBeenCalledWith(2, 'new @Bob', [2])
+  })
+
+  it('own read event clears unread_count and unread_mentions', async () => {
+    const { controller, store, api } = setup()
+    api.rooms.mockResolvedValue([room(1, { unread_count: 2, unread_mentions: 1 }), room(2)])
+    await controller.loadRooms()
+    controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 1, message_id: 5 })
+    expect(store.getState().rooms.find((r) => r.id === 1)).toMatchObject({ unread_count: 0, unread_mentions: 0 })
   })
 })

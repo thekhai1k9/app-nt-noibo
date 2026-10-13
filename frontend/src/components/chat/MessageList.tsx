@@ -5,6 +5,7 @@ import { MessageItem } from './MessageItem'
 
 const NEAR_BOTTOM_PX = 80
 const NEAR_TOP_PX = 120
+const FLASH_MS = 1500
 
 interface Props {
   items: ChatMessage[]
@@ -20,6 +21,8 @@ interface Props {
   onRetryLoad: () => void
   onRetrySend: (clientId: string) => void
   onDiscard?: (clientId: string) => void
+  onResendWithoutReply?: (clientId: string) => void
+  onReply?: (message: ChatMessage) => void
   onEdit: (messageId: number, body: string) => Promise<void>
   onDelete: (messageId: number) => Promise<void>
 }
@@ -42,11 +45,15 @@ export function MessageList(props: Props) {
   const snapshot = useRef({ firstReal: null as number | null, lastReal: null as number | null, pending: 0, scrollHeight: 0, atBottom: true })
   const innerRef = useRef<HTMLDivElement>(null)
   const [unseen, setUnseen] = useState(0)
+  const [flashId, setFlashId] = useState<number | null>(null)
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current) }, [])
 
   const real = items.filter((m) => !m.pending)
   const firstReal = real[0]?.id ?? null
   const lastReal = real.at(-1)?.id ?? null
   const pendingCount = items.length - real.length
+  const loadedIds = new Set(real.map((m) => m.id))
 
   // Chạy sau mọi lần commit (không có danh sách phụ thuộc) để scrollHeight luôn mới;
   // phần so sánh bên dưới dựa trên snapshot của lần commit TRƯỚC.
@@ -102,6 +109,16 @@ export function MessageList(props: Props) {
     if (el.scrollTop < NEAR_TOP_PX && hasMoreBefore && !loadingOlder) props.onLoadOlder()
   }
 
+  /** Chỉ chạy do người dùng bấm vào trích dẫn: cuộn tới tin gốc rồi nháy sáng; việc nháy không bao giờ tự cuộn lại. */
+  function jumpToMessage(id: number) {
+    const target = listRef.current?.querySelector(`[data-message-id="${id}"]`)
+    if (!target) return
+    target.scrollIntoView?.({ block: 'center' })
+    setFlashId(id)
+    if (flashTimer.current) clearTimeout(flashTimer.current)
+    flashTimer.current = setTimeout(() => setFlashId(null), FLASH_MS)
+  }
+
   function jumpToBottom() {
     const el = listRef.current
     if (!el) return
@@ -151,6 +168,11 @@ export function MessageList(props: Props) {
                 showSender={showSender}
                 onRetry={props.onRetrySend}
                 onDiscard={props.onDiscard}
+                onResendWithoutReply={props.onResendWithoutReply}
+                onReply={props.onReply}
+                onJumpToReply={message.reply_to && loadedIds.has(message.reply_to.id) ? jumpToMessage : undefined}
+                meId={meId}
+                flash={!message.pending && message.id === flashId}
                 onEdit={props.onEdit}
                 onDelete={props.onDelete}
               />

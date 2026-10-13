@@ -1,6 +1,7 @@
 import type { ChatApi } from './chatApi'
 import { EMPTY_THREAD, type ChatMessage, type ChatStore } from './chatStore'
 import { makeSnippet } from './format'
+import { MENTION_ALL_RE } from './mentions'
 import type { Mention, Message, Room, RoomMember, ServerEvent } from './types'
 
 export interface ChatControllerDeps {
@@ -257,9 +258,16 @@ export class ChatController {
     const body = rawBody.trim()
     if (!body) return null
     const clientId = (this.deps.newClientId ?? (() => crypto.randomUUID()))()
-    const replyTo = opts.replyTo && opts.replyTo.id >= 1 ? opts.replyTo : undefined
-    const mentions = opts.mentions ?? []
-    const mentionAll = opts.mentionAll === true
+    // Chuẩn hoá để tin lạc quan khớp đúng cái máy chủ sẽ phát lại.
+    const replyTo = opts.replyTo && opts.replyTo.id >= 1 && opts.replyTo.room_id === roomId ? opts.replyTo : undefined
+    const seen = new Set<number>()
+    const mentions = (opts.mentions ?? []).filter((m) => {
+      if (seen.has(m.user_id) || !body.includes(`@${m.full_name}`)) return false
+      seen.add(m.user_id)
+      return true
+    })
+    const isGroup = this.deps.store.getState().rooms.find((r) => r.id === roomId)?.type === 'group'
+    const mentionAll = opts.mentionAll === true && isGroup && MENTION_ALL_RE.test(body)
     const message: ChatMessage = {
       id: this.nextLocalId--,
       room_id: roomId,
@@ -337,6 +345,17 @@ export class ChatController {
   /** Tin của mình đã về qua REST (bù tin/tải lại): huỷ hẹn giờ và quên tin đang chờ tương ứng. */
   private confirmDelivered(items: Message[]): void {
     for (const m of items) if (m.sender_id === this.deps.meId && m.client_id) this.confirm(m.client_id)
+  }
+
+  /** Gửi lại tin lỗi `invalid_reply` nhưng không kèm trả lời (gửi lại nguyên văn sẽ lại lỗi). Trả client_id mới. */
+  resendWithoutReply(clientId: string): string | null {
+    const failed = Object.values(this.deps.store.getState().threads)
+      .flatMap((t) => t.items)
+      .find((m) => m.pending && m.client_id === clientId)
+    const meta = this.pendingMeta.get(clientId)
+    if (!failed || !meta) return null
+    this.discard(clientId)
+    return this.send(meta.roomId, meta.body, { mentions: failed.mentions, mentionAll: failed.mention_all })
   }
 
   /** Bỏ hẳn một tin gửi lỗi. */
