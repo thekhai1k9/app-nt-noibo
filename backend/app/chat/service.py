@@ -11,6 +11,7 @@ from app.models import Message, Room, RoomMember, User
 
 MAX_PAGE = 100
 MAX_CLIENT_ID = 64
+GROUP_LOCK_CLASS = 5001  # khoá advisory theo người tạo nhóm
 
 
 class ChatError(Exception):
@@ -169,16 +170,19 @@ async def list_messages(
     return MessagePage(items=out(list(reversed(rows[:limit]))), has_more_before=len(rows) > limit, has_more_after=False)
 
 
-async def list_rooms(session: AsyncSession, user_id: int) -> list[RoomOut]:
-    mine = (
-        await session.execute(
-            select(Room)
-            .join(RoomMember, RoomMember.room_id == Room.id)
-            .where(RoomMember.user_id == user_id, Room.archived_at.is_(None))
-        )
-    ).scalars().all()
-    if not mine:
+async def list_rooms(session: AsyncSession, user_id: int, only_room_id: int | None = None) -> list[RoomOut]:
+    query = (
+        select(Room, RoomMember.role)
+        .join(RoomMember, RoomMember.room_id == Room.id)
+        .where(RoomMember.user_id == user_id, Room.archived_at.is_(None))
+    )
+    if only_room_id is not None:
+        query = query.where(Room.id == only_room_id)
+    rows = (await session.execute(query)).all()
+    if not rows:
         return []
+    mine = [room for room, _ in rows]
+    my_roles = {room.id: role for room, role in rows}
     room_ids = [room.id for room in mine]
 
     counts = dict(
@@ -245,10 +249,58 @@ async def list_rooms(session: AsyncSession, user_id: int) -> list[RoomOut]:
                 last_message=last_message,
                 unread_count=unread.get(room.id, 0),
                 last_activity=last_message.created_at if last_message else room.created_at,
+                my_role=my_roles[room.id] if room.type == "group" else None,
             )
         )
     result.sort(key=lambda r: (r.last_activity, r.id), reverse=True)
     return result
+
+
+async def get_room_out(session: AsyncSession, user_id: int, room_id: int) -> RoomOut:
+    """RoomOut của một phòng, đúng dạng phần tử của list_rooms."""
+    rooms = await list_rooms(session, user_id, only_room_id=room_id)
+    if not rooms:
+        raise ChatError(404, "room_not_found")
+    return rooms[0]
+
+
+async def create_group(session: AsyncSession, user: User, name: str, member_ids: list[int]) -> Room:
+    """Tạo nhóm + toàn bộ thành viên trong một giao dịch; người tạo là owner."""
+    settings = get_settings()
+    me_id = user.id
+    invited = [uid for uid in dict.fromkeys(member_ids) if uid != me_id]
+    if 1 + len(invited) > settings.max_group_members:
+        raise ChatError(409, "group_full")
+    if invited:
+        active = set(
+            (await session.execute(select(User.id).where(User.id.in_(invited), User.is_active.is_(True)))).scalars()
+        )
+        if len(active) != len(invited):
+            raise ChatError(404, "user_not_found")
+    # Tuần tự hoá các lần tạo nhóm của cùng một người để giới hạn đếm đúng khi gọi song song.
+    await session.execute(select(func.pg_advisory_xact_lock(GROUP_LOCK_CLASS, me_id)))
+    owned = (
+        await session.execute(
+            select(func.count())
+            .select_from(RoomMember)
+            .join(Room, Room.id == RoomMember.room_id)
+            .where(
+                RoomMember.user_id == me_id,
+                RoomMember.role == "owner",
+                Room.type == "group",
+                Room.archived_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    if owned >= settings.max_owned_groups:
+        raise ChatError(409, "too_many_groups")
+    room = Room(type="group", name=name, branch_id=None, created_by=me_id)
+    session.add(room)
+    await session.flush()
+    session.add(RoomMember(room_id=room.id, user_id=me_id, role="owner"))
+    session.add_all([RoomMember(room_id=room.id, user_id=uid) for uid in invited])
+    await session.commit()
+    return room
 
 
 async def mark_read(session: AsyncSession, room_id: int, user_id: int, message_id: int) -> int | None:
@@ -278,12 +330,15 @@ async def mark_read(session: AsyncSession, room_id: int, user_id: int, message_i
 async def list_members(session: AsyncSession, room_id: int, user_id: int) -> list[MemberReceipt]:
     await require_member(session, room_id, user_id)
     rows = await session.execute(
-        select(RoomMember.user_id, User.full_name, RoomMember.last_read_message_id)
+        select(RoomMember.user_id, User.full_name, RoomMember.last_read_message_id, RoomMember.role)
         .join(User, User.id == RoomMember.user_id)
         .where(RoomMember.room_id == room_id)
         .order_by(User.full_name, User.id)
     )
-    return [MemberReceipt(user_id=uid, full_name=name, last_read_message_id=last) for uid, name, last in rows]
+    return [
+        MemberReceipt(user_id=uid, full_name=name, last_read_message_id=last, role=role)
+        for uid, name, last, role in rows
+    ]
 
 
 async def _own_message(session: AsyncSession, user_id: int, message_id: int) -> Message:

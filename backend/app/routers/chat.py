@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Query, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +40,21 @@ class DirectoryUser(BaseModel):
 
 class DirectRoomIn(BaseModel):
     user_id: UserId
+
+
+class GroupCreateIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=100)
+    # Giới hạn thật (MAX_GROUP_MEMBERS) do service kiểm tra; đây chỉ chặn danh sách khổng lồ.
+    member_ids: list[UserId] = Field(default_factory=list, max_length=2000)
+
+    @field_validator("name")
+    @classmethod
+    def _no_nul(cls, v: str) -> str:
+        if "\x00" in v:
+            raise ValueError("name must not contain NUL")
+        return v
 
 
 class ReadIn(BaseModel):
@@ -118,6 +133,21 @@ async def open_direct_room(
             await publish_user_safely(bus, member_id, {"type": "rooms_changed"})
     rooms = await service.list_rooms(session, user.id)
     return next(r for r in rooms if r.id == room.id)
+
+
+@router.post("/rooms/group", response_model=RoomOut, status_code=201)
+async def create_group(
+    body: GroupCreateIn,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_ready_user),
+    bus: MessageBus = Depends(get_bus),
+) -> RoomOut:
+    me_id = user.id
+    room = await service.create_group(session, user, body.name, body.member_ids)
+    for member_id in dict.fromkeys(body.member_ids):
+        if member_id != me_id and not await publish_user_safely(bus, member_id, {"type": "rooms_changed"}):
+            break  # bus hỏng: client đối soát sau
+    return await service.get_room_out(session, me_id, room.id)
 
 
 @router.get("/rooms/{room_id}/messages", response_model=MessagePage)

@@ -28,12 +28,14 @@ class RoomOut(BaseModel):
     last_message: MessageOut | None
     unread_count: int
     last_activity: datetime
+    my_role: str | None = None  # 'owner' | 'member' cho nhóm, None cho phòng direct
 
 
 class MemberReceipt(BaseModel):
     user_id: int
     full_name: str
     last_read_message_id: int | None
+    role: str
 
 
 class MessagePage(BaseModel):

@@ -74,8 +74,8 @@ async def test_members_lists_receipts(client):
     r = await client.get(f"/api/rooms/{room}/members", headers=ha)
     assert r.status_code == 200
     assert r.json() == [
-        {"user_id": b, "full_name": "Amy", "last_read_message_id": None},
-        {"user_id": a, "full_name": "Zed", "last_read_message_id": msg},
+        {"user_id": b, "full_name": "Amy", "last_read_message_id": None, "role": "member"},
+        {"user_id": a, "full_name": "Zed", "last_read_message_id": msg, "role": "member"},
     ]
     hc = auth_headers(await token_for(client, "out"))
     r = await client.get(f"/api/rooms/{room}/members", headers=hc)

@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     presence_offline_grace_seconds: float = Field(5.0, ge=0)
     room_archive_retention_days: int = Field(3, gt=0)
     room_purge_interval_seconds: float = Field(3600, gt=0)
+    max_owned_groups: int = Field(20, gt=0)
+    max_group_members: int = Field(200, gt=0)
     bus_channel_prefix: str = "kn"
     max_message_length: int = 4000
     log_level: str = "INFO"
