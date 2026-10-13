@@ -342,11 +342,14 @@ def retry_on_deadlock(fn):
 
 
 async def lock_room_row(session: AsyncSession, room_id: int) -> Room | None:
-    """SELECT ... FOR UPDATE trên hàng phòng: mọi thay đổi thành viên/chủ phòng (người dùng lẫn admin) qua đây
+    """SELECT ... FOR NO KEY UPDATE trên hàng phòng: mọi thay đổi thành viên/chủ phòng (người dùng lẫn admin) qua đây
     nên chạy tuần tự theo phòng. Trả None nếu phòng không tồn tại."""
     return (
         await session.execute(
-            select(Room).where(Room.id == room_id).with_for_update().execution_options(populate_existing=True)
+            select(Room)
+            .where(Room.id == room_id)
+            .with_for_update(key_share=True)  # FOR NO KEY UPDATE: không chặn INSERT tin nhắn (FOR KEY SHARE)
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
 
@@ -412,6 +415,20 @@ async def _member_ids(session: AsyncSession, room_id: int) -> list[int]:
     return list(rows.scalars())
 
 
+async def after_member_removed(
+    session: AsyncSession, room_id: int, *, was_owner: bool, archive_if_empty: bool
+) -> tuple[int | None, list[int]]:
+    """Việc phải làm ngay sau khi xoá một thành viên (dưới khoá phòng): hết người thì lưu trữ (nếu archive_if_empty),
+    chủ vừa đi thì chuyển quyền. Trả (id người thừa kế hoặc None, id các thành viên còn lại)."""
+    remaining = await _member_ids(session, room_id)
+    if not remaining:
+        if archive_if_empty:
+            await session.execute(update(Room).where(Room.id == room_id).values(archived_at=func.now()))
+        return None, remaining
+    heir = await transfer_ownership(session, room_id) if was_owner else None
+    return heir, remaining
+
+
 @retry_on_deadlock
 async def rename_group(session: AsyncSession, room_id: int, user_id: int, name: str) -> list[int]:
     """Đổi tên nhóm; trả id các thành viên cần báo rooms_changed."""
@@ -469,11 +486,7 @@ async def leave_group(session: AsyncSession, room_id: int, user_id: int) -> list
     Trả id những người còn lại (rỗng nếu nhóm bị lưu trữ)."""
     _, my_role = await _owned_group(session, room_id, user_id, owner_only=False)
     await session.execute(delete(RoomMember).where(RoomMember.room_id == room_id, RoomMember.user_id == user_id))
-    remaining = await _member_ids(session, room_id)
-    if not remaining:
-        await session.execute(update(Room).where(Room.id == room_id).values(archived_at=func.now()))
-    elif my_role == "owner":
-        await transfer_ownership(session, room_id)
+    _, remaining = await after_member_removed(session, room_id, was_owner=my_role == "owner", archive_if_empty=True)
     await session.commit()
     return remaining
 

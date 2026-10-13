@@ -220,8 +220,14 @@ async def restore_room(
 @service.retry_on_deadlock
 async def _add_member(session: AsyncSession, room_id: int, user_id: int) -> Room:
     room = await _group_or_404(session, room_id, lock=True)
-    await _active_user_or_404(session, user_id)
-    if user_id not in await _member_ids(session, room.id):
+    # FOR SHARE: người dùng không bị xoá giữa lúc kiểm tra và lúc chèn (như create_group)
+    target = (await session.execute(select(User).where(User.id == user_id).with_for_update(read=True))).scalar_one_or_none()
+    if target is None or not target.is_active:
+        raise HTTPException(status_code=404, detail="user_not_found")
+    member_ids = await _member_ids(session, room.id)
+    if user_id not in member_ids:
+        if len(member_ids) >= get_settings().max_group_members:
+            raise HTTPException(status_code=409, detail="group_full")
         # Người mới vào không coi lịch sử là chưa đọc: đặt vị trí đã đọc = tin nhắn mới nhất hiện có.
         latest = (await session.execute(select(func.max(Message.id)).where(Message.room_id == room.id))).scalar()
         session.add(RoomMember(room_id=room.id, user_id=user_id, last_read_message_id=latest))
@@ -240,7 +246,8 @@ async def _add_member(session: AsyncSession, room_id: int, user_id: int) -> Room
 
 
 @service.retry_on_deadlock
-async def _remove_member(session: AsyncSession, room_id: int, user_id: int) -> Room:
+async def _remove_member(session: AsyncSession, room_id: int, user_id: int) -> tuple[Room, list[int]]:
+    """Trả (phòng, id cần báo rooms_changed theo thứ tự: người bị gỡ trước)."""
     room = await _group_or_404(session, room_id, lock=True)
     membership = await session.get(RoomMember, (room.id, user_id))
     if membership is None:
@@ -248,10 +255,16 @@ async def _remove_member(session: AsyncSession, room_id: int, user_id: int) -> R
     was_owner = membership.role == "owner"
     await session.delete(membership)
     await session.flush()
-    if was_owner:  # không để nhóm có thành viên mà không có chủ: cùng quy tắc với khi chủ tự rời
-        await service.transfer_ownership(session, room.id)
+    # Nhóm có chủ (do người dùng tạo): chủ bị gỡ thì chuyển quyền, hết người thì lưu trữ như khi chủ tự rời.
+    # Nhóm admin tạo (không có chủ) giữ nguyên hành vi cũ.
+    heir, remaining = await service.after_member_removed(
+        session, room.id, was_owner=was_owner, archive_if_empty=was_owner
+    )
     await session.commit()
-    return await _group_or_404(session, room_id)
+    notify = [user_id, *remaining] if was_owner else [user_id]  # chủ đổi: vai trò/số thành viên của mọi người đổi
+    room = await _group_or_404(session, room_id, archived=None)
+    await session.refresh(room)  # archived_at có thể vừa đổi bằng UPDATE
+    return room, notify
 
 
 @router.post("/{room_id}/members", response_model=AdminRoomDetail)
@@ -273,6 +286,6 @@ async def remove_member(
     session: AsyncSession = Depends(get_session),
     bus: MessageBus = Depends(get_bus),
 ) -> AdminRoomDetail:
-    room = await _remove_member(session, room_id, user_id)
-    await _notify(bus, [user_id])
+    room, notify = await _remove_member(session, room_id, user_id)
+    await _notify(bus, notify)
     return await _detail(session, room)

@@ -856,3 +856,81 @@ async def test_deadlock_is_retried_once_then_409():
     with pytest.raises(service.ChatError) as info:
         await flaky(session, 5)
     assert (info.value.status, info.value.code) == (409, "conflict") and len(calls) == 2
+
+
+async def test_admin_removing_the_owner_notifies_everyone_affected(client, bus):
+    hroot = await _admin_headers(client)
+    a, b, c = await _users("alice", "bob", "carol")
+    ha = await _headers(client, "alice")
+    room = await _make_group(client, ha, "G", [c, b])
+    bus.published.clear()
+    assert (await client.delete(f"/api/admin/rooms/{room}/members/{a}", headers=hroot)).status_code == 200
+    notified = _changed_for(bus)
+    assert notified[0] == a and sorted(notified) == sorted([a, b, c])  # người bị gỡ trước, rồi người thừa kế + còn lại
+    bus.published.clear()  # gỡ người thường (nhóm có chủ): chỉ người bị gỡ như trước
+    assert (await client.delete(f"/api/admin/rooms/{room}/members/{c}", headers=hroot)).status_code == 200
+    assert _changed_for(bus) == [c]
+
+
+async def test_admin_removing_the_last_owner_archives_but_ownerless_groups_stay(client):
+    hroot = await _admin_headers(client)
+    a, b = await _users("alice", "bob")
+    ha = await _headers(client, "alice")
+    room = await _make_group(client, ha, "Một mình")
+    r = await client.delete(f"/api/admin/rooms/{room}/members/{a}", headers=hroot)
+    assert r.status_code == 200
+    assert await _archived_at(room) is not None
+    # nhóm admin tạo không chủ: gỡ hết thành viên vẫn không tự lưu trữ (hành vi cũ)
+    plain = await create_room(name="Admin tạo", member_ids=[b])
+    assert (await client.delete(f"/api/admin/rooms/{plain}/members/{b}", headers=hroot)).status_code == 200
+    assert await _archived_at(plain) is None
+
+
+async def test_admin_add_member_enforces_group_cap(client, small_limits):
+    small_limits(MAX_GROUP_MEMBERS=2)
+    hroot = await _admin_headers(client)
+    b, c = await _users("bob", "carol")
+    await create_user("alice")
+    ha = await _headers(client, "alice")
+    room = await _make_group(client, ha, "G", [b])
+    r = await client.post(f"/api/admin/rooms/{room}/members", json={"user_id": c}, headers=hroot)
+    assert (r.status_code, r.json()["detail"]) == (409, "group_full")
+    r = await client.post(f"/api/admin/rooms/{room}/members", json={"user_id": b}, headers=hroot)
+    assert r.status_code == 200  # đã là thành viên: idempotent kể cả khi đầy
+    assert len(await _roles(room)) == 2
+
+
+async def test_admin_room_edits_wait_for_the_room_lock(client):
+    """Đối chứng cho việc tuần tự hoá: giữ khoá phòng ở phiên khác, các thao tác admin phải chờ (không chạy chen)."""
+    hroot = await _admin_headers(client)
+    a, b, c = await _users("alice", "bob", "carol")
+    ha = await _headers(client, "alice")
+    room = await _make_group(client, ha, "G", [b])
+    calls = [
+        lambda: client.post(f"/api/admin/rooms/{room}/members", json={"user_id": b}, headers=hroot),
+        lambda: client.post(f"/api/admin/rooms/{room}/members", json={"user_id": c}, headers=hroot),
+        lambda: client.delete(f"/api/admin/rooms/{room}/members/{c}", headers=hroot),
+        lambda: client.patch(f"/api/admin/rooms/{room}", json={"name": "Z"}, headers=hroot),
+    ]
+    for make in calls:
+        async with SessionLocal() as holder:
+            await holder.execute(select(Room).where(Room.id == room).with_for_update(key_share=True))
+            pending = asyncio.ensure_future(make())
+            done, _ = await asyncio.wait({pending}, timeout=0.5)
+            assert not done
+            await holder.rollback()
+        assert (await pending).status_code in (200, 404)
+
+
+async def test_message_insert_is_not_blocked_by_group_management_lock(client):
+    from app.chat import service
+
+    a, b = await _users("alice", "bob")
+    ha = await _headers(client, "alice")
+    room = await _make_group(client, ha, "G", [b])
+    async with SessionLocal() as holder:
+        await holder.execute(select(Room).where(Room.id == room).with_for_update(key_share=True))
+        async with SessionLocal() as s:
+            message, _, created = await asyncio.wait_for(service.send_message(s, a, room, "xin chào", "m1"), 2)
+        assert created
+        await holder.rollback()
