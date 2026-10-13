@@ -32,7 +32,7 @@ npm run build    # kiểm tra kiểu và build ra frontend/dist
 
 ## Giao diện chat
 
-**Bố cục.** Cột trái là danh sách cuộc trò chuyện (nhóm và nhắn riêng, xếp theo hoạt động mới nhất, kèm tin cuối và số chưa đọc), ô "Lọc theo tên" và nút **"+ Mới"** với hai tab: "Nhắn riêng" (tìm đồng nghiệp theo tên hoặc tên đăng nhập rồi nhắn riêng) và "Tạo nhóm". Chân cột trái có lời chào, "Quản trị" (chỉ admin), "Đổi mật khẩu", "Đăng xuất". Cột phải là hội thoại đang mở với ô soạn tin ở dưới (Enter để gửi, Shift+Enter xuống dòng; Enter của bộ gõ tiếng Việt khi đang soạn chữ không gửi tin). Trên điện thoại (màn hình hẹp) chỉ hiện một trong hai: danh sách, hoặc hội thoại có nút "←" (Về danh sách).
+**Bố cục.** Cột trái là danh sách cuộc trò chuyện (nhóm và nhắn riêng, xếp theo hoạt động mới nhất, kèm tin cuối và số chưa đọc), ô "Lọc theo tên" và nút **"+ Mới"** với hai tab: "Nhắn riêng" (tìm đồng nghiệp theo tên hoặc tên đăng nhập rồi nhắn riêng) và "Tạo nhóm". Chân cột trái có lời chào, "Quản trị" (chỉ admin), "Thông báo" (cài đặt thông báo), "Đổi mật khẩu", "Đăng xuất". Cột phải là hội thoại đang mở với ô soạn tin ở dưới (Enter để gửi, Shift+Enter xuống dòng; Enter của bộ gõ tiếng Việt khi đang soạn chữ không gửi tin). Trên điện thoại (màn hình hẹp) chỉ hiện một trong hai: danh sách, hoặc hội thoại có nút "←" (Về danh sách).
 
 **Hành vi.**
 - Tin vừa gửi hiện ngay với trạng thái "Đang gửi…". Mất mạng thì tin chờ gửi và tự gửi lại khi kết nối có lại (mỗi tin có `client_id` nên không bao giờ bị lưu hai lần); quá 15 giây chưa gửi được thì hiện "Gửi lỗi" với nút "Thử lại"/"Bỏ". Trong lúc mất kết nối có dải "Đang kết nối lại…"; khi nối lại, tin bị lỡ được tải bù.
@@ -43,6 +43,15 @@ npm run build    # kiểm tra kiểu và build ra frontend/dist
 - **Đã xem:** chỉ hiện dưới **tin cuối cùng của chính mình** trong phòng (không hiện trên mọi tin, không hiện cho tin đã xoá). Chat 1-1: "Đã xem" khi người kia đã đọc tới tin đó. Nhóm: "Đã xem bởi N người" (N chỉ tính người khác mình; rê chuột để thấy tên). Nhãn cập nhật tức thì khi người khác mở phòng, và được tải lại đúng sau khi mất kết nối rồi nối lại.
 - **Đang soạn tin:** dòng "<Tên> đang soạn tin…" ngay trên ô soạn khi người khác trong phòng đang gõ (hai người: "A và B đang soạn tin…", nhiều hơn: "Nhiều người đang soạn tin…"). Dòng tự mất 5 giây sau tín hiệu cuối, hoặc ngay khi người đó gửi tin. Trình duyệt báo "đang soạn" tối đa 1 lần/3 giây mỗi phòng và không báo khi ô soạn trống; không bao giờ hiện chính mình.
 - **Online:** chấm xanh ở ảnh đại diện của phòng 1-1 và dòng "Đang hoạt động" ở đầu hội thoại 1-1 khi người kia đang mở ứng dụng (ít nhất một tab). Đóng tab cuối cùng thì chấm mất ngay; tab/máy bị treo hoặc mất mạng thì chấm mất sau khoảng 45-60 giây (`PRESENCE_TTL_SECONDS` + một chu kỳ quét). **Quyền riêng tư:** chỉ thấy trạng thái online của người **chung ít nhất một phòng chưa lưu trữ** với mình; không có danh sách online toàn công ty, admin cũng không được thấy thêm. Không có "lần cuối online".
+
+**Trả lời, @nhắc tên và thông báo.**
+- **Trả lời:** rê chuột (hoặc Tab tới) một tin rồi bấm nút "Trả lời" (↩) cạnh bong bóng; ô soạn hiện "Đang trả lời <Tên>: <trích>" với nút ✕ (hoặc Esc) để huỷ. Tin gửi đi mang khối trích dẫn (tên người gửi gốc + tối đa 120 ký tự). Bấm khối trích dẫn thì cuộn tới tin gốc và nháy sáng nếu tin đó đang nằm trong phần đã tải (nhảy tới tin ở xa làm ở Plan 7). Chỉ trả lời được tin **cùng phòng**, chưa bị xoá. Tin gốc về sau bị sửa/xoá thì mọi trích dẫn cập nhật ngay; tin đã xoá hiện "Tin nhắn đã bị xoá" và không lộ nội dung cũ. Nếu tin gốc bị xoá đúng lúc đang gửi, tin trả lời báo lỗi với nút "Gửi không kèm trả lời".
+- **@nhắc tên:** gõ `@` ở đầu một từ để mở gợi ý thành viên của phòng (không gồm chính mình); gõ tiếp để lọc, không cần dấu ("quoc" khớp "Quốc"). Mũi tên lên/xuống để chọn, Enter hoặc Tab chèn `@Họ Tên ` (Enter lúc gợi ý đang mở **không** gửi tin), Esc đóng gợi ý. Xoá chữ `@Họ Tên` khỏi ô soạn thì người đó không còn bị nhắc. Tên được nhắc hiện nổi bật trong tin; tin nhắc **mình** có viền màu. Thanh bên hiện nhãn "@" cạnh số chưa đọc khi có tin chưa đọc nhắc mình; mở phòng thì mất.
+- **@all:** chỉ trong **nhóm** (không có trong chat 1-1), mục "@all — Nhắc tất cả mọi người" đứng đầu gợi ý; mọi thành viên khác được tính là bị nhắc (nhãn "@", viền, thông báo). Máy chủ chỉ chấp nhận khi nội dung có chữ `@all` đứng riêng; mỗi người tối đa `MENTION_ALL_PER_WINDOW` tin `@all` trong `MENTION_ALL_WINDOW_SECONDS` giây (mặc định 10 tin/10 phút, mọi phòng cộng lại), vượt thì tin không được gửi (`rate_limited`). Sửa tin không thêm được `@all` mới.
+- **Thông báo trình duyệt** (nút "Thông báo" ở chân cột trái; mặc định **tắt** cho tới khi người dùng tự bật; trình duyệt chỉ hỏi quyền khi bấm "Bật thông báo trình duyệt"). Khi bật, có cửa sổ thông báo (tiêu đề là tên phòng/người, nội dung "<Người gửi>: <tin>") cho tin **của người khác** vừa đến trực tiếp qua WebSocket, khi cửa sổ đang ẩn/không có tiêu điểm hoặc đang mở phòng khác, và tin thuộc một trong: chat 1-1; nhắc tên mình hoặc `@all`; trả lời tin của mình; (tuỳ chọn "Mọi tin trong nhóm", mặc định tắt) mọi tin nhóm. Không bao giờ báo tin của chính mình, tin đã xoá, tin của phòng đang xem khi cửa sổ đang hiển thị và có tiêu điểm, hay tin cũ được tải bù sau khi mất kết nối. Mỗi phòng chỉ giữ một thông báo (thông báo mới thay cái cũ, tự đóng sau 8 giây); bấm vào thông báo thì mở đúng phòng.
+- **Âm báo** (mặc định bật, tắt được) phát cùng các trường hợp trên, kể cả khi không có quyền thông báo; trình duyệt chỉ cho phát âm sau lần chạm/gõ phím đầu tiên trên trang. **Tiêu đề tab** luôn là `(N) Kết Nối` với N là tổng số chưa đọc (trên 99 hiện `99+`), về `Kết Nối` khi đọc hết; không phụ thuộc quyền thông báo.
+- **HTTP và HTTPS:** trình duyệt chỉ cho Web Notification ở ngữ cảnh an toàn (HTTPS hoặc `localhost`). Truy cập bằng `http://<IP nội bộ>` thì hộp cài đặt hiện "Cần HTTPS để bật thông báo"; âm báo và số chưa đọc trên tiêu đề tab vẫn hoạt động. HTTPS nội bộ làm ở Plan 8.
+- **Quyền riêng tư:** nội dung tin hiện trên màn hình khoá/khu vực thông báo của máy. Tắt "Hiện nội dung tin" thì thông báo chỉ ghi "Tin nhắn mới" (tên phòng/người gửi vẫn hiện). Cài đặt lưu trong trình duyệt (`localStorage`, theo từng máy), không gửi lên máy chủ.
 
 **Nhóm do người dùng tạo.**
 - **Tạo:** "+ Mới" → tab "Tạo nhóm": đặt tên (tối đa 100 ký tự), tìm và tích chọn thành viên từ danh bạ toàn công ty (khác chi nhánh cũng được; danh sách ghi chi nhánh của từng người), bấm "Tạo nhóm" thì vào thẳng phòng mới. Người tạo là **chủ nhóm**. Nhóm do người dùng tạo là nhóm "Liên chi nhánh" (`branch_id` rỗng). Người được mời thấy nhóm ngay, không cần tải lại trang.
@@ -56,7 +65,7 @@ npm run build    # kiểm tra kiểu và build ra frontend/dist
 
 ### Kiểm tra trên trình duyệt thật: `scripts/e2e_chat_ui.mjs`
 
-**Chỉ chạy trên stack thử nghiệm**: script tạo người dùng và nhóm, đổi mật khẩu admin, khoá một tài khoản. Nó điều khiển Chromium qua Playwright với hai người dùng song song và kiểm: gửi/nhận tức thì, chưa đọc, nhắn riêng mới, mất mạng rồi nối lại (bù tin, không trùng), gửi khi mất mạng, sửa/xoá, cuộn (đúng đáy khi mở, giữ vị trí khi tải tin cũ, "↓ N tin mới"), an toàn liên kết/HTML, token không nằm trong storage hay URL, giao diện điện thoại 390px, lưu trữ và khôi phục nhóm, online (đóng/mở trang, hai tab đóng một), "đang soạn tin" (hiện, tự hết hạn, mất khi gửi), "đã xem" (1-1 và "Đã xem bởi N người" trong nhóm), trạng thái đúng sau khi mất mạng rồi nối lại, quyền riêng tư của online (`GET /presence` không lộ người không chung phòng), nhóm do người dùng tạo (tạo nhóm liên chi nhánh qua "Tạo nhóm"; chủ nhóm đổi tên, thêm, gỡ thành viên bằng bàn phím với focus ở lại trong hộp thoại; người bị gỡ mất quyền ngay qua giao diện, REST và WebSocket; thành viên thường không có điều khiển quản lý và bị 403; chủ rời thì quyền chuyển ngay; giải tán phải gõ đúng tên, admin khôi phục; giới hạn số nhóm làm chủ), khoá tài khoản, không có lỗi JavaScript hay hộp thoại ngoài dự kiến.
+**Chỉ chạy trên stack thử nghiệm**: script tạo người dùng và nhóm, đổi mật khẩu admin, khoá một tài khoản. Nó điều khiển Chromium qua Playwright với hai người dùng song song và kiểm: gửi/nhận tức thì, chưa đọc, nhắn riêng mới, mất mạng rồi nối lại (bù tin, không trùng), gửi khi mất mạng, sửa/xoá, cuộn (đúng đáy khi mở, giữ vị trí khi tải tin cũ, "↓ N tin mới"), an toàn liên kết/HTML, token không nằm trong storage hay URL, giao diện điện thoại 390px, lưu trữ và khôi phục nhóm, online (đóng/mở trang, hai tab đóng một), "đang soạn tin" (hiện, tự hết hạn, mất khi gửi), "đã xem" (1-1 và "Đã xem bởi N người" trong nhóm), trạng thái đúng sau khi mất mạng rồi nối lại, quyền riêng tư của online (`GET /presence` không lộ người không chung phòng), trả lời (trích dẫn đúng, bấm thì cuộn tới và nháy, xoá tin gốc thì trích dẫn đổi ngay, `reply_to_id` của phòng khác/tin đã xoá bị từ chối `invalid_reply`), @nhắc tên (gợi ý, lọc không dấu, Enter chọn không gửi, nhãn "@" ở thanh bên, xoá chữ `@Tên` thì không gửi kèm mention, kiểm cả frame gửi lên lẫn REST), `@all` (đứng đầu gợi ý trong nhóm, không có trong 1-1, máy chủ bỏ cờ khi thiếu chữ `@all`, giới hạn tốc độ), thông báo trình duyệt (bật trong cài đặt; đúng một thông báo và một tiếng với tiêu đề/nội dung/tag đúng; không báo tin nhóm thường, tin đang xem hay tin bù sau khi mất kết nối; báo cho phòng 1-1 vừa được tạo; tắt xem trước thì "Tin nhắn mới"; tiêu đề tab `(N) Kết Nối`), nhóm do người dùng tạo (tạo nhóm liên chi nhánh qua "Tạo nhóm"; chủ nhóm đổi tên, thêm, gỡ thành viên bằng bàn phím với focus ở lại trong hộp thoại; người bị gỡ mất quyền ngay qua giao diện, REST và WebSocket; thành viên thường không có điều khiển quản lý và bị 403; chủ rời thì quyền chuyển ngay; giải tán phải gõ đúng tên, admin khôi phục; giới hạn số nhóm làm chủ), khoá tài khoản, không có lỗi JavaScript hay hộp thoại ngoài dự kiến.
 
 Playwright được cài **ngoài repo** (một lần):
 
@@ -64,7 +73,7 @@ Playwright được cài **ngoài repo** (một lần):
 mkdir /tmp/kn-e2e && cd /tmp/kn-e2e && npm init -y && npm i playwright@1.49.1 && npx playwright install chromium
 ```
 
-Chạy (từ thư mục gốc repo, Node 22+, stack đã `docker compose up -d --build` và có admin mới tạo bằng `create-admin`). Stack thử nghiệm phải đặt `MAX_OWNED_GROUPS=3` trong `.env` (bước kiểm giới hạn số nhóm làm chủ) và nên đặt `PRESENCE_OFFLINE_GRACE_SECONDS=0.5`:
+Chạy (từ thư mục gốc repo, Node 22+, stack đã `docker compose up -d --build` và có admin mới tạo bằng `create-admin`). Stack thử nghiệm phải đặt `MAX_OWNED_GROUPS=3` (bước kiểm giới hạn số nhóm làm chủ) và `MENTION_ALL_PER_WINDOW=3` (bước kiểm giới hạn `@all`) trong `.env`, và nên đặt `PRESENCE_OFFLINE_GRACE_SECONDS=0.5`:
 
 ```bash
 PLAYWRIGHT_DIR=/tmp/kn-e2e BASE_URL=http://localhost ADMIN_USER=ui.admin ADMIN_TEMP_PASSWORD=<mật khẩu tạm> \
@@ -73,7 +82,7 @@ PLAYWRIGHT_DIR=/tmp/kn-e2e BASE_URL=http://localhost ADMIN_USER=ui.admin ADMIN_T
 
 Mật khẩu mới của admin do script sinh ngẫu nhiên và in ra một lần ở đầu; chạy lại trên cùng stack **bắt buộc** đặt `E2E_ADMIN_NEW_PASSWORD=<mật khẩu đã in>` (hoặc tự đặt giá trị ngay từ lần đầu).
 
-Ghi chú: script từ chối `BASE_URL` không phải localhost trừ khi đặt `E2E_ALLOW_REMOTE=1`. `context.setOffline` của Chromium không ngắt WebSocket, nên script đưa WebSocket qua proxy của Playwright (`routeWebSocket`) và tự cắt kết nối để mô phỏng mất mạng.
+Ghi chú: script từ chối `BASE_URL` không phải localhost trừ khi đặt `E2E_ALLOW_REMOTE=1`. `context.setOffline` của Chromium không ngắt WebSocket, nên script đưa WebSocket qua proxy của Playwright (`routeWebSocket`) và tự cắt kết nối để mô phỏng mất mạng; proxy này cũng ghi lại các frame `send` mà trang gửi lên để kiểm `reply_to_id`/`mentions`/`mention_all`. Script chạy Chromium đầy đủ ở chế độ headless mới (`channel: 'chromium'`, có sẵn sau `npx playwright install chromium`) vì bản `chromium-headless-shell` mặc định luôn báo quyền thông báo là `denied`. Phần thông báo cấp quyền `notifications` cho trang của Bob, thay `Notification`/`AudioContext` bằng bản ghi lại lời gọi (`addInitScript`) và giả lập trạng thái tab ẩn (Chromium headless không đổi `document.visibilityState` khi chuyển tab). `localhost` là ngữ cảnh an toàn nên trường hợp HTTP thuần ("Cần HTTPS để bật thông báo") chỉ được kiểm bằng test đơn vị của frontend.
 
 Script in `PASS`/`FAIL` cho từng bước, tổng kết `N/M đạt` và thoát mã 1 nếu có bước hỏng. Tuỳ chọn: `SHOT_DIR=<thư mục>` để lưu ảnh chụp các trang khi một bước hỏng, `HEADED=1` để xem trình duyệt chạy. Tên người dùng và nhóm có hậu tố ngẫu nhiên nên chạy lại được trên cùng stack (admin đã đổi mật khẩu ở lần chạy trước chỉ dùng lại được khi đặt `E2E_ADMIN_NEW_PASSWORD` đúng giá trị đã in).
 
@@ -84,7 +93,7 @@ Tất cả dưới `/api`, cần `Authorization: Bearer <access token>` và đã
 | Việc | Endpoint |
 |---|---|
 | Tìm đồng nghiệp để nhắn riêng | `GET /users/directory?q=` |
-| Danh sách phòng của tôi (kèm tin cuối, số chưa đọc) | `GET /rooms` → mỗi phòng có `my_role`: `"owner"` (tôi là chủ nhóm), `"member"`, hoặc `null` (phòng 1-1) |
+| Danh sách phòng của tôi (kèm tin cuối, số chưa đọc) | `GET /rooms` → mỗi phòng có `my_role`: `"owner"` (tôi là chủ nhóm), `"member"`, hoặc `null` (phòng 1-1), và `unread_mentions`: số tin chưa đọc (sau mốc đã đọc, không tính tin của mình và tin đã xoá) nhắc tên tôi hoặc có `@all` |
 | Mở chat 1-1 | `POST /rooms/direct` `{"user_id": 3}` |
 | Tạo nhóm (người tạo là chủ) | `POST /rooms/group` `{"name": "...", "member_ids": [3, 7]}` → 201 phòng mới. Tên 1-100 ký tự (tự cắt khoảng trắng), `member_ids` bỏ trùng và bỏ chính mình. Người không tồn tại/bị khoá → `404 user_not_found` (không tạo gì); vượt `MAX_OWNED_GROUPS` → `409 too_many_groups`; vượt `MAX_GROUP_MEMBERS` → `409 group_full` |
 | Đổi tên nhóm (chỉ chủ) | `PATCH /rooms/{id}` `{"name": "..."}` → phòng |
@@ -96,8 +105,13 @@ Tất cả dưới `/api`, cần `Authorization: Bearer <access token>` và đã
 | Đánh dấu đã đọc (phát `read` cho cả phòng khi mốc tăng) | `POST /rooms/{id}/read` `{"message_id": 10}` |
 | Thành viên và mốc đã đọc của từng người | `GET /rooms/{id}/members` → `[{"user_id", "full_name", "role" ("owner" hoặc "member"), "last_read_message_id" (hoặc null)}]`, sắp theo tên; không phải thành viên hoặc phòng đã lưu trữ → `404 room_not_found` |
 | Ai đang online (chỉ người chung phòng với tôi, không gồm chính tôi) | `GET /presence` → `{"online_user_ids": [3, 7]}` |
-| Sửa / xoá tin của mình | `PATCH` / `DELETE /messages/{id}` |
+| Sửa / xoá tin của mình | `PATCH /messages/{id}` `{"body": "...", "mentions": [3]}` (`mentions` tuỳ chọn; bỏ qua thì giữ các mention cũ mà chữ `@Tên` còn trong nội dung mới; `mention_all` chỉ được giữ khi `@all` còn trong nội dung, không thêm mới được; không đổi `reply_to`) / `DELETE /messages/{id}` |
 | Admin quản lý nhóm | `/admin/rooms` (tạo, đổi tên, thêm/bớt thành viên, lưu trữ = xoá; `?archived=true` xem nhóm đã lưu trữ; `POST /admin/rooms/{id}/restore` khôi phục) |
+
+**Dạng một tin nhắn** (trong `message`, `message_updated`, `GET /rooms/{id}/messages`, `PATCH /messages/{id}` và `last_message` của `GET /rooms`): `{"id", "room_id", "sender_id", "sender_name", "body", "kind", "client_id", "created_at", "edited_at", "deleted", "reply_to", "mentions", "mention_all"}`.
+- `reply_to`: `{"id", "sender_id", "sender_name", "snippet", "deleted"}` hoặc `null`. `snippet` tối đa 120 ký tự (cắt theo ký tự Unicode, bỏ ký tự điều khiển, xuống dòng thành khoảng trắng), rỗng khi tin gốc đã bị xoá (`deleted: true`). Tin gốc không còn (phòng bị xoá vĩnh viễn) thì `null`.
+- `mentions`: `[{"user_id", "full_name"}]` (rỗng nếu không nhắc ai); `mention_all`: `true` khi tin `@all` được chấp nhận. Tin đã xoá không mang `reply_to`/`mentions`.
+- Một trang tin nhắn nạp trích dẫn và mention bằng truy vấn gộp (số truy vấn cố định, không N+1).
 
 **Quyền với các endpoint nhóm của người dùng:** thành viên không phải chủ gọi đổi tên/thêm/gỡ/giải tán → `403 forbidden` (nhóm do admin tạo không có chủ nên luôn là 403); người ngoài nhóm, phòng 1-1 và nhóm đã lưu trữ → `404 room_not_found` (không lộ nhóm có tồn tại hay không). Mỗi thay đổi (tạo, đổi tên, thêm, gỡ, rời, giải tán) gửi `rooms_changed` cho mọi người bị ảnh hưởng, kể cả người vừa bị gỡ hoặc vừa rời, nên người đó không còn nhận `message`/`typing`/`read`/`presence` của nhóm.
 
@@ -111,7 +125,11 @@ Tất cả dưới `/api`, cần `Authorization: Bearer <access token>` và đã
 
 ### WebSocket `/api/ws`
 
-Mở kết nối rồi gửi ngay `{"type":"auth","token":"<access token>"}` (trong 5 giây). Sau khi nhận `{"type":"ready","user_id":1}`, gửi tin bằng `{"type":"send","room_id":1,"body":"...","client_id":"<uuid>"}` (`client_id` tối đa 64 ký tự, gửi lại cùng `client_id` là idempotent). Ping: `{"type":"ping"}` trả `{"type":"pong"}`. Server đẩy xuống: `message`, `message_updated`, `message_deleted`, `rooms_changed`, `resync`, `typing`, `read`, `presence`, `error` (`{"type":"error","code":"...","client_id":...}`).
+Mở kết nối rồi gửi ngay `{"type":"auth","token":"<access token>"}` (trong 5 giây). Sau khi nhận `{"type":"ready","user_id":1}`, gửi tin bằng `{"type":"send","room_id":1,"body":"...","client_id":"<uuid>"}` (`client_id` tối đa 64 ký tự, gửi lại cùng `client_id` là idempotent: bản đầu thắng, `reply_to_id`/`mentions` của lần sau bị bỏ qua). Trường tuỳ chọn của `send`:
+- `reply_to_id` (số nguyên ≥ 1): trả lời tin đó. Tin không tồn tại, thuộc phòng khác hoặc đã xoá → `error` `invalid_reply`, tin **không** được tạo.
+- `mentions` (mảng số nguyên ≥ 1, tối đa 200 phần tử thô): id người được nhắc. Máy chủ không phân tích văn bản để tìm người, chỉ giữ id là thành viên phòng **và** có chữ `@{full_name}` trong nội dung; bỏ trùng, tối đa 20 id; id không hợp lệ bị bỏ im lặng (không lỗi, không lộ người đó có tồn tại).
+- `mention_all` (bool): chỉ được chấp nhận trong nhóm và khi nội dung có `@all` đứng riêng (không dính chữ/số trước hoặc sau); ngược lại tin vẫn được gửi với `mention_all: false`. Vượt giới hạn `@all` → `error` `rate_limited`, tin không được tạo.
+- Sai kiểu/khoảng (`reply_to_id`, phần tử `mentions`, `mention_all` không phải bool) → `invalid_message`. Ping: `{"type":"ping"}` trả `{"type":"pong"}`. Server đẩy xuống: `message`, `message_updated`, `message_deleted`, `rooms_changed`, `resync`, `typing`, `read`, `presence`, `error` (`{"type":"error","code":"...","client_id":...}`).
 
 **Đã xem, đang soạn tin, online**
 
@@ -147,10 +165,11 @@ Giới hạn frame là **16 KiB tính theo byte UTF-8** (không phải số ký 
 | `message_too_long` | WS, REST | Vượt 4000 ký tự (`MAX_MESSAGE_LENGTH`) khi gửi; khi sửa tin chỉ trong khoảng 4001-10000 ký tự, trên 10000 ký tự REST trả 422 `validation_error` |
 | `invalid_client_id` | WS (không có REST gửi tin) | `client_id` rỗng hoặc dài quá 64 ký tự (echo lại `client_id: null`) |
 | `invalid_message` | WS, REST | Sai kiểu/khoảng giá trị (`room_id`, `body`, `client_id`...) hoặc chứa ký tự NUL |
+| `invalid_reply` | WS (400) | `reply_to_id` không tồn tại, thuộc phòng khác hoặc là tin đã xoá ("Không trả lời được tin này."); tin không được tạo |
 | `invalid_json` | WS | Frame không phải JSON |
 | `unknown_type` | WS | `type` không hỗ trợ |
 | `unsupported_frame` | WS | Frame nhị phân |
-| `rate_limited` | WS | Xem trên |
+| `rate_limited` | WS | Quá 20 tin/10 giây mỗi kết nối (xem trên), hoặc quá giới hạn tin `@all` (`MENTION_ALL_PER_WINDOW`) |
 | `internal_error` | WS | Lỗi phía server khi gửi tin; thử lại được |
 | `room_not_found` | WS, REST | Không phải thành viên hoặc phòng không tồn tại (admin cũng không đọc/gửi được nếu không là thành viên) |
 | `message_not_found` | REST | Tin không tồn tại hoặc không thuộc phòng |
@@ -250,6 +269,15 @@ pytest -v
 Bộ đếm theo phút nằm trong Redis (khoá có tiền tố `BUS_CHANNEL_PREFIX`); Redis lỗi thì **cho qua** (ghi log cảnh báo) để thao tác nhóm không hỏng theo. Trần theo ngày đếm từ PostgreSQL nên không phụ thuộc Redis.
 
 **Thời điểm mất quyền:** người bị gỡ/rời nhóm không thể gửi thêm tin vào nhóm đó ngay khi lệnh gỡ hoàn tất (việc gửi tin khoá dòng thành viên nên được tuần tự hoá với việc gỡ). Về phía nhận, kết nối WebSocket đang mở của họ ngừng nhận sự kiện của phòng sau khi hub xử lý `rooms_changed`; có thể còn một cửa sổ cỡ mili-giây giữa lúc gỡ xong và lúc hub cập nhật, trong đó họ vẫn nhận được vài sự kiện đã phát đi.
+
+## Giới hạn `@all` (tuỳ chọn, xem `.env.example`)
+
+| Biến | Mặc định | Ý nghĩa |
+|---|---|---|
+| `MENTION_ALL_PER_WINDOW` | 10 | Số tin `@all` tối đa của một người trong mỗi cửa sổ (mọi phòng cộng lại). Vượt: tin không được tạo, WS trả `rate_limited`. Stack chạy `scripts/e2e_chat_ui.mjs` phải đặt `3`. |
+| `MENTION_ALL_WINDOW_SECONDS` | 600 | Độ dài cửa sổ (giây). |
+
+Bộ đếm nằm trong Redis; Redis lỗi thì **cho qua** (ghi log cảnh báo) để việc gửi tin không hỏng theo.
 
 ## Cấu hình môi trường: `APP_ENV` và `COOKIE_SECURE`
 

@@ -2,7 +2,8 @@
 //
 // CHỈ DÙNG TRÊN STACK THỬ NGHIỆM: script tạo người dùng, nhóm, đổi mật khẩu admin và khoá một tài khoản.
 //
-// Stack thử nghiệm phải chạy với MAX_OWNED_GROUPS=3 trong .env (bước giới hạn số nhóm làm chủ).
+// Stack thử nghiệm phải chạy với MAX_OWNED_GROUPS=3 (bước giới hạn số nhóm làm chủ) và MENTION_ALL_PER_WINDOW=3
+// (bước giới hạn tin @all) trong .env.
 //
 // Playwright được cài NGOÀI repo (ví dụ một thư mục tạm):
 //   mkdir <dir> && cd <dir> && npm init -y && npm i playwright@1.49.1 && npx playwright install chromium
@@ -114,8 +115,8 @@ async function openBot(token) {
   }
   await ready
   let n = 0
-  /** Gửi một tin; trả frame phản hồi (`message` hoặc `error`) cho đúng client_id. */
-  const attempt = (roomId, body) => {
+  /** Gửi một tin (kèm `extra`: reply_to_id, mentions, mention_all); trả frame phản hồi (`message` hoặc `error`) cho đúng client_id. */
+  const attempt = (roomId, body, extra = {}) => {
     const clientId = `bot-${TAG}-${Date.now()}-${n++}`
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('bot: gửi quá hạn')), 10000)
@@ -123,14 +124,14 @@ async function openBot(token) {
         clearTimeout(timer)
         resolve(data)
       })
-      ws.send(JSON.stringify({ type: 'send', room_id: roomId, body, client_id: clientId }))
+      ws.send(JSON.stringify({ ...extra, type: 'send', room_id: roomId, body, client_id: clientId }))
     })
   }
   return {
     frames,
     attempt,
-    async send(roomId, body) {
-      const data = await attempt(roomId, body)
+    async send(roomId, body, extra = {}) {
+      const data = await attempt(roomId, body, extra)
       if (data.type !== 'message') throw new Error('bot: lỗi ' + JSON.stringify(data))
       return data.message
     },
@@ -276,7 +277,7 @@ async function settle(page) {
 // ---------------- chuẩn bị dữ liệu (REST) ----------------
 
 console.log(`Chạy với BASE_URL=${BASE}, thẻ ${TAG}`)
-const adminToken = await restReady(ADMIN_USER, ADMIN_TEMP_PASSWORD, ADMIN_PW)
+let adminToken = await restReady(ADMIN_USER, ADMIN_TEMP_PASSWORD, ADMIN_PW)
 const branches = await must('GET', '/admin/branches', adminToken)
 if (!branches.length) throw new Error('chưa có chi nhánh nào')
 const branchId = branches[0].id
@@ -291,17 +292,20 @@ const bobId = created[BOB.username].id
 const carolId = created[CAROL.username].id
 const daveId = created[DAVE.username].id
 const group = await must('POST', '/admin/rooms', adminToken, { name: GROUP, branch_id: branchId, member_ids: [aliceId, bobId, carolId] })
-const carolToken = await restReady(CAROL.username, created[CAROL.username].temp_password, CAROL_PW)
+let carolToken = await restReady(CAROL.username, created[CAROL.username].temp_password, CAROL_PW)
 const groupDave = await must('POST', '/admin/rooms', adminToken, { name: GROUP_DAVE, branch_id: branchId, member_ids: [bobId, daveId] })
 const daveToken = await restReady(DAVE.username, created[DAVE.username].temp_password, DAVE_PW)
 
 // ---------------- trình duyệt ----------------
 
-const browser = await chromium.launch({ headless: !process.env.HEADED })
+// channel 'chromium' = Chromium đầy đủ ở chế độ headless mới: chromium-headless-shell (mặc định) luôn báo
+// Notification.permission = 'denied' dù đã cấp quyền, nên không kiểm được thông báo trình duyệt.
+const browser = await chromium.launch({ headless: !process.env.HEADED, channel: 'chromium' })
 const desktop = { viewport: { width: 1280, height: 800 }, locale: 'vi-VN' }
 const aliceCtx = await browser.newContext(desktop)
 const bobCtx = await browser.newContext(desktop)
 const sockets = { alice: [], bob: [] }
+const clientFrames = { alice: [], bob: [] } // frame `send` mà trang gửi lên máy chủ (không ghi frame auth)
 
 /**
  * Mất mạng thật cho cả WebSocket. `context.setOffline` của Chromium chỉ chặn HTTP: WebSocket đang mở
@@ -318,6 +322,14 @@ async function networkSwitch(ctx, who) {
       return
     }
     const server = ws.connectToServer()
+    // Đã đặt onMessage thì Playwright không tự chuyển tiếp chiều client -> server nữa: tự chuyển, ghi lại frame `send`.
+    ws.onMessage((message) => {
+      if (typeof message === 'string' && message.includes('"send"')) {
+        const data = JSON.parse(message)
+        if (data.type === 'send') clientFrames[who].push(data)
+      }
+      server.send(message)
+    })
     const link = { ws, server }
     state.live.add(link)
     ws.onClose((code, reason) => {
@@ -1261,11 +1273,518 @@ await step('24. Giới hạn MAX_OWNED_GROUPS=3: nhóm thứ 4 -> 409 too_many_g
   if ((await owned()).length !== 3) throw new Error(`sau khi tạo lại Carol làm chủ ${(await owned()).length} nhóm`)
 })
 
+// ---------------- trả lời, @nhắc tên, @all, thông báo trình duyệt ----------------
+
+/** Access token sống 15 phút: lấy lại trước các bước dùng REST/WS thô ở cuối script. */
+async function refreshTokens() {
+  adminToken = await restReady(ADMIN_USER, ADMIN_PW)
+  aliceToken = await restReady(ALICE.username, ALICE_PW)
+  bobToken = await restReady(BOB.username, BOB_PW)
+  carolToken = await restReady(CAROL.username, CAROL_PW)
+}
+
+const msgById = (page, id) => msgList(page).locator(`.msg[data-message-id="${id}"]`)
+const quoteIn = (page, text) => bubbles(page, text).locator('.quote')
+const picker = (page) => page.getByRole('listbox', { name: 'Gợi ý nhắc tên' })
+const pickerOptions = (page) => picker(page).getByRole('option').allInnerTexts()
+const mentionBadge = (page, name) => roomItem(page, name).locator('.mention-badge')
+const unreadNumber = (page, name) => roomItem(page, name).locator('.unread-badge:not(.mention-badge)')
+const sentFrames = (who, body) => clientFrames[who].filter((f) => f.body === body)
+const hasClass = async (locator, cls) => ((await locator.getAttribute('class')) ?? '').split(/\s+/).includes(cls)
+
+async function roomMessages(token, roomId) {
+  return (await must('GET', `/rooms/${roomId}/messages?limit=100`, token)).items
+}
+async function storedMessage(token, roomId, body) {
+  const found = (await roomMessages(token, roomId)).filter((m) => m.body === body)
+  if (found.length !== 1) throw new Error(`máy chủ có ${found.length} tin "${body}" (mong đợi 1)`)
+  return found[0]
+}
+
+/** Bong bóng tin `id` có nằm trong khung nhìn của danh sách tin không. */
+const inView = (page, id) =>
+  msgList(page).evaluate((el, mid) => {
+    const b = el.querySelector(`.msg[data-message-id="${mid}"] .bubble`)
+    if (!b) return false
+    const r = b.getBoundingClientRect()
+    const l = el.getBoundingClientRect()
+    return r.bottom > l.top + 4 && r.top < l.bottom - 4
+  }, id)
+
+await refreshTokens()
+
+await step('25. Trả lời: Bob trả lời tin của Alice trong nhóm; Alice thấy trích dẫn đúng, bấm thì cuộn tới tin gốc và nháy; xoá gốc thì trích dẫn của Bob đổi ngay; reply_to_id phòng khác/đã xoá qua WS -> invalid_reply', async () => {
+  const ORIGINAL = `gốc để trả lời ${TAG}`
+  const REPLY = `đây là câu trả lời ${TAG}`
+  await openRoom(alice, GROUP)
+  await openRoom(bob, GROUP)
+  await send(alice, ORIGINAL)
+  const originalId = await confirmedId(alice, ORIGINAL)
+  await msgById(bob, originalId).waitFor({ timeout: 5000 })
+  // Đẩy tin gốc ra khỏi khung nhìn (vẫn nằm trong trang đã tải) để bấm trích dẫn thật sự phải cuộn.
+  await botSendMany(carolToken, group.id, Array.from({ length: 20 }, (_, i) => `tin đệm sau tin gốc #${i + 1}#`))
+  await bubbles(bob, 'tin đệm sau tin gốc #20#').waitFor({ timeout: 10000 })
+  await bubbles(alice, 'tin đệm sau tin gốc #20#').waitFor({ timeout: 10000 })
+
+  // Nút "Trả lời" nằm ngoài luồng và chỉ hiện khi rê chuột/focus vào tin.
+  const target = msgById(bob, originalId)
+  await target.hover()
+  await target.getByRole('button', { name: 'Trả lời' }).click()
+  const bar = bob.locator('.reply-bar [role="status"]')
+  await waitUntil(async () => (await bar.innerText()).trim() === `Đang trả lời ${ALICE.fullName}: ${ORIGINAL}`, 3000, 'thanh "Đang trả lời <Alice>: <tin gốc>"')
+  if ((await bob.evaluate(() => document.activeElement?.getAttribute('aria-label'))) !== 'Nhập tin nhắn') throw new Error('focus không về ô soạn sau khi bấm "Trả lời"')
+  await bob.keyboard.type(REPLY)
+  await bob.keyboard.press('Enter')
+  const replyId = await confirmedId(bob, REPLY)
+  if (await bob.locator('.reply-bar').count()) throw new Error('thanh trả lời không đóng sau khi gửi')
+  const frame = sentFrames('bob', REPLY)[0]
+  if (frame?.reply_to_id !== originalId) throw new Error('frame send của Bob: reply_to_id=' + frame?.reply_to_id)
+  const stored = await storedMessage(carolToken, group.id, REPLY)
+  if (stored.reply_to?.id !== originalId || stored.reply_to.sender_id !== aliceId || stored.reply_to.deleted || stored.reply_to.snippet !== ORIGINAL) throw new Error('REST reply_to: ' + JSON.stringify(stored.reply_to))
+
+  // Alice thấy khối trích dẫn đúng tên và nội dung.
+  const quote = quoteIn(alice, REPLY)
+  await quote.waitFor({ timeout: 5000 })
+  const qName = (await quote.locator('.quote-name').innerText()).trim()
+  const qText = (await quote.locator('.quote-text').innerText()).trim()
+  if (qName !== ALICE.fullName || qText !== ORIGINAL) throw new Error(`trích dẫn "${qName}: ${qText}"`)
+  await settle(alice)
+  if (await inView(alice, originalId)) throw new Error('tin gốc đã nằm trong khung nhìn trước khi bấm (không kiểm được việc cuộn)')
+  const original = msgById(alice, originalId)
+  if (await hasClass(original, 'msg-flash')) throw new Error('tin gốc nháy trước khi bấm')
+  await quote.click() // khối trích dẫn là nút "Đến tin được trả lời"
+  await waitUntil(() => hasClass(original, 'msg-flash'), 2000, 'tin gốc có lớp msg-flash')
+  await waitUntil(() => inView(alice, originalId), 3000, 'tin gốc được cuộn vào khung nhìn')
+  const t0 = Date.now()
+  await waitUntil(async () => !(await hasClass(original, 'msg-flash')), 5000, 'lớp msg-flash mất')
+  const flashMs = Date.now() - t0
+
+  // Alice xoá tin gốc: trích dẫn trên trang Bob (đã tải sẵn) chuyển thành "Tin nhắn đã bị xoá", không tải lại.
+  await markPage(bob)
+  await original.getByRole('button', { name: 'Xoá tin nhắn' }).click()
+  const bobQuote = quoteIn(bob, REPLY)
+  await bobQuote.getByText('Tin nhắn đã bị xoá').waitFor({ timeout: 5000 })
+  if ((await bobQuote.innerText()).includes(ORIGINAL)) throw new Error('trích dẫn của Bob vẫn lộ nội dung tin đã xoá')
+  if ((await bobQuote.locator('.quote-name').innerText()).trim() !== ALICE.fullName) throw new Error('trích dẫn mất tên người gửi')
+  await quoteIn(alice, REPLY).getByText('Tin nhắn đã bị xoá').waitFor({ timeout: 5000 })
+  await notReloaded(bob, 'Bob')
+  const after = await storedMessage(carolToken, group.id, REPLY)
+  if (!after.reply_to?.deleted || after.reply_to.snippet !== '') throw new Error('REST reply_to sau khi xoá: ' + JSON.stringify(after.reply_to))
+
+  // WS thô bằng token Bob: trả lời tin của phòng khác / tin đã xoá -> invalid_reply, không tạo tin.
+  const bobBot = await openBot(bobToken)
+  try {
+    const foreign = (await roomMessages(bobToken, directRoomId)).filter((m) => !m.deleted).at(-1)
+    if (!foreign) throw new Error('phòng 1-1 không có tin để thử')
+    const bad = [[`trả lời chéo phòng ${TAG}`, foreign.id], [`trả lời tin đã xoá ${TAG}`, originalId]]
+    for (const [body, rid] of bad) {
+      const r = await bobBot.attempt(group.id, body, { reply_to_id: rid })
+      if (r.type !== 'error' || r.code !== 'invalid_reply') throw new Error(`${body}: ${JSON.stringify(r)}`)
+    }
+    const ok = await bobBot.send(group.id, `trả lời hợp lệ qua WS ${TAG}`, { reply_to_id: replyId }) // đối chứng
+    if (ok.reply_to?.id !== replyId) throw new Error('đối chứng: reply_to=' + JSON.stringify(ok.reply_to))
+    const bodies = (await roomMessages(carolToken, group.id)).map((m) => m.body)
+    const leaked = bad.filter(([body]) => bodies.includes(body))
+    if (leaked.length) throw new Error('máy chủ vẫn lưu tin trả lời không hợp lệ: ' + leaked[0][0])
+  } finally {
+    bobBot.close()
+  }
+  return `nháy ${flashMs}ms`
+})
+
+await step('26. @nhắc tên: Alice gõ "@" có gợi ý, gõ "quoc" (không dấu) lọc ra Bob, Enter chèn tên KHÔNG gửi; Bob (ở phòng khác) thấy "@" và số chưa đọc, mở phòng thì tin nổi bật, "@" mất; xoá chữ @Tên thì mentions=[]', async () => {
+  await openRoom(bob, ALICE.fullName)
+  await openRoom(alice, GROUP)
+  await waitUntil(async () => (await myRoom(bobToken, group.id))?.unread_count === 0, 5000, 'Bob không còn tin chưa đọc ở nhóm trước khi thử')
+  const box = alice.getByLabel('Nhập tin nhắn')
+  await box.fill('')
+  await box.pressSequentially('@')
+  await picker(alice).waitFor({ timeout: 3000 })
+  const all = await pickerOptions(alice)
+  if (!all.some((t) => t.includes(BOB.fullName)) || !all.some((t) => t.includes(CAROL.fullName))) throw new Error('gợi ý thiếu Bob/Carol: ' + JSON.stringify(all))
+  if (all.some((t) => t.includes(ALICE.fullName))) throw new Error('gợi ý có chính Alice')
+  await box.pressSequentially('quoc')
+  await waitUntil(async () => {
+    const o = await pickerOptions(alice)
+    return o.length === 1 && o[0].includes(BOB.fullName)
+  }, 3000, 'gợi ý chỉ còn Bob khi gõ "quoc"')
+  const lastBefore = (await roomMessages(aliceToken, group.id)).at(-1).id
+  const framesBefore = clientFrames.alice.length
+  await box.press('Enter')
+  await waitUntil(async () => (await box.inputValue()) === `@${BOB.fullName} `, 2000, 'Enter chèn "@<tên Bob> "')
+  await waitUntil(async () => (await picker(alice).count()) === 0, 2000, 'gợi ý đóng sau khi chọn')
+  await sleep(1000)
+  if (clientFrames.alice.length !== framesBefore) throw new Error('Enter lúc chọn gợi ý đã gửi tin')
+  if ((await roomMessages(aliceToken, group.id)).at(-1).id !== lastBefore) throw new Error('máy chủ có tin mới sau Enter chọn gợi ý')
+
+  const TEXT = `xem giúp tài liệu ${TAG}`
+  const BODY = `@${BOB.fullName} ${TEXT}`
+  await box.pressSequentially(TEXT)
+  await box.press('Enter')
+  const id = await confirmedId(alice, TEXT)
+  const frame = sentFrames('alice', BODY)[0]
+  if (JSON.stringify(frame?.mentions) !== JSON.stringify([bobId])) throw new Error('frame send: mentions=' + JSON.stringify(frame?.mentions))
+  const stored = await storedMessage(aliceToken, group.id, BODY)
+  if (stored.mentions.length !== 1 || stored.mentions[0].user_id !== bobId || stored.mention_all) throw new Error('REST: ' + JSON.stringify(stored.mentions))
+  const aliceBubble = msgById(alice, id)
+  if ((await aliceBubble.locator('.mention').innerText()).trim() !== `@${BOB.fullName}`) throw new Error('Alice không thấy chữ nhắc tên nổi bật')
+  if (await aliceBubble.locator('.msg-mentions-me').count()) throw new Error('tin của chính Alice bị đánh dấu nhắc Alice')
+
+  // Bob đang ở phòng 1-1: thấy "@" và số chưa đọc 1 ở nhóm.
+  await waitUntil(async () => (await mentionBadge(bob, GROUP).count()) === 1 && (await unreadNumber(bob, GROUP).count()) === 1 && (await unreadNumber(bob, GROUP).innerText()).trim() === '1', 10000, 'Bob thấy "@" và "1" ở nhóm')
+  if ((await myRoom(bobToken, group.id))?.unread_mentions !== 1) throw new Error('REST unread_mentions của Bob khác 1')
+  await openRoom(bob, GROUP)
+  const bobBubble = msgById(bob, id)
+  await bobBubble.locator('.bubble.msg-mentions-me').waitFor({ timeout: 5000 })
+  if ((await bobBubble.locator('.mention').innerText()).trim() !== `@${BOB.fullName}`) throw new Error('Bob không thấy chữ nhắc tên')
+  await waitUntil(async () => (await roomItem(bob, GROUP).locator('.unread-badge').count()) === 0, 5000, '"@" và số chưa đọc mất khi Bob mở nhóm')
+  await waitUntil(async () => (await myRoom(bobToken, group.id))?.unread_mentions === 0, 5000, 'REST unread_mentions của Bob về 0')
+
+  // Chọn Bob rồi xoá chữ "@Tên": tin gửi đi không kèm mention.
+  await box.pressSequentially('@quoc')
+  await waitUntil(async () => (await pickerOptions(alice)).length === 1, 3000, 'gợi ý Bob lần hai')
+  await box.press('Enter')
+  const TEXT2 = `đọc nhé ${TAG}`
+  await box.pressSequentially(TEXT2)
+  await box.press('Home')
+  for (let i = 0; i < Array.from(`@${BOB.fullName} `).length; i++) await box.press('Delete')
+  if ((await box.inputValue()) !== TEXT2) throw new Error('ô soạn sau khi xoá tên: ' + (await box.inputValue()))
+  await box.press('End')
+  await box.press('Enter')
+  await confirmedId(alice, TEXT2)
+  const frame2 = sentFrames('alice', TEXT2)[0]
+  if (!frame2 || (frame2.mentions ?? []).length !== 0 || frame2.mention_all) throw new Error('frame send vẫn kèm mention: ' + JSON.stringify(frame2))
+  const stored2 = await storedMessage(aliceToken, group.id, TEXT2)
+  if (stored2.mentions.length !== 0 || stored2.mention_all) throw new Error('REST mentions=' + JSON.stringify(stored2.mentions))
+})
+
+await step('27. @all: "@all" đứng đầu gợi ý trong nhóm 3 người; "@all họp 9h" -> Bob và Carol (đang ở phòng khác) thấy "@" và viền nhắc tên, Alice thì không; chat 1-1 không có "@all"', async () => {
+  await openRoom(bob, ALICE.fullName)
+  if ((await carol.locator('.chat-head h2').innerText()).trim() === GROUP) throw new Error('Carol đang mở nhóm (cần ở phòng khác)')
+  await openRoom(alice, GROUP)
+  const box = alice.getByLabel('Nhập tin nhắn')
+  await box.fill('')
+  await box.pressSequentially('@')
+  const first = picker(alice).getByRole('option').first()
+  await first.waitFor({ timeout: 3000 })
+  if (!(await first.innerText()).includes('@all') || (await first.getAttribute('aria-selected')) !== 'true') throw new Error('mục đầu tiên: ' + (await first.innerText()))
+  await box.press('Enter')
+  await waitUntil(async () => (await box.inputValue()) === '@all ', 2000, 'Enter chèn "@all "')
+  const TEXT = `họp 9h ${TAG}`
+  await box.pressSequentially(TEXT)
+  await box.press('Enter')
+  const id = await confirmedId(alice, TEXT)
+  const frame = sentFrames('alice', `@all ${TEXT}`)[0]
+  if (frame?.mention_all !== true) throw new Error('frame send: mention_all=' + frame?.mention_all)
+  if (!(await storedMessage(aliceToken, group.id, `@all ${TEXT}`)).mention_all) throw new Error('REST: mention_all=false')
+  if (await msgById(alice, id).locator('.msg-mentions-me').count()) throw new Error('tin @all của Alice viền nhắc chính Alice')
+  if ((await msgById(alice, id).locator('.mention-all').innerText()).trim() !== '@all') throw new Error('Alice không thấy "@all" nổi bật')
+
+  for (const [page, token, who] of [[bob, bobToken, 'Bob'], [carol, carolToken, 'Carol']]) {
+    await waitUntil(async () => (await mentionBadge(page, GROUP).count()) === 1, 10000, `${who} thấy "@" ở nhóm`)
+    const room = await myRoom(token, group.id)
+    if (room?.unread_mentions !== 1) throw new Error(`REST unread_mentions của ${who} = ${room?.unread_mentions}`)
+  }
+  await holdsFor(async () => (await mentionBadge(alice, GROUP).count()) === 0, 1500, 'Alice có "@" cho tin @all của chính mình')
+  if ((await myRoom(aliceToken, group.id))?.unread_mentions !== 0) throw new Error('REST unread_mentions của Alice khác 0')
+  for (const [page, who] of [[bob, 'Bob'], [carol, 'Carol']]) {
+    await openRoom(page, GROUP)
+    await msgById(page, id).locator('.bubble.msg-mentions-me').waitFor({ timeout: 5000 })
+    await waitUntil(async () => (await mentionBadge(page, GROUP).count()) === 0, 5000, `"@" của ${who} mất khi mở nhóm`)
+  }
+
+  // Chat 1-1: có gợi ý Bob nhưng không có "@all".
+  await openRoom(alice, BOB.fullName)
+  await box.fill('')
+  await box.pressSequentially('@')
+  await picker(alice).waitFor({ timeout: 3000 })
+  const opts = await pickerOptions(alice)
+  if (opts.length !== 1 || !opts[0].includes(BOB.fullName)) throw new Error('gợi ý trong chat 1-1: ' + JSON.stringify(opts))
+  await box.press('Escape')
+  await box.fill('')
+})
+
+await step('28. @all phía máy chủ: mention_all=true mà không có chữ "@all" đứng riêng hoặc trong chat 1-1 -> lưu false; MENTION_ALL_PER_WINDOW=3: tin @all thứ 4 -> rate_limited, không có tin mới', async () => {
+  const carolBot = await openBot(carolToken)
+  const aliceBot = await openBot(aliceToken)
+  try {
+    const cases = [[carolBot, group.id, `không có chữ kia ${TAG}`], [carolBot, group.id, `@allo dính chữ ${TAG}`], [aliceBot, directRoomId, `@all trong chat 1-1 ${TAG}`]]
+    for (const [bot, roomId, body] of cases) {
+      const m = await bot.send(roomId, body, { mention_all: true })
+      if (m.mention_all !== false) throw new Error(`"${body}": frame message mention_all=${m.mention_all}`)
+      if ((await storedMessage(aliceToken, roomId, body)).mention_all !== false) throw new Error(`"${body}": REST mention_all=true`)
+    }
+    for (let i = 1; i <= 3; i++) {
+      const m = await carolBot.send(group.id, `@all giới hạn ${i} ${TAG}`, { mention_all: true })
+      if (m.mention_all !== true) throw new Error(`tin @all thứ ${i} không được nhận là @all`)
+    }
+    const r = await carolBot.attempt(group.id, `@all giới hạn 4 ${TAG}`, { mention_all: true })
+    if (r.type !== 'error' || r.code !== 'rate_limited') throw new Error(`tin @all thứ 4: ${JSON.stringify(r)} (stack cần MENTION_ALL_PER_WINDOW=3 trong .env)`)
+    if ((await roomMessages(aliceToken, group.id)).some((m) => m.body === `@all giới hạn 4 ${TAG}`)) throw new Error('tin @all vượt giới hạn vẫn được lưu')
+    await carolBot.send(group.id, `tin thường sau giới hạn ${TAG}`) // giới hạn chỉ áp cho @all
+  } finally {
+    carolBot.close()
+    aliceBot.close()
+  }
+})
+
+// Chromium headless không đổi document.visibilityState khi chuyển tab (bringToFront) hay thu nhỏ cửa sổ, nên trạng thái
+// "ẩn" được giả lập: __e2eSetHidden(true) đổi visibilityState/hidden/hasFocus rồi phát visibilitychange như trình duyệt thật.
+// Notification và AudioContext được thay bằng bản ghi lại lời gọi; quyền vẫn đọc từ Notification thật (đã cấp quyền).
+const NOTIFY_FAKE = () => {
+  let hidden = false
+  Object.defineProperty(Document.prototype, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') })
+  Object.defineProperty(Document.prototype, 'hidden', { configurable: true, get: () => hidden })
+  const realHasFocus = Document.prototype.hasFocus
+  Document.prototype.hasFocus = function () {
+    return hidden ? false : realHasFocus.call(this)
+  }
+  window.__e2eSetHidden = (value) => {
+    hidden = value
+    document.dispatchEvent(new Event('visibilitychange'))
+  }
+  const RealNotification = window.Notification
+  const notes = []
+  window.__e2eNotes = notes
+  class FakeNotification {
+    constructor(title, options = {}) {
+      notes.push({ title, body: options.body, tag: options.tag, silent: options.silent })
+      this.onclick = null
+    }
+    close() {}
+    static get permission() {
+      return RealNotification.permission
+    }
+    static requestPermission(...args) {
+      return RealNotification.requestPermission(...args)
+    }
+  }
+  window.Notification = FakeNotification
+  const beeps = []
+  window.__e2eBeeps = beeps
+  class FakeAudioContext {
+    constructor() {
+      this.state = 'running'
+      this.currentTime = 0
+      this.destination = {}
+    }
+    resume() {
+      this.state = 'running'
+      return Promise.resolve()
+    }
+    createOscillator() {
+      const osc = { type: 'sine', frequency: { value: 0 }, connect() {}, start: () => beeps.push(osc.frequency.value), stop() {} }
+      return osc
+    }
+    createGain() {
+      return { gain: { value: 0 }, connect() {} }
+    }
+  }
+  window.AudioContext = FakeAudioContext
+  window.webkitAudioContext = FakeAudioContext
+}
+
+const notesOf = (page) => page.evaluate(() => window.__e2eNotes.slice())
+const beepsOf = (page) => page.evaluate(() => window.__e2eBeeps.length)
+const setHidden = (page, value) => page.evaluate((v) => window.__e2eSetHidden(v), value)
+const counters = async (page) => ({ n: (await notesOf(page)).length, b: await beepsOf(page) })
+/** Âm báo cách nhau tối thiểu 1,5 giây: chờ qua khoảng đó để "không có tiếng" không bị che bởi giới hạn này. */
+const quiet = () => sleep(1700)
+
+async function expectNotification(page, before, expected, what) {
+  await waitUntil(async () => (await notesOf(page)).length > before.n, 8000, `${what}: có thông báo`)
+  await sleep(1500) // bắt thông báo trùng tới muộn
+  const list = (await notesOf(page)).slice(before.n)
+  if (list.length !== 1) throw new Error(`${what}: ${list.length} thông báo (mong đợi 1): ${JSON.stringify(list.map((n) => n.tag))}`)
+  for (const key of ['title', 'body', 'tag']) {
+    if (list[0][key] !== expected[key]) throw new Error(`${what}: ${key}="${list[0][key]}" (mong đợi "${expected[key]}")`)
+  }
+  const beeps = (await beepsOf(page)) - before.b
+  if (beeps !== 1) throw new Error(`${what}: ${beeps} tiếng báo (mong đợi 1)`)
+}
+
+async function expectSilence(page, before, arrived, what) {
+  await waitUntil(arrived, 8000, `${what}: tin tới trang`)
+  await holdsFor(async () => {
+    const now = await counters(page)
+    return now.n === before.n && now.b === before.b
+  }, 2500, `${what}: có thông báo/tiếng báo`)
+}
+
+async function openNotifySettings(page) {
+  await page.getByRole('button', { name: 'Cài đặt thông báo' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Cài đặt thông báo' })
+  await dialog.waitFor({ timeout: 5000 })
+  return dialog
+}
+async function closeNotifySettings(dialog) {
+  await dialog.getByRole('button', { name: 'Đóng' }).click()
+  await dialog.waitFor({ state: 'detached', timeout: 3000 })
+}
+async function setSwitch(dialog, name, value) {
+  const sw = dialog.getByRole('switch', { name })
+  if ((await sw.getAttribute('aria-checked')) !== String(value)) await sw.click()
+  await waitUntil(async () => (await sw.getAttribute('aria-checked')) === String(value), 2000, `"${name}" = ${value}`)
+}
+
+await step('29. Bật thông báo (Notification/AudioContext giả lập, đã cấp quyền): mặc định tắt; "Thông báo trình duyệt" bật được và lưu localStorage; "Gửi thử" tạo đúng một thông báo và một tiếng', async () => {
+  await bobCtx.grantPermissions(['notifications'], { origin: BASE })
+  await bobCtx.addInitScript(NOTIFY_FAKE)
+  await bob.reload()
+  await roomItem(bob, GROUP).waitFor({ timeout: 10000 })
+  await waitUntil(async () => (await bob.locator('.conn-banner').count()) === 0, 10000, 'Bob kết nối lại sau khi tải lại trang')
+  const env = await bob.evaluate(() => ({ fake: Array.isArray(window.__e2eNotes), permission: Notification.permission, secure: window.isSecureContext }))
+  if (!env.fake || env.permission !== 'granted' || !env.secure) throw new Error('môi trường thông báo: ' + JSON.stringify(env))
+  const dialog = await openNotifySettings(bob)
+  const main = dialog.getByRole('switch', { name: 'Thông báo trình duyệt' })
+  if ((await main.getAttribute('aria-checked')) !== 'false') throw new Error('thông báo bật sẵn (mặc định phải tắt)')
+  if (!(await main.isEnabled())) throw new Error('công tắc bị khoá dù đã có quyền')
+  if ((await dialog.getByRole('switch', { name: 'Âm báo' }).getAttribute('aria-checked')) !== 'true') throw new Error('âm báo mặc định không bật')
+  await setSwitch(dialog, 'Thông báo trình duyệt', true)
+  const before = await counters(bob)
+  await dialog.getByRole('button', { name: 'Gửi thử' }).click()
+  await expectNotification(bob, before, { title: 'Kết Nối', body: 'Đây là thông báo thử.', tag: 'kn-test' }, '"Gửi thử"')
+  await closeNotifySettings(dialog)
+  const saved = await bob.evaluate(() => JSON.parse(localStorage.getItem('kn.notify.v1')))
+  if (!saved?.enabled || !saved.sound || !saved.showPreview || saved.allGroupMessages) throw new Error('cài đặt đã lưu: ' + JSON.stringify(saved))
+})
+
+await step('30. Thông báo: trang Bob ẩn -> tin 1-1 báo đúng một lần (tiêu đề, "Alice: …", tag kn-room-{id}) kèm một tiếng; tin nhóm thường không; nhắc tên/@all có; tiêu đề tab "(N) Kết Nối" rồi "Kết Nối"; đang xem phòng thì không; tắt "Hiện nội dung tin" -> "Tin nhắn mới"', async () => {
+  await openRoom(bob, ALICE.fullName)
+  await openRoom(alice, BOB.fullName)
+  await setHidden(bob, true)
+  if ((await bob.evaluate(() => [document.visibilityState, document.hasFocus()])).join() !== 'hidden,false') throw new Error('không giả lập được trạng thái ẩn')
+
+  // 1-1 khi trang ẩn (đang mở đúng phòng đó).
+  await quiet()
+  let before = await counters(bob)
+  const DM = `thông báo 1-1 ${TAG}`
+  await send(alice, DM)
+  await expectNotification(bob, before, { title: ALICE.fullName, body: `${ALICE.fullName}: ${DM}`, tag: `kn-room-${directRoomId}` }, 'tin 1-1 khi ẩn')
+
+  // Tin nhóm thường: không.
+  await openRoom(alice, GROUP)
+  await quiet()
+  before = await counters(bob)
+  const PLAIN = `tin nhóm thường ${TAG}`
+  await send(alice, PLAIN)
+  await expectSilence(bob, before, async () => (await roomItem(bob, GROUP).innerText()).includes(PLAIN), 'tin nhóm thường')
+
+  // Nhắc tên Bob, rồi @all: có.
+  const aliceBot = await openBot(aliceToken)
+  try {
+    await quiet()
+    before = await counters(bob)
+    const MENTION = `@${BOB.fullName} nhắc khi ẩn ${TAG}`
+    await aliceBot.send(group.id, MENTION, { mentions: [bobId] })
+    await expectNotification(bob, before, { title: GROUP, body: `${ALICE.fullName}: ${MENTION}`, tag: `kn-room-${group.id}` }, 'tin nhắc tên Bob')
+    await quiet()
+    before = await counters(bob)
+    const ALL = `@all thông báo khi ẩn ${TAG}`
+    const m = await aliceBot.send(group.id, ALL, { mention_all: true })
+    if (!m.mention_all) throw new Error('tin @all không được nhận là @all')
+    await expectNotification(bob, before, { title: GROUP, body: `${ALICE.fullName}: ${ALL}`, tag: `kn-room-${group.id}` }, 'tin @all')
+  } finally {
+    aliceBot.close()
+  }
+
+  // Tiêu đề tab: tổng chưa đọc khớp GET /rooms, về "Kết Nối" khi đọc hết.
+  const unreadRooms = async () => (await must('GET', '/rooms', bobToken)).filter((r) => r.unread_count > 0)
+  let total = 0
+  await waitUntil(async () => {
+    total = (await unreadRooms()).reduce((s, r) => s + r.unread_count, 0)
+    return total >= 4 && (await bob.title()) === `(${total}) Kết Nối`
+  }, 8000, `tiêu đề tab "(N) Kết Nối" khớp GET /rooms`)
+  const busyTitle = await bob.title()
+  await setHidden(bob, false)
+  for (const r of await unreadRooms()) if (r.id !== directRoomId) await openRoom(bob, r.name)
+  await waitUntil(async () => (await bob.title()) === 'Kết Nối', 8000, 'tiêu đề tab về "Kết Nối"')
+  await waitUntil(async () => (await unreadRooms()).length === 0, 8000, 'GET /rooms của Bob hết chưa đọc')
+
+  // Đang xem đúng phòng, trang hiển thị và có tiêu điểm: không.
+  await openRoom(bob, ALICE.fullName)
+  if ((await bob.evaluate(() => [document.visibilityState, document.hasFocus()])).join() !== 'visible,true') throw new Error('trang Bob không ở trạng thái hiển thị/có tiêu điểm')
+  await openRoom(alice, BOB.fullName)
+  await quiet()
+  before = await counters(bob)
+  const SEEN = `tin khi đang xem ${TAG}`
+  await send(alice, SEEN)
+  await expectSilence(bob, before, async () => (await bubbles(bob, SEEN).count()) === 1, 'tin của phòng đang xem')
+
+  // Tắt "Hiện nội dung tin": thông báo không mang nội dung.
+  let dialog = await openNotifySettings(bob)
+  await setSwitch(dialog, 'Hiện nội dung tin', false)
+  await closeNotifySettings(dialog)
+  await setHidden(bob, true)
+  await quiet()
+  before = await counters(bob)
+  const SECRET = `nội dung riêng tư ${TAG}`
+  await send(alice, SECRET)
+  await expectNotification(bob, before, { title: ALICE.fullName, body: 'Tin nhắn mới', tag: `kn-room-${directRoomId}` }, 'tin khi tắt xem trước')
+  if (JSON.stringify(await notesOf(bob)).includes(SECRET)) throw new Error('thông báo lộ nội dung khi đã tắt xem trước')
+  await setHidden(bob, false)
+  dialog = await openNotifySettings(bob)
+  await setSwitch(dialog, 'Hiện nội dung tin', true)
+  await closeNotifySettings(dialog)
+  return `tiêu đề lúc ẩn "${busyTitle}"`
+})
+
+await step('31. Không báo tin bù: cắt WebSocket của Bob (trang ẩn), Alice nhắn 3 tin, nối lại -> Bob có đủ 3 tin nhưng không thông báo/tiếng nào; tin trực tiếp sau đó vẫn báo', async () => {
+  await openRoom(bob, ALICE.fullName)
+  await openRoom(alice, BOB.fullName)
+  await setHidden(bob, true)
+  await quiet()
+  const before = await counters(bob)
+  await setBobOffline(true)
+  await waitUntil(() => bob.locator('.conn-banner').count(), 15000, 'Bob mất kết nối')
+  const missed = [1, 2, 3].map((i) => `tin bù số ${i} ${TAG}`)
+  for (const text of missed) {
+    await send(alice, text)
+    await confirmedId(alice, text)
+  }
+  await sleep(1000)
+  if (await bubbles(bob, missed[0]).count()) throw new Error('Bob nhận tin khi đang mất kết nối?')
+  await setBobOffline(false)
+  for (const text of missed) await expectExactlyOnce(bob, text, 15000, `Bob nhận "${text}" sau khi nối lại`)
+  await waitUntil(async () => (await bob.locator('.conn-banner').count()) === 0, 10000, 'Bob nối lại')
+  await holdsFor(async () => {
+    const now = await counters(bob)
+    return now.n === before.n && now.b === before.b
+  }, 3000, 'có thông báo/tiếng báo cho tin bù')
+
+  await quiet()
+  const live = await counters(bob)
+  const LIVE = `tin trực tiếp sau khi nối lại ${TAG}`
+  await send(alice, LIVE)
+  await expectNotification(bob, live, { title: ALICE.fullName, body: `${ALICE.fullName}: ${LIVE}`, tag: `kn-room-${directRoomId}` }, 'tin trực tiếp sau khi nối lại')
+})
+await setBobOffline(false)
+
+await step('32. Lần đầu liên hệ: Carol (chưa từng nhắn với Bob) mở chat 1-1 và nhắn -> Bob (trang ẩn) được báo cho phòng mới, phòng hiện ở thanh bên', async () => {
+  if ((await must('GET', '/rooms', bobToken)).some((r) => r.type === 'direct' && r.peer_id === carolId)) throw new Error('Bob đã có chat 1-1 với Carol từ trước')
+  await setHidden(bob, true)
+  await quiet()
+  const before = await counters(bob)
+  const dm = await must('POST', '/rooms/direct', carolToken, { user_id: bobId })
+  const FIRST = `lần đầu nhắn Huy ${TAG}`
+  const carolBot = await openBot(carolToken)
+  try {
+    await carolBot.send(dm.id, FIRST)
+  } finally {
+    carolBot.close()
+  }
+  await expectNotification(bob, before, { title: CAROL.fullName, body: `${CAROL.fullName}: ${FIRST}`, tag: `kn-room-${dm.id}` }, 'tin đầu tiên của phòng 1-1 mới')
+  await roomItem(bob, CAROL.fullName).waitFor({ timeout: 5000 })
+  return `phòng #${dm.id}`
+})
+if (!bob.isClosed()) await setHidden(bob, false)
+await refreshTokens()
+
 for (const ctx of extraContexts) await ctx.close()
 delete pages.carol
 delete pages.dave
 
-await step('25. Khoá ui.bob: trang của Bob về đăng nhập trong ~40 giây, không vòng lặp kết nối lại', async () => {
+await step('33. Khoá ui.bob: trang của Bob về đăng nhập trong ~40 giây, không vòng lặp kết nối lại', async () => {
   await openRoom(bob, GROUP)
   await waitUntil(async () => (await bob.locator('.conn-banner').count()) === 0, 10000, 'Bob đang kết nối')
   const t0 = Date.now()
@@ -1279,7 +1798,7 @@ await step('25. Khoá ui.bob: trang của Bob về đăng nhập trong ~40 giây
   return `về đăng nhập sau ${took}ms`
 })
 
-await step('26. Không có lỗi pageerror hay hộp thoại ngoài dự kiến', async () => {
+await step('34. Không có lỗi pageerror hay hộp thoại ngoài dự kiến', async () => {
   if (pageErrors.length) throw new Error(pageErrors.slice(0, 3).join(' | '))
   if (unexpectedDialogs.length) throw new Error('hộp thoại: ' + unexpectedDialogs.slice(0, 3).join(' | '))
 })
