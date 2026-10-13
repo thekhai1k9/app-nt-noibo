@@ -17,6 +17,8 @@
 - **Giải tán nhóm:** chủ nhóm giải tán = **lưu trữ 3 ngày** như nhóm admin xoá (ẩn ngay với mọi người; admin khôi phục được trong 3 ngày ở trang "Phòng và nhóm"; sau đó xoá vĩnh viễn).
 - **Quyết định kèm theo (tôi tự chốt, có thể đổi):** (1) nhóm do admin tạo không có chủ nhóm: người dùng thường không quản lý được, nhưng vẫn rời được; (2) chủ nhóm rời nhóm → quyền chủ chuyển cho thành viên vào nhóm sớm nhất còn lại; thành viên cuối cùng rời → nhóm được lưu trữ; (3) mỗi người là chủ tối đa **20 nhóm đang hoạt động** (`MAX_OWNED_GROUPS`, mặc định 20) để chống tạo hàng loạt; (4) tối đa **200 thành viên** mỗi nhóm (như trang admin); (5) người bị gỡ khỏi nhóm mất quyền truy cập ngay nhưng **tin nhắn cũ vẫn ở lại** cho các thành viên còn lại; nếu được thêm lại sau này họ thấy toàn bộ lịch sử cũ nhưng mốc đã đọc đặt ở tin mới nhất (như trang admin hiện có).
 
+- **Lưu ý:** chuyển quyền chủ (chủ rời hoặc bị admin gỡ) và admin khôi phục nhóm có thể làm một người vượt `MAX_OWNED_GROUPS`; giới hạn chỉ áp dụng lúc tạo nhóm.
+
 ## Global Constraints
 
 - Mọi giao diện bằng tiếng Việt; nút/vùng bấm tối thiểu 44px; hộp thoại có `role="dialog"`, đóng bằng Esc, trả focus về nút mở.

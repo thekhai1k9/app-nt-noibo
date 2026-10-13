@@ -173,11 +173,9 @@ async def create_group(
     return await service.get_room_out(session, me_id, room.id)
 
 
-async def _notify_changed(bus: MessageBus, actor_id: int, user_ids: list[int]) -> None:
-    """rooms_changed sau commit: người thao tác trước, rồi những người còn lại (kể cả người đã bị gỡ/rời)."""
-    if not user_ids:
-        return
-    for uid in dict.fromkeys([actor_id, *user_ids]):
+async def _notify_changed(bus: MessageBus, ordered_ids: list[int]) -> None:
+    """rooms_changed sau commit, theo đúng thứ tự cho trước (kể cả người đã bị gỡ/rời)."""
+    for uid in dict.fromkeys(ordered_ids):
         if not await publish_user_safely(bus, uid, {"type": "rooms_changed"}):
             break  # bus hỏng: client đối soát sau
 
@@ -192,7 +190,7 @@ async def rename_group(
 ) -> RoomOut:
     me_id = user.id
     notify = await service.rename_group(session, room_id, me_id, body.name)
-    await _notify_changed(bus, me_id, notify)
+    await _notify_changed(bus, [me_id, *notify])
     return await service.get_room_out(session, me_id, room_id)
 
 
@@ -206,7 +204,7 @@ async def add_group_member(
 ) -> list[MemberReceipt]:
     me_id = user.id
     notify = await service.add_group_member(session, room_id, me_id, body.user_id)
-    await _notify_changed(bus, me_id, notify)
+    await _notify_changed(bus, [me_id, *notify] if notify else [])
     return await service.list_members(session, room_id, me_id)
 
 
@@ -220,7 +218,7 @@ async def remove_group_member(
 ) -> list[MemberReceipt]:
     me_id = user.id
     notify = await service.remove_group_member(session, room_id, me_id, user_id)
-    await _notify_changed(bus, me_id, notify)
+    await _notify_changed(bus, notify)  # người bị gỡ trước để kết nối của họ bỏ phòng sớm nhất
     return await service.list_members(session, room_id, me_id)
 
 
@@ -234,7 +232,7 @@ async def leave_group(
     me_id = user.id
     remaining = await service.leave_group(session, room_id, me_id)
     # Người rời vẫn phải được báo (dù không còn là thành viên) để hub bỏ phòng khỏi room_ids của họ.
-    await _notify_changed(bus, me_id, remaining or [me_id])
+    await _notify_changed(bus, [me_id, *remaining])  # người rời trước
 
 
 @router.delete("/rooms/{room_id}", status_code=204)
@@ -246,7 +244,7 @@ async def dissolve_group(
 ) -> None:
     me_id = user.id
     notify = await service.dissolve_group(session, room_id, me_id)
-    await _notify_changed(bus, me_id, notify)
+    await _notify_changed(bus, [me_id, *notify])
 
 
 @router.get("/rooms/{room_id}/messages", response_model=MessagePage)

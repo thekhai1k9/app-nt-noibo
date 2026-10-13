@@ -75,9 +75,12 @@ def _room_out(room: Room, member_count: int) -> AdminRoomOut:
     )
 
 
-async def _group_or_404(session: AsyncSession, room_id: int, *, archived: bool | None = False) -> Room:
-    """archived: False = chỉ nhóm hoạt động, True = chỉ nhóm đã lưu trữ, None = cả hai."""
-    room = await session.get(Room, room_id)
+async def _group_or_404(
+    session: AsyncSession, room_id: int, *, archived: bool | None = False, lock: bool = False
+) -> Room:
+    """archived: False = chỉ nhóm hoạt động, True = chỉ nhóm đã lưu trữ, None = cả hai.
+    lock: khoá hàng phòng (FOR UPDATE) như các thao tác của người dùng, để tuần tự hoá với chúng."""
+    room = await (service.lock_room_row(session, room_id) if lock else session.get(Room, room_id))
     if (
         room is None
         or room.type != "group"
@@ -185,7 +188,7 @@ async def rename_room(
     session: AsyncSession = Depends(get_session),
     bus: MessageBus = Depends(get_bus),
 ) -> AdminRoomDetail:
-    room = await _group_or_404(session, room_id)
+    room = await _group_or_404(session, room_id, lock=True)
     room.name = body.name
     await session.commit()
     await _notify(bus, await _member_ids(session, room.id))
@@ -196,7 +199,7 @@ async def rename_room(
 async def delete_room(
     room_id: RoomIdPath, session: AsyncSession = Depends(get_session), bus: MessageBus = Depends(get_bus)
 ) -> None:
-    room = await _group_or_404(session, room_id)
+    room = await _group_or_404(session, room_id, lock=True)
     member_ids = await _member_ids(session, room.id)
     room.archived_at = func.now()
     await session.commit()
@@ -207,11 +210,48 @@ async def delete_room(
 async def restore_room(
     room_id: RoomIdPath, session: AsyncSession = Depends(get_session), bus: MessageBus = Depends(get_bus)
 ) -> AdminRoomDetail:
-    room = await _group_or_404(session, room_id, archived=True)
+    room = await _group_or_404(session, room_id, archived=True, lock=True)
     room.archived_at = None
     await session.commit()
     await _notify(bus, await _member_ids(session, room.id))
     return await _detail(session, room)
+
+
+@service.retry_on_deadlock
+async def _add_member(session: AsyncSession, room_id: int, user_id: int) -> Room:
+    room = await _group_or_404(session, room_id, lock=True)
+    await _active_user_or_404(session, user_id)
+    if user_id not in await _member_ids(session, room.id):
+        # Người mới vào không coi lịch sử là chưa đọc: đặt vị trí đã đọc = tin nhắn mới nhất hiện có.
+        latest = (await session.execute(select(func.max(Message.id)).where(Message.room_id == room.id))).scalar()
+        session.add(RoomMember(room_id=room.id, user_id=user_id, last_read_message_id=latest))
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            if await session.get(RoomMember, (room_id, user_id)) is None:  # không phải trùng dòng: người dùng bị xoá
+                raise HTTPException(status_code=404, detail="user_not_found")
+            # đã có dòng thành viên (người khác thêm trước): coi như xong
+        room = await _group_or_404(session, room_id)  # commit làm hết hạn đối tượng cũ
+    else:
+        await session.rollback()  # nhả khoá
+        room = await _group_or_404(session, room_id)
+    return room
+
+
+@service.retry_on_deadlock
+async def _remove_member(session: AsyncSession, room_id: int, user_id: int) -> Room:
+    room = await _group_or_404(session, room_id, lock=True)
+    membership = await session.get(RoomMember, (room.id, user_id))
+    if membership is None:
+        raise HTTPException(status_code=404, detail="member_not_found")
+    was_owner = membership.role == "owner"
+    await session.delete(membership)
+    await session.flush()
+    if was_owner:  # không để nhóm có thành viên mà không có chủ: cùng quy tắc với khi chủ tự rời
+        await service.transfer_ownership(session, room.id)
+    await session.commit()
+    return await _group_or_404(session, room_id)
 
 
 @router.post("/{room_id}/members", response_model=AdminRoomDetail)
@@ -221,17 +261,7 @@ async def add_member(
     session: AsyncSession = Depends(get_session),
     bus: MessageBus = Depends(get_bus),
 ) -> AdminRoomDetail:
-    room = await _group_or_404(session, room_id)
-    await _active_user_or_404(session, body.user_id)
-    if body.user_id not in await _member_ids(session, room.id):
-        # Người mới vào không coi lịch sử là chưa đọc: đặt vị trí đã đọc = tin nhắn mới nhất hiện có.
-        latest = (await session.execute(select(func.max(Message.id)).where(Message.room_id == room.id))).scalar()
-        session.add(RoomMember(room_id=room.id, user_id=body.user_id, last_read_message_id=latest))
-        try:
-            await session.commit()
-        except IntegrityError:  # request song song đã thêm cùng người này: coi như đã xong
-            await session.rollback()
-            room = await _group_or_404(session, room_id)  # rollback làm hết hạn đối tượng cũ
+    room = await _add_member(session, room_id, body.user_id)
     await _notify(bus, [body.user_id])
     return await _detail(session, room)
 
@@ -243,11 +273,6 @@ async def remove_member(
     session: AsyncSession = Depends(get_session),
     bus: MessageBus = Depends(get_bus),
 ) -> AdminRoomDetail:
-    room = await _group_or_404(session, room_id)
-    membership = await session.get(RoomMember, (room.id, user_id))
-    if membership is None:
-        raise HTTPException(status_code=404, detail="member_not_found")
-    await session.delete(membership)
-    await session.commit()
+    room = await _remove_member(session, room_id, user_id)
     await _notify(bus, [user_id])
     return await _detail(session, room)

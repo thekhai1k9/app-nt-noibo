@@ -1,8 +1,9 @@
+import functools
 from datetime import datetime, timezone
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat.schemas import MemberReceipt, MessageOut, MessagePage, RoomOut, to_message_out
@@ -314,16 +315,66 @@ async def create_group(session: AsyncSession, user: User, name: str, member_ids:
     return room, invited
 
 
-async def _owned_group(session: AsyncSession, room_id: int, user_id: int, *, owner_only: bool = True) -> Room:
-    """Khoá hàng phòng (FOR UPDATE) rồi kiểm tra: phòng tồn tại + là group + chưa lưu trữ + người gọi là thành viên
-    (nếu không: 404 room_not_found, giống hệt nhau để không lộ phòng tồn tại), rồi mới đến vai trò chủ (403 forbidden).
+def _is_deadlock(exc: DBAPIError) -> bool:
+    orig = exc.orig
+    for err in (orig, getattr(orig, "__cause__", None)):
+        if getattr(err, "sqlstate", None) == "40P01" or type(err).__name__ == "DeadlockDetectedError":
+            return True
+    return False
 
-    Khoá giữ đến hết giao dịch nên các thao tác quản lý cùng một phòng chạy tuần tự."""
-    room = (
+
+def retry_on_deadlock(fn):
+    """Chạy lại cả giao dịch đúng một lần nếu Postgres báo deadlock; vẫn lỗi thì 409 conflict (không 500)."""
+
+    @functools.wraps(fn)
+    async def wrapper(session: AsyncSession, *args, **kwargs):
+        for attempt in (0, 1):
+            try:
+                return await fn(session, *args, **kwargs)
+            except DBAPIError as exc:
+                if not _is_deadlock(exc):
+                    raise
+                await session.rollback()
+                if attempt:
+                    raise ChatError(409, "conflict")
+
+    return wrapper
+
+
+async def lock_room_row(session: AsyncSession, room_id: int) -> Room | None:
+    """SELECT ... FOR UPDATE trên hàng phòng: mọi thay đổi thành viên/chủ phòng (người dùng lẫn admin) qua đây
+    nên chạy tuần tự theo phòng. Trả None nếu phòng không tồn tại."""
+    return (
         await session.execute(
             select(Room).where(Room.id == room_id).with_for_update().execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
+
+
+async def _owned_group(
+    session: AsyncSession, room_id: int, user_id: int, *, owner_only: bool = True
+) -> tuple[Room, str]:
+    """Kiểm tra quyền rồi khoá phòng. Trả (phòng, vai trò của người gọi).
+
+    Bước 1 (không khoá, rẻ): phòng tồn tại + là group + chưa lưu trữ + người gọi là thành viên, nếu không 404
+    room_not_found (giống hệt nhau để không lộ phòng tồn tại; người ngoài không bao giờ khoá được phòng nào).
+    Bước 2: khoá FOR UPDATE rồi kiểm tra lại dưới khoá (phòng/thành viên có thể đã đổi); cuối cùng mới đến
+    vai trò chủ (403 forbidden). Khoá giữ đến hết giao dịch."""
+    visible = (
+        await session.execute(
+            select(Room.id)
+            .join(RoomMember, RoomMember.room_id == Room.id)
+            .where(
+                Room.id == room_id,
+                RoomMember.user_id == user_id,
+                Room.type == "group",
+                Room.archived_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if visible is None:
+        raise ChatError(404, "room_not_found")
+    room = await lock_room_row(session, room_id)
     if room is None or room.type != "group" or room.archived_at is not None:
         raise ChatError(404, "room_not_found")
     role = (
@@ -335,7 +386,25 @@ async def _owned_group(session: AsyncSession, room_id: int, user_id: int, *, own
         raise ChatError(404, "room_not_found")
     if owner_only and role != "owner":
         raise ChatError(403, "forbidden")
-    return room
+    return room, role
+
+
+async def transfer_ownership(session: AsyncSession, room_id: int) -> int | None:
+    """Chuyển quyền chủ cho thành viên còn lại vào sớm nhất (hòa: user_id nhỏ nhất); gọi khi chủ vừa rời/bị gỡ,
+    dưới khoá phòng. Trả id người thừa kế (None nếu không còn ai)."""
+    heir = (
+        await session.execute(
+            select(RoomMember.user_id)
+            .where(RoomMember.room_id == room_id)
+            .order_by(RoomMember.joined_at, RoomMember.user_id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if heir is not None:
+        await session.execute(
+            update(RoomMember).where(RoomMember.room_id == room_id, RoomMember.user_id == heir).values(role="owner")
+        )
+    return heir
 
 
 async def _member_ids(session: AsyncSession, room_id: int) -> list[int]:
@@ -343,15 +412,17 @@ async def _member_ids(session: AsyncSession, room_id: int) -> list[int]:
     return list(rows.scalars())
 
 
+@retry_on_deadlock
 async def rename_group(session: AsyncSession, room_id: int, user_id: int, name: str) -> list[int]:
     """Đổi tên nhóm; trả id các thành viên cần báo rooms_changed."""
-    room = await _owned_group(session, room_id, user_id)
+    room, _ = await _owned_group(session, room_id, user_id)
     room.name = name
     member_ids = await _member_ids(session, room_id)
     await session.commit()
     return member_ids
 
 
+@retry_on_deadlock
 async def add_group_member(session: AsyncSession, room_id: int, user_id: int, new_user_id: int) -> list[int]:
     """Thêm thành viên (idempotent); trả id những người cần báo (rỗng nếu đã là thành viên)."""
     await _owned_group(session, room_id, user_id)
@@ -377,6 +448,7 @@ async def add_group_member(session: AsyncSession, room_id: int, user_id: int, ne
     return [*member_ids, new_user_id]
 
 
+@retry_on_deadlock
 async def remove_group_member(session: AsyncSession, room_id: int, user_id: int, target_id: int) -> list[int]:
     """Gỡ thành viên; trả id những người cần báo (kể cả người bị gỡ, vì hub cần tính lại room_ids của họ)."""
     await _owned_group(session, room_id, user_id)
@@ -387,44 +459,29 @@ async def remove_group_member(session: AsyncSession, room_id: int, user_id: int,
         raise ChatError(404, "member_not_found")
     await session.execute(delete(RoomMember).where(RoomMember.room_id == room_id, RoomMember.user_id == target_id))
     await session.commit()
-    return member_ids
+    return [target_id, *(uid for uid in member_ids if uid != target_id)]  # người bị gỡ được báo đầu tiên
 
 
+@retry_on_deadlock
 async def leave_group(session: AsyncSession, room_id: int, user_id: int) -> list[int]:
     """Rời nhóm. Chủ rời thì chuyển quyền cho người vào sớm nhất (hòa: user_id nhỏ nhất); không còn ai thì lưu trữ.
 
     Trả id những người còn lại (rỗng nếu nhóm bị lưu trữ)."""
-    await _owned_group(session, room_id, user_id, owner_only=False)
-    my_role = (
-        await session.execute(
-            select(RoomMember.role).where(RoomMember.room_id == room_id, RoomMember.user_id == user_id)
-        )
-    ).scalar_one()
+    _, my_role = await _owned_group(session, room_id, user_id, owner_only=False)
     await session.execute(delete(RoomMember).where(RoomMember.room_id == room_id, RoomMember.user_id == user_id))
-    heir = (
-        await session.execute(
-            select(RoomMember.user_id)
-            .where(RoomMember.room_id == room_id)
-            .order_by(RoomMember.joined_at, RoomMember.user_id)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if heir is None:
+    remaining = await _member_ids(session, room_id)
+    if not remaining:
         await session.execute(update(Room).where(Room.id == room_id).values(archived_at=func.now()))
-        remaining: list[int] = []
-    else:
-        if my_role == "owner":
-            await session.execute(
-                update(RoomMember).where(RoomMember.room_id == room_id, RoomMember.user_id == heir).values(role="owner")
-            )
-        remaining = await _member_ids(session, room_id)
+    elif my_role == "owner":
+        await transfer_ownership(session, room_id)
     await session.commit()
     return remaining
 
 
+@retry_on_deadlock
 async def dissolve_group(session: AsyncSession, room_id: int, user_id: int) -> list[int]:
     """Giải tán = lưu trữ (như admin xoá); trả id mọi thành viên để báo."""
-    room = await _owned_group(session, room_id, user_id)
+    room, _ = await _owned_group(session, room_id, user_id)
     member_ids = await _member_ids(session, room_id)
     room.archived_at = func.now()
     await session.commit()

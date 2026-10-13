@@ -671,6 +671,8 @@ async def test_owner_leave_races_with_add(client):
         )
         assert leave.status_code == 204
         assert add.status_code in (200, 404), add.text
+        if add.status_code == 404:
+            assert add.json()["detail"] == "room_not_found"
         roles = await _roles(room)
         assert list(roles.values()).count("owner") == 1  # còn thành viên thì luôn đúng một chủ
         assert a not in roles and (target in roles) == (add.status_code == 200)
@@ -689,3 +691,168 @@ async def test_redis_failure_does_not_fail_management(client, bus):
     assert (await client.patch(f"/api/rooms/{room}", json={"name": "H"}, headers=ha)).status_code == 200
     assert (await client.delete(f"/api/rooms/{room}/members/{b}", headers=ha)).status_code == 200
     assert (await client.post(f"/api/rooms/{room}/leave", headers=ha)).status_code == 204
+
+
+async def test_removed_and_leaving_users_are_notified_first(client, bus):
+    a, b, c = await _users("alice", "bob", "carol")
+    ha, hb = await _headers_for(client, "alice", "bob")
+    room = await _make_group(client, ha, "G", [b, c])
+    bus.published.clear()
+    assert (await client.delete(f"/api/rooms/{room}/members/{c}", headers=ha)).status_code == 200
+    notified = _changed_for(bus)
+    assert notified[0] == c and sorted(notified) == sorted([a, b, c])
+    bus.published.clear()
+    assert (await client.post(f"/api/rooms/{room}/leave", headers=hb)).status_code == 204
+    assert _changed_for(bus)[0] == b
+
+
+async def test_removed_user_is_notified_even_if_bus_breaks_afterwards(client, bus):
+    a, b = await _users("alice", "bob")
+    ha = await _headers(client, "alice")
+    room = await _make_group(client, ha, "G", [b])
+    real = bus.publish_user
+    calls = []
+
+    async def flaky(user_id, event):
+        calls.append(user_id)
+        if len(calls) > 1:
+            raise RedisConnectionError("down")
+        await real(user_id, event)
+
+    bus.publish_user = flaky
+    bus.published.clear()
+    assert (await client.delete(f"/api/rooms/{room}/members/{b}", headers=ha)).status_code == 200
+    assert _changed_for(bus) == [b]
+
+
+async def _admin_headers(client):
+    await create_user("root", role="admin")
+    return await _headers(client, "root")
+
+
+async def test_admin_add_races_with_owner_add_of_same_user(client):
+    a = await create_user("alice")
+    ha, hroot = await _headers(client, "alice"), await _admin_headers(client)
+    for i in range(4):
+        target = await create_user(f"t{i}")
+        room = await _make_group(client, ha, f"G{i}")
+        rs = await asyncio.gather(
+            client.post(f"/api/rooms/{room}/members", json={"user_id": target}, headers=ha),
+            client.post(f"/api/admin/rooms/{room}/members", json={"user_id": target}, headers=hroot),
+        )
+        assert [r.status_code for r in rs] == [200, 200], [r.text for r in rs]
+        assert set(await _roles(room)) == {a, target}
+
+
+async def test_leave_races_with_admin_removing_the_heir(client):
+    hroot = await _admin_headers(client)
+    for i in range(5):
+        a, b, c = await _users(f"a{i}", f"b{i}", f"c{i}")
+        ha = await _headers(client, f"a{i}")
+        room = await _make_group(client, ha, "G", [b, c])  # b có user_id nhỏ hơn c: là người thừa kế khi hòa
+        leave, rem = await asyncio.gather(
+            client.post(f"/api/rooms/{room}/leave", headers=ha),
+            client.delete(f"/api/admin/rooms/{room}/members/{b}", headers=hroot),
+        )
+        assert (leave.status_code, rem.status_code) == (204, 200), (leave.text, rem.text)
+        assert await _roles(room) == {c: "owner"}
+
+
+async def test_admin_removing_the_owner_transfers_ownership(client):
+    hroot = await _admin_headers(client)
+    a, b, c = await _users("alice", "bob", "carol")
+    ha = await _headers(client, "alice")
+    room = await _make_group(client, ha, "G", [c, b])
+    r = await client.delete(f"/api/admin/rooms/{room}/members/{a}", headers=hroot)
+    assert r.status_code == 200
+    assert await _roles(room) == {b: "owner", c: "member"}
+    assert (await client.delete(f"/api/admin/rooms/{room}/members/{c}", headers=hroot)).status_code == 200
+    assert await _roles(room) == {b: "owner"}
+
+
+async def test_non_member_never_blocks_on_the_room_lock(client):
+    a, b, outsider = await _users("alice", "bob", "carol")
+    ha, hc = await _headers_for(client, "alice", "carol")
+    room = await _make_group(client, ha, "G", [b])
+    async with SessionLocal() as holder:
+        await holder.execute(select(Room).where(Room.id == room).with_for_update())  # giữ khoá phòng
+        for call in (
+            client.patch(f"/api/rooms/{room}", json={"name": "X"}, headers=hc),
+            client.post(f"/api/rooms/{room}/members", json={"user_id": outsider}, headers=hc),
+            client.delete(f"/api/rooms/{room}/members/{b}", headers=hc),
+            client.delete(f"/api/rooms/{room}", headers=hc),
+            client.post(f"/api/rooms/{room}/leave", headers=hc),
+        ):
+            r = await asyncio.wait_for(call, 1.5)
+            assert (r.status_code, r.json()["detail"]) == (404, "room_not_found")
+        # đối chứng: người trong phòng thì phải chờ khoá
+        pending = asyncio.ensure_future(client.patch(f"/api/rooms/{room}", json={"name": "X"}, headers=ha))
+        done, _ = await asyncio.wait({pending}, timeout=0.5)
+        assert not done
+        await holder.rollback()
+    assert (await pending).status_code == 200
+
+
+async def test_two_members_leaving_simultaneously(client):
+    a, b, c = await _users("alice", "bob", "carol")
+    ha, hb = await _headers_for(client, "alice", "bob")
+    room = await _make_group(client, ha, "G", [b, c])
+    rs = await asyncio.gather(
+        client.post(f"/api/rooms/{room}/leave", headers=ha), client.post(f"/api/rooms/{room}/leave", headers=hb)
+    )
+    assert [r.status_code for r in rs] == [204, 204]
+    assert await _roles(room) == {c: "owner"}  # còn thành viên thì luôn đúng một chủ
+    room2 = await _make_group(client, ha, "G2", [b])
+    rs = await asyncio.gather(
+        client.post(f"/api/rooms/{room2}/leave", headers=ha), client.post(f"/api/rooms/{room2}/leave", headers=hb)
+    )
+    assert [r.status_code for r in rs] == [204, 204]
+    assert await _roles(room2) == {} and await _archived_at(room2) is not None
+
+
+async def test_owner_leave_races_with_member_removal(client):
+    for i in range(5):
+        a, b, c = await _users(f"a{i}", f"b{i}", f"c{i}")
+        ha = await _headers(client, f"a{i}")
+        room = await _make_group(client, ha, "G", [b, c])
+        leave, rem = await asyncio.gather(
+            client.post(f"/api/rooms/{room}/leave", headers=ha),
+            client.delete(f"/api/rooms/{room}/members/{c}", headers=ha),
+        )
+        assert leave.status_code == 204
+        assert rem.status_code in (200, 404), rem.text
+        if rem.status_code == 404:
+            assert rem.json()["detail"] == "room_not_found"
+        roles = await _roles(room)
+        assert list(roles.values()).count("owner") == 1 and a not in roles and b in roles
+
+
+async def test_deadlock_is_retried_once_then_409():
+    from sqlalchemy.exc import DBAPIError
+
+    from app.chat import service
+
+    class Orig(Exception):
+        sqlstate = "40P01"
+
+    class FakeSession:
+        rollbacks = 0
+
+        async def rollback(self):
+            self.rollbacks += 1
+
+    calls = []
+
+    @service.retry_on_deadlock
+    async def flaky(session, fail_times):
+        calls.append(1)
+        if len(calls) <= fail_times:
+            raise DBAPIError("stmt", {}, Orig())
+        return "ok"
+
+    session = FakeSession()
+    assert await flaky(session, 1) == "ok" and len(calls) == 2 and session.rollbacks == 1
+    calls.clear()
+    with pytest.raises(service.ChatError) as info:
+        await flaky(session, 5)
+    assert (info.value.status, info.value.code) == (409, "conflict") and len(calls) == 2
