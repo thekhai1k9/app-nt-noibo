@@ -11,7 +11,7 @@ from app.chat.bus import MessageBus, RedisMessageBus, publish_room_safely, publi
 from app.chat.schemas import MemberReceipt, MessageOut, MessagePage, RoomOut, to_message_out
 from app.db import get_session
 from app.deps import get_ready_user
-from app.ids import MessageId, MessageIdPath, MessageIdQuery, RoomIdPath, UserId
+from app.ids import MessageId, MessageIdPath, MessageIdQuery, RoomIdPath, UserId, UserIdPath
 from app.config import get_settings
 from app.models import Branch, Room, RoomMember, User
 from app.redis_client import get_redis
@@ -44,6 +44,14 @@ class DirectRoomIn(BaseModel):
     user_id: UserId
 
 
+def _check_group_name(v: str) -> str:
+    if "\x00" in v:
+        raise ValueError("name must not contain NUL")
+    if all(unicodedata.category(ch) in ("Cc", "Cf", "Zs") for ch in v):
+        raise ValueError("name must contain visible characters")
+    return v
+
+
 class GroupCreateIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -53,12 +61,23 @@ class GroupCreateIn(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def _no_nul(cls, v: str) -> str:
-        if "\x00" in v:
-            raise ValueError("name must not contain NUL")
-        if all(unicodedata.category(ch) in ("Cc", "Cf", "Zs") for ch in v):
-            raise ValueError("name must contain visible characters")
-        return v
+    def _valid_name(cls, v: str) -> str:
+        return _check_group_name(v)
+
+
+class GroupRenameIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=100)
+
+    @field_validator("name")
+    @classmethod
+    def _valid_name(cls, v: str) -> str:
+        return _check_group_name(v)
+
+
+class GroupMemberIn(BaseModel):
+    user_id: UserId
 
 
 class ReadIn(BaseModel):
@@ -152,6 +171,82 @@ async def create_group(
         if not await publish_user_safely(bus, member_id, {"type": "rooms_changed"}):
             break  # bus hỏng: client đối soát sau
     return await service.get_room_out(session, me_id, room.id)
+
+
+async def _notify_changed(bus: MessageBus, actor_id: int, user_ids: list[int]) -> None:
+    """rooms_changed sau commit: người thao tác trước, rồi những người còn lại (kể cả người đã bị gỡ/rời)."""
+    if not user_ids:
+        return
+    for uid in dict.fromkeys([actor_id, *user_ids]):
+        if not await publish_user_safely(bus, uid, {"type": "rooms_changed"}):
+            break  # bus hỏng: client đối soát sau
+
+
+@router.patch("/rooms/{room_id}", response_model=RoomOut)
+async def rename_group(
+    room_id: RoomIdPath,
+    body: GroupRenameIn,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_ready_user),
+    bus: MessageBus = Depends(get_bus),
+) -> RoomOut:
+    me_id = user.id
+    notify = await service.rename_group(session, room_id, me_id, body.name)
+    await _notify_changed(bus, me_id, notify)
+    return await service.get_room_out(session, me_id, room_id)
+
+
+@router.post("/rooms/{room_id}/members", response_model=list[MemberReceipt])
+async def add_group_member(
+    room_id: RoomIdPath,
+    body: GroupMemberIn,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_ready_user),
+    bus: MessageBus = Depends(get_bus),
+) -> list[MemberReceipt]:
+    me_id = user.id
+    notify = await service.add_group_member(session, room_id, me_id, body.user_id)
+    await _notify_changed(bus, me_id, notify)
+    return await service.list_members(session, room_id, me_id)
+
+
+@router.delete("/rooms/{room_id}/members/{user_id}", response_model=list[MemberReceipt])
+async def remove_group_member(
+    room_id: RoomIdPath,
+    user_id: UserIdPath,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_ready_user),
+    bus: MessageBus = Depends(get_bus),
+) -> list[MemberReceipt]:
+    me_id = user.id
+    notify = await service.remove_group_member(session, room_id, me_id, user_id)
+    await _notify_changed(bus, me_id, notify)
+    return await service.list_members(session, room_id, me_id)
+
+
+@router.post("/rooms/{room_id}/leave", status_code=204)
+async def leave_group(
+    room_id: RoomIdPath,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_ready_user),
+    bus: MessageBus = Depends(get_bus),
+) -> None:
+    me_id = user.id
+    remaining = await service.leave_group(session, room_id, me_id)
+    # Người rời vẫn phải được báo (dù không còn là thành viên) để hub bỏ phòng khỏi room_ids của họ.
+    await _notify_changed(bus, me_id, remaining or [me_id])
+
+
+@router.delete("/rooms/{room_id}", status_code=204)
+async def dissolve_group(
+    room_id: RoomIdPath,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_ready_user),
+    bus: MessageBus = Depends(get_bus),
+) -> None:
+    me_id = user.id
+    notify = await service.dissolve_group(session, room_id, me_id)
+    await _notify_changed(bus, me_id, notify)
 
 
 @router.get("/rooms/{room_id}/messages", response_model=MessagePage)

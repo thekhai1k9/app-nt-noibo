@@ -216,8 +216,12 @@ async def test_adding_a_member_starts_delivery_on_their_open_connection(live_ser
         await http.post(f"/api/admin/rooms/{room}/members", json={"user_id": b}, headers=admin)
     assert (await recv_json(wb)) == {"type": "rooms_changed"}
     await _send(wa, room, "chào người mới", "n1")
-    await recv_json(wa)
-    assert (await recv_json(wb))["message"]["body"] == "chào người mới"
+    # Hub có thể phát thêm rooms_changed (đối soát định kỳ thấy room_ids đổi trước/sau sự kiện bus):
+    # đợi đúng tin nhắn thay vì giả định nó là sự kiện kế tiếp.
+    for ws in (wa, wb):
+        while (event := await recv_json(ws))["type"] != "message":
+            assert event["type"] == "rooms_changed"
+    assert event["message"]["body"] == "chào người mới"
     await wa.close()
     await wb.close()
 
