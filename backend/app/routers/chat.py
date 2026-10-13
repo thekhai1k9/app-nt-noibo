@@ -8,7 +8,7 @@ from app.chat.limits import group_create_limit, group_write_limit
 from app.chat.validation import check_group_name
 from app.chat.presence import Presence
 from app.chat.bus import MessageBus, RedisMessageBus, publish_room_safely, publish_user_safely
-from app.chat.schemas import MemberReceipt, MessageOut, MessagePage, RoomOut, to_message_out
+from app.chat.schemas import MemberReceipt, MessageOut, MessagePage, RoomOut
 from app.db import get_session
 from app.deps import get_ready_user
 from app.ids import MessageId, MessageIdPath, MessageIdQuery, RoomIdPath, UserId, UserIdPath
@@ -78,6 +78,7 @@ class ReadIn(BaseModel):
 
 class MessageEditIn(BaseModel):
     body: str = Field(max_length=10_000)
+    mentions: list[UserId] | None = Field(default=None, max_length=200)
 
 
 @router.get("/users/directory", response_model=list[DirectoryUser])
@@ -293,8 +294,8 @@ async def edit_message(
     user: User = Depends(get_ready_user),
     bus: MessageBus = Depends(get_bus),
 ) -> MessageOut:
-    message, sender_name = await service.edit_message(session, user.id, message_id, body.body)
-    out = to_message_out(message, sender_name)
+    message, sender_name = await service.edit_message(session, user.id, message_id, body.body, body.mentions)
+    (out,) = await service.messages_out(session, [(message, sender_name)])
     await publish_room_safely(bus, message.room_id, {"type": "message_updated", "message": out.model_dump(mode="json")})
     return out
 

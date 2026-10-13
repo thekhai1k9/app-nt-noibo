@@ -9,7 +9,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.chat import service
 from app.chat.bus import publish_room_safely
 from app.chat.hub import Connection, Hub, apply_room_snapshot
-from app.chat.schemas import to_message_out
 from app.chat.service import ChatError
 from app.config import get_settings
 from app.db import SessionLocal
@@ -21,6 +20,9 @@ router = APIRouter()
 
 MAX_FRAME_BYTES = 16_384
 MAX_ROOM_ID = 2**31 - 1
+MAX_MESSAGE_ID = 2**63 - 1
+MAX_USER_ID = 2**31 - 1
+MAX_MENTIONS_RAW = 200  # chặn danh sách khổng lồ; service lọc rồi mới cắt còn 20
 MAX_CLIENT_ID_CHARS = 64
 CLOSE_UNAUTHENTICATED = 4401
 CLOSE_FRAME_TOO_LARGE = 4413
@@ -76,6 +78,18 @@ async def _close(websocket: WebSocket, code: int) -> None:
         pass
 
 
+def _valid_reply_to(value) -> bool:
+    return value is None or (isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= MAX_MESSAGE_ID)
+
+
+def _valid_mentions(value) -> bool:
+    return value is None or (
+        isinstance(value, list)
+        and len(value) <= MAX_MENTIONS_RAW
+        and all(isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= MAX_USER_ID for v in value)
+    )
+
+
 async def _handle_send(conn: Connection, hub: Hub, data: dict, window: deque) -> None:
     settings = get_settings()
     client_id = _client_id(data.get("client_id"))
@@ -95,12 +109,23 @@ async def _handle_send(conn: Connection, hub: Hub, data: dict, window: deque) ->
         or not (1 <= room_id <= MAX_ROOM_ID)
         or not isinstance(body, str)
         or not (raw_client_id is None or isinstance(raw_client_id, str))
+        or not _valid_reply_to(data.get("reply_to_id"))
+        or not _valid_mentions(data.get("mentions"))
     ):
         conn.offer({"type": "error", "code": "invalid_message", "client_id": client_id})
         return
     try:
         async with SessionLocal() as session:
-            message, sender_name, created = await service.send_message(session, conn.user_id, room_id, body, raw_client_id)
+            message, sender_name, created = await service.send_message(
+                session,
+                conn.user_id,
+                room_id,
+                body,
+                raw_client_id,
+                reply_to_id=data.get("reply_to_id"),
+                mentions=data.get("mentions") or (),
+            )
+            (out,) = await service.messages_out(session, [(message, sender_name)])
     except ChatError as err:
         if err.status == 401:
             conn.close(CLOSE_UNAUTHENTICATED)
@@ -111,7 +136,7 @@ async def _handle_send(conn: Connection, hub: Hub, data: dict, window: deque) ->
         log.exception("websocket send failed")
         conn.offer({"type": "error", "code": "internal_error", "client_id": client_id})
         return
-    event = {"type": "message", "message": to_message_out(message, sender_name).model_dump(mode="json")}
+    event = {"type": "message", "message": out.model_dump(mode="json")}
     if not created:
         conn.offer(event)  # gửi trùng: chỉ trả lại cho người gửi
     elif not await publish_room_safely(hub.bus, room_id, event):

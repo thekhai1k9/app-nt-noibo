@@ -5,6 +5,19 @@ from pydantic import BaseModel
 from app.models import Message
 
 
+class ReplyOut(BaseModel):
+    id: int
+    sender_id: int
+    sender_name: str
+    snippet: str  # "" khi tin gốc đã bị xoá
+    deleted: bool
+
+
+class MentionOut(BaseModel):
+    user_id: int
+    full_name: str
+
+
 class MessageOut(BaseModel):
     id: int
     room_id: int
@@ -16,6 +29,8 @@ class MessageOut(BaseModel):
     created_at: datetime
     edited_at: datetime | None
     deleted: bool
+    reply_to: ReplyOut | None
+    mentions: list[MentionOut]
 
 
 class RoomOut(BaseModel):
@@ -27,6 +42,7 @@ class RoomOut(BaseModel):
     peer_id: int | None
     last_message: MessageOut | None
     unread_count: int
+    unread_mentions: int
     last_activity: datetime
     my_role: str | None = None  # 'owner' | 'member' cho nhóm, None cho phòng direct
 
@@ -44,7 +60,13 @@ class MessagePage(BaseModel):
     has_more_after: bool
 
 
-def to_message_out(msg: Message, sender_name: str) -> MessageOut:
+def to_message_out(
+    msg: Message,
+    sender_name: str,
+    replies: dict[int, ReplyOut],
+    mentions: dict[int, list[MentionOut]],
+) -> MessageOut:
+    """replies/mentions là kết quả của service.load_message_extras (khoá theo id tin nhắn)."""
     deleted = msg.deleted_at is not None
     return MessageOut(
         id=msg.id,
@@ -57,4 +79,6 @@ def to_message_out(msg: Message, sender_name: str) -> MessageOut:
         created_at=msg.created_at,
         edited_at=msg.edited_at,
         deleted=deleted,
+        reply_to=None if deleted else replies.get(msg.id),
+        mentions=[] if deleted else list(mentions.get(msg.id, [])),
     )

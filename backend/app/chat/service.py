@@ -1,16 +1,22 @@
 import functools
+import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
-from app.chat.schemas import MemberReceipt, MessageOut, MessagePage, RoomOut, to_message_out
+from app.chat.schemas import MemberReceipt, MentionOut, MessageOut, MessagePage, ReplyOut, RoomOut, to_message_out
 from app.config import get_settings
-from app.models import Message, Room, RoomMember, User
+from app.ids import MAX_INT32, MAX_INT64
+from app.models import Message, MessageMention, Room, RoomMember, User
 
 MAX_PAGE = 100
+MAX_MENTIONS = 20
+SNIPPET_MAX = 120
 MAX_CLIENT_ID = 64
 GROUP_LOCK_CLASS = 5001  # khoá advisory theo người tạo nhóm
 
@@ -97,8 +103,55 @@ def _clean_body(body: str) -> str:
     return body
 
 
+def _sanitize_snippet(body: str) -> str:
+    """Trích dẫn an toàn: ký tự điều khiển (Cc, gồm xuống dòng/tab) và dấu ngắt dòng/đoạn Unicode (Zl/Zp) thành
+    khoảng trắng, gộp khoảng trắng liên tiếp, cắt tối đa SNIPPET_MAX *code point* Unicode. Chuỗi Python đánh chỉ mục
+    theo code point nên không bao giờ cắt giữa một cặp thay thế; ranh giới cắt là ranh giới code point, nên emoji
+    ghép bằng ZWJ có thể mất phần đuôi (ZWJ treo ở cuối sau khi cắt bị bỏ)."""
+    cleaned = "".join(" " if unicodedata.category(ch) in ("Cc", "Zl", "Zp") else ch for ch in body)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:SNIPPET_MAX].rstrip(" ‍")
+
+
+def _valid_int(value, upper: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= upper
+
+
+async def _filter_mentions(session: AsyncSession, room_id: int, mentions) -> list[int]:
+    """Giữ các id là thành viên của đúng phòng này (phòng chưa lưu trữ do require_member đã đảm bảo): bỏ id sai
+    kiểu/ngoài khoảng, trùng, id lạ (không phân biệt "không tồn tại" với "không ở phòng này" nên không lộ gì);
+    giữ thứ tự, tối đa 20."""
+    wanted = [uid for uid in dict.fromkeys(mentions or ()) if _valid_int(uid, MAX_INT32)]
+    if not wanted:
+        return []
+    members = set(
+        (
+            await session.execute(
+                select(RoomMember.user_id).where(RoomMember.room_id == room_id, RoomMember.user_id.in_(wanted))
+            )
+        ).scalars()
+    )
+    return [uid for uid in wanted if uid in members][:MAX_MENTIONS]
+
+
+async def _write_mentions(session: AsyncSession, message_id: int, user_ids: list[int]) -> None:
+    if user_ids:
+        await session.execute(
+            pg_insert(MessageMention)
+            .values([{"message_id": message_id, "user_id": uid} for uid in user_ids])
+            .on_conflict_do_nothing()
+        )
+
+
 async def send_message(
-    session: AsyncSession, user_id: int, room_id: int, body: str, client_id: str | None
+    session: AsyncSession,
+    user_id: int,
+    room_id: int,
+    body: str,
+    client_id: str | None,
+    *,
+    reply_to_id: int | None = None,
+    mentions=(),
 ) -> tuple[Message, str, bool]:
     body = _clean_body(body)
     if client_id is not None:
@@ -106,19 +159,45 @@ async def send_message(
             raise ChatError(400, "invalid_message")
         if client_id == "" or len(client_id) > MAX_CLIENT_ID:
             raise ChatError(400, "invalid_client_id")
+    if reply_to_id is not None and not _valid_int(reply_to_id, MAX_INT64):
+        raise ChatError(400, "invalid_message")
     user = await session.get(User, user_id)
     if user is None or not user.is_active:
         raise ChatError(401, "not_authenticated")
     await require_member(session, room_id, user_id, lock_membership=True)
+    if client_id is not None:
+        # Gửi lặp: bản đầu thắng, không kiểm tra lại reply/mentions (tin gốc có thể đã bị xoá sau lần gửi đầu).
+        existing = (
+            await session.execute(
+                select(Message).where(
+                    Message.room_id == room_id, Message.sender_id == user_id, Message.client_id == client_id
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            await session.commit()  # nhả khoá thành viên (không đổi gì; commit để giữ nguyên thuộc tin đã nạp)
+            return existing, user.full_name, False
+    if reply_to_id is not None:
+        # Cùng giao dịch và sau require_member: chỉ tin cùng phòng, còn sống mới được trích.
+        valid = (
+            await session.execute(
+                select(Message.id).where(
+                    Message.id == reply_to_id, Message.room_id == room_id, Message.deleted_at.is_(None)
+                )
+            )
+        ).scalar_one_or_none()
+        if valid is None:
+            raise ChatError(400, "invalid_reply")
+    mention_ids = await _filter_mentions(session, room_id, mentions)
     stmt = (
         pg_insert(Message)
-        .values(room_id=room_id, sender_id=user_id, body=body, client_id=client_id)
+        .values(room_id=room_id, sender_id=user_id, body=body, client_id=client_id, reply_to_id=reply_to_id)
         .on_conflict_do_nothing(constraint="uq_messages_room_sender_client")
         .returning(Message)
     )
     message = (await session.execute(stmt)).scalar_one_or_none()
     created = message is not None
-    if message is None:
+    if message is None:  # đua với một lần gửi cùng client_id khác
         message = (
             await session.execute(
                 select(Message).where(
@@ -126,8 +205,56 @@ async def send_message(
                 )
             )
         ).scalar_one()
+    else:
+        await _write_mentions(session, message.id, mention_ids)
     await session.commit()
     return message, user.full_name, created
+
+
+async def load_message_extras(
+    session: AsyncSession, messages
+) -> tuple[dict[int, ReplyOut], dict[int, list[MentionOut]]]:
+    """Nạp trích dẫn và mention cho cả một trang bằng đúng 2 truy vấn (0 nếu không có tin nào), khoá theo id tin.
+
+    Tin đã xoá không mang trích dẫn/mention. Tin gốc chỉ được trích khi cùng phòng với tin trả lời (phòng thủ thêm)."""
+    live = [m for m in messages if m.deleted_at is None]
+    if not live:
+        return {}, {}
+    ids = [m.id for m in live]
+    source = aliased(Message)
+    reply_rows = await session.execute(
+        select(Message.id, source.id, source.sender_id, User.full_name, source.body, source.deleted_at)
+        .join(source, and_(source.id == Message.reply_to_id, source.room_id == Message.room_id))
+        .join(User, User.id == source.sender_id)
+        .where(Message.id.in_(ids))
+    )
+    replies = {
+        mid: ReplyOut(
+            id=src_id,
+            sender_id=sender_id,
+            sender_name=name,
+            snippet="" if gone is not None else _sanitize_snippet(src_body),
+            deleted=gone is not None,
+        )
+        for mid, src_id, sender_id, name, src_body, gone in reply_rows
+    }
+    mention_rows = await session.execute(
+        select(MessageMention.message_id, MessageMention.user_id, User.full_name)
+        .join(User, User.id == MessageMention.user_id)
+        .where(MessageMention.message_id.in_(ids))
+        .order_by(MessageMention.message_id, MessageMention.user_id)
+    )
+    mentions: dict[int, list[MentionOut]] = {}
+    for mid, uid, name in mention_rows:
+        mentions.setdefault(mid, []).append(MentionOut(user_id=uid, full_name=name))
+    return replies, mentions
+
+
+async def messages_out(session: AsyncSession, rows) -> list[MessageOut]:
+    """rows: [(Message, sender_name)] -> [MessageOut] với trích dẫn/mention nạp gộp (2 truy vấn)."""
+    rows = list(rows)
+    replies, mentions = await load_message_extras(session, [msg for msg, _ in rows])
+    return [to_message_out(msg, name, replies, mentions) for msg, name in rows]
 
 
 async def list_messages(
@@ -148,12 +275,11 @@ async def list_messages(
         .where(Message.room_id == room_id)
     )
 
-    def out(rows) -> list[MessageOut]:
-        return [to_message_out(msg, name) for msg, name in rows]
-
     if after is not None:
         rows = (await session.execute(base.where(Message.id > after).order_by(Message.id).limit(limit + 1))).all()
-        return MessagePage(items=out(rows[:limit]), has_more_before=False, has_more_after=len(rows) > limit)
+        return MessagePage(
+            items=await messages_out(session, rows[:limit]), has_more_before=False, has_more_after=len(rows) > limit
+        )
 
     if around is not None:
         target = (await session.execute(base.where(Message.id == around))).first()
@@ -169,12 +295,18 @@ async def list_messages(
         ).all()
         rows = list(reversed(older[:before_count])) + [target] + newer[:after_count]
         return MessagePage(
-            items=out(rows), has_more_before=len(older) > before_count, has_more_after=len(newer) > after_count
+            items=await messages_out(session, rows),
+            has_more_before=len(older) > before_count,
+            has_more_after=len(newer) > after_count,
         )
 
     query = base if before is None else base.where(Message.id < before)
     rows = (await session.execute(query.order_by(Message.id.desc()).limit(limit + 1))).all()
-    return MessagePage(items=out(list(reversed(rows[:limit]))), has_more_before=len(rows) > limit, has_more_after=False)
+    return MessagePage(
+        items=await messages_out(session, list(reversed(rows[:limit]))),
+        has_more_before=len(rows) > limit,
+        has_more_after=False,
+    )
 
 
 async def list_rooms(session: AsyncSession, user_id: int, only_room_id: int | None = None) -> list[RoomOut]:
@@ -220,7 +352,7 @@ async def list_rooms(session: AsyncSession, user_id: int, only_room_id: int | No
         .join(newest, Message.id == newest.c.mid)
         .join(User, User.id == Message.sender_id)
     )
-    last = {msg.room_id: to_message_out(msg, name) for msg, name in last_rows}
+    last = {out.room_id: out for out in await messages_out(session, last_rows.all())}
 
     unread_rows = await session.execute(
         select(RoomMember.room_id, func.count(Message.id))
@@ -241,6 +373,25 @@ async def list_rooms(session: AsyncSession, user_id: int, only_room_id: int | No
     )
     unread = dict(unread_rows.all())
 
+    mention_rows = await session.execute(
+        select(RoomMember.room_id, func.count())
+        .select_from(MessageMention)
+        .join(Message, Message.id == MessageMention.message_id)
+        .join(
+            RoomMember,
+            and_(RoomMember.room_id == Message.room_id, RoomMember.user_id == MessageMention.user_id),
+        )
+        .where(
+            MessageMention.user_id == user_id,
+            RoomMember.room_id.in_(room_ids),
+            Message.id > func.coalesce(RoomMember.last_read_message_id, 0),
+            Message.sender_id != user_id,
+            Message.deleted_at.is_(None),
+        )
+        .group_by(RoomMember.room_id)
+    )
+    unread_mentions = dict(mention_rows.all())
+
     result = []
     for room in mine:
         last_message = last.get(room.id)
@@ -255,6 +406,7 @@ async def list_rooms(session: AsyncSession, user_id: int, only_room_id: int | No
                 peer_id=peer[0] if peer else None,
                 last_message=last_message,
                 unread_count=unread.get(room.id, 0),
+                unread_mentions=unread_mentions.get(room.id, 0),
                 last_activity=last_message.created_at if last_message else room.created_at,
                 my_role=my_roles[room.id] if room.type == "group" else None,
             )
@@ -573,11 +725,32 @@ async def _own_message(session: AsyncSession, user_id: int, message_id: int) -> 
     return message
 
 
-async def edit_message(session: AsyncSession, user_id: int, message_id: int, body: str) -> tuple[Message, str]:
+async def edit_message(
+    session: AsyncSession, user_id: int, message_id: int, body: str, mentions=None
+) -> tuple[Message, str]:
+    """Sửa nội dung. mentions=None: giữ mention cũ mà "@{full_name}" còn nằm nguyên văn trong nội dung mới;
+    danh sách (kể cả rỗng): thay bằng danh sách đã lọc như khi gửi. reply_to_id không đổi."""
     message = await _own_message(session, user_id, message_id)
     message.body = _clean_body(body)
     message.edited_at = datetime.now(timezone.utc)
     sender = await session.get(User, user_id)
+    if mentions is None:
+        old = (
+            await session.execute(
+                select(MessageMention.user_id, User.full_name)
+                .join(User, User.id == MessageMention.user_id)
+                .where(MessageMention.message_id == message.id)
+            )
+        ).all()
+        drop = [uid for uid, name in old if f"@{name}" not in message.body]
+        if drop:
+            await session.execute(
+                delete(MessageMention).where(MessageMention.message_id == message.id, MessageMention.user_id.in_(drop))
+            )
+    else:
+        keep = await _filter_mentions(session, message.room_id, mentions)
+        await session.execute(delete(MessageMention).where(MessageMention.message_id == message.id))
+        await _write_mentions(session, message.id, keep)
     await session.commit()
     return message, sender.full_name
 

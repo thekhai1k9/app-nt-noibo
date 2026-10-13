@@ -74,8 +74,14 @@ async def test_migrations_match_models(scratch_alembic):
             uq = (
                 await conn.execute(text("SELECT conname FROM pg_constraint WHERE conname = 'uq_messages_room_sender_client'"))
             ).scalar_one()
+            mention_idx = (
+                await conn.execute(
+                    text("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_message_mentions_user_message'")
+                )
+            ).scalar_one()
     finally:
         await engine.dispose()
+    assert "(user_id, message_id DESC)" in mention_idx, mention_idx
     assert "room_id" in indexdef and "id DESC" in indexdef, indexdef
     assert uq == "uq_messages_room_sender_client"
     assert "archived_at" in rooms_idx and "WHERE (archived_at IS NOT NULL)" in rooms_idx, rooms_idx
@@ -97,3 +103,24 @@ async def test_migrations_roundtrip(scratch_alembic):
         await engine.dispose()
     assert tables == []
     await asyncio.to_thread(command.upgrade, cfg, "head")
+
+
+async def test_migration_0004_downgrades_and_upgrades_cleanly(scratch_alembic):
+    cfg, scratch_url = scratch_alembic
+    await asyncio.to_thread(command.upgrade, cfg, "head")
+    await asyncio.to_thread(command.downgrade, cfg, "0003")
+    engine = create_async_engine(scratch_url)
+    try:
+        async with engine.connect() as conn:
+            tables = (await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))).scalars().all()
+            cols = (
+                await conn.execute(
+                    text("SELECT column_name FROM information_schema.columns WHERE table_name = 'messages'")
+                )
+            ).scalars().all()
+            idx = (await conn.execute(text("SELECT indexname FROM pg_indexes WHERE indexname LIKE '%reply%' OR indexname LIKE '%mention%'"))).scalars().all()
+    finally:
+        await engine.dispose()
+    assert "message_mentions" not in tables and "reply_to_id" not in cols and idx == []
+    await asyncio.to_thread(command.upgrade, cfg, "head")
+    assert await _diff_against_models(scratch_url) == []

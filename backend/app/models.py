@@ -72,6 +72,8 @@ class Message(Base):
     __table_args__ = (
         Index("ix_messages_room_id_id", "room_id", text("id DESC")),
         UniqueConstraint("room_id", "sender_id", "client_id", name="uq_messages_room_sender_client"),
+        # Xoá tin (kể cả xoá cả phòng) phải tìm nhanh các tin trả lời nó để đặt reply_to_id về NULL.
+        Index("ix_messages_reply_to_id", "reply_to_id", postgresql_where=text("reply_to_id IS NOT NULL")),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -83,3 +85,14 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reply_to_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("messages.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class MessageMention(Base):
+    __tablename__ = "message_mentions"
+    __table_args__ = (Index("ix_message_mentions_user_message", "user_id", text("message_id DESC")),)
+
+    message_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("messages.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
