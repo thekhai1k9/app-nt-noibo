@@ -206,9 +206,12 @@ pytest -v
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
-| `PRESENCE_TTL_SECONDS` | 45 | Một kết nối được coi là còn online bấy nhiêu giây sau lần gia hạn cuối (kết nối/worker chết mà không kịp gỡ sẽ tự hết hạn). Phải lớn hơn `PRESENCE_SWEEP_SECONDS`. |
+| `PRESENCE_TTL_SECONDS` | 45 | Một kết nối được coi là còn online bấy nhiêu giây sau lần gia hạn cuối (kết nối/worker chết mà không kịp gỡ sẽ tự hết hạn). Phải ít nhất gấp đôi `PRESENCE_SWEEP_SECONDS`. |
 | `PRESENCE_SWEEP_SECONDS` | 15 | Chu kỳ mỗi worker gia hạn các kết nối đang mở của mình và đối soát người vừa online/offline. Ngắt kết nối bình thường được gỡ ngay, không chờ chu kỳ này. |
 | `PRESENCE_ANNOUNCE_TIMEOUT_SECONDS` | 10 | Thời gian tối đa cho một lượt phát thông báo `presence` của một người. |
+| `PRESENCE_OFFLINE_GRACE_SECONDS` | 5 | Thông báo **offline** bị hoãn bấy nhiêu giây rồi kiểm tra lại: người dùng tải lại trang hoặc mạng chập chờn nối lại kịp thì không có sự kiện nào. Online vẫn báo ngay. `0` = tắt. Khi chạy e2e (`scripts/e2e_chat_ui.mjs`) nên đặt giá trị nhỏ (ví dụ `0.5`), hoặc các bước chờ "mất chấm online" phải chờ lâu hơn khoảng ân hạn. |
+
+**Nhiều worker:** trạng thái online lưu chung trong Redis nhưng mỗi worker chỉ phát `presence` cho kết nối của mình và đối soát mỗi `PRESENCE_SWEEP_SECONDS`, nên khi chạy nhiều worker có thể có thông báo trùng hoặc trạng thái cũ tối đa khoảng một chu kỳ quét (client luôn tải lại `GET /presence` khi nối lại). Sự kiện tạm thời (`typing`, `read`, `presence`) bị bỏ khi hàng đợi của một kết nối chậm gần đầy, thay vì đóng kết nối.
 | `WS_TYPING_INTERVAL_SECONDS` | 2 | Khoảng tối thiểu giữa hai sự kiện `typing` của một kết nối trong cùng một phòng. |
 
 ## Cấu hình môi trường: `APP_ENV` và `COOKIE_SECURE`

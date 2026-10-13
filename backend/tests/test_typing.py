@@ -45,7 +45,13 @@ async def test_typing_not_delivered_outside_room(live_server):
         await ws.close()
 
 
-async def test_typing_is_throttled_per_room(live_server):
+async def test_typing_is_throttled_per_room(live_server, monkeypatch):
+    import types
+
+    import app.routers.ws as ws_module
+
+    clock = {"t": 1000.0}  # dong ho gia: khong phu thuoc thoi gian that
+    monkeypatch.setattr(ws_module, "time", types.SimpleNamespace(monotonic=lambda: clock["t"]))
     a, b = await create_user("alice"), await create_user("bob")
     r1 = await create_room(member_ids=[a, b])
     r2 = await create_room(member_ids=[a, b])
@@ -57,7 +63,7 @@ async def test_typing_is_throttled_per_room(live_server):
     await expect_silence(wb, 0.3)
     await _typing(wa, r2)  # phòng khác không bị chặn bởi r1
     assert (await recv_json(wb))["room_id"] == r2
-    await asyncio.sleep(get_settings().ws_typing_interval_seconds + 0.5)
+    clock["t"] += get_settings().ws_typing_interval_seconds + 1
     await _typing(wa, r1)
     assert (await recv_json(wb))["room_id"] == r1
     await wa.close()

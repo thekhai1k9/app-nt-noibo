@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Callable, Iterable
 from contextlib import AbstractAsyncContextManager, aclosing
@@ -21,6 +22,10 @@ DISCONNECT_CODES = {CLOSE_UNAUTHENTICATED, CLOSE_ACCOUNT_LOCKED}
 RECONCILE_TIMEOUT_SECONDS = 10.0
 PRESENCE_ANNOUNCE_TIMEOUT_SECONDS = 10.0  # mac dinh; cau hinh qua presence_announce_timeout_seconds
 PRESENCE_FAILURE_COOLDOWN_SECONDS = 5.0  # nghi sau luot announcer co loi, truoc khi thu lai
+PRESENCE_OFFLINE_GRACE_SECONDS = 5.0  # mac dinh; cau hinh qua presence_offline_grace_seconds
+PRESENCE_REFRESH_MIN_INTERVAL_SECONDS = 10.0  # ping khong ghi Redis thuong xuyen hon muc nay tren moi ket noi
+EPHEMERAL_EVENTS = frozenset({"typing", "read", "presence"})  # mat cung duoc; khong dang de dong ket noi cham
+EPHEMERAL_QUEUE_FRACTION = 0.8  # su kien tam thoi chi vao hang doi khi con du dau
 PRESENCE_OP_TIMEOUT_SECONDS = 1.0  # gioi han cho thao tac presence tren duong xu ly frame/ket noi
 
 
@@ -36,6 +41,7 @@ class Connection:
         self.close_code: int | None = None
         self.version = 0  # tăng mỗi khi hub gán lại room_ids
         self.conn_id = uuid.uuid4().hex
+        self.presence_refreshed_at: float | None = None
 
     def offer(self, event: dict) -> bool:
         if self.close_code is not None:
@@ -73,7 +79,13 @@ class Hub:
         presence: Presence | None = None,
         announce_timeout: float = PRESENCE_ANNOUNCE_TIMEOUT_SECONDS,
         failure_cooldown: float = PRESENCE_FAILURE_COOLDOWN_SECONDS,
+        offline_grace: float = PRESENCE_OFFLINE_GRACE_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
     ):
+        self._offline_grace = offline_grace
+        self._clock = clock
+        self._offline_since: dict[int, float] = {}  # user -> thoi diem announcer thay ho offline
+        self._grace_timers: dict[int, asyncio.TimerHandle] = {}
         self._announce_timeout = announce_timeout
         self._failure_cooldown = failure_cooldown
         self.bus = bus
@@ -104,6 +116,8 @@ class Hub:
         return [conn for conns in self._conns.values() for conn in conns]
 
     def _offer(self, conn: Connection, event: dict) -> None:
+        if event.get("type") in EPHEMERAL_EVENTS and conn.queue.qsize() >= conn.queue.maxsize * EPHEMERAL_QUEUE_FRACTION:
+            return  # typing/read/presence: bo khi hang doi gan day; tin that moi bi dong ket noi khi tran
         if not conn.offer(event) and conn.close_code is None:
             conn.close(CLOSE_SLOW_CONSUMER)
 
@@ -256,12 +270,22 @@ class Hub:
         if failed:
             raise RuntimeError("presence publish failed")
 
-    async def _announce_user(self, user_id: int) -> None:
+    async def _announce_user(self, user_id: int) -> float | None:
+        """Tra ve so giay can cho (ân han offline) neu chua duoc phat; None neu da xu ly xong."""
         online = await self._current_state(user_id)
+        if online:
+            self._offline_since.pop(user_id, None)
         # khong co muc nghia la "da bao offline" (muc offline duoc don de khong phinh bo nho)
         known = self._announced.get(user_id, False)
         if known == online and not (online is False and user_id in self._partial):
+            self._offline_since.pop(user_id, None)
             return self._prune_offline(user_id)
+        if not online and self._offline_grace > 0:
+            now = self._clock()
+            since = self._offline_since.setdefault(user_id, now)
+            remaining = since + self._offline_grace - now
+            if remaining > 0:
+                return remaining  # cho het an han roi kiem tra lai trang thai hien tai
         try:
             await self._publish(user_id, online)
         except BaseException:
@@ -270,7 +294,20 @@ class Hub:
             raise
         self._partial.discard(user_id)
         self._announced[user_id] = online
+        if online:
+            self._offline_since.pop(user_id, None)
         self._prune_offline(user_id)
+        return None
+
+    def _defer(self, user_id: int, delay: float) -> None:
+        """Hen gio danh dau lai user sau an han (khong chan announcer, khong tao tac vu moi)."""
+        if self._closing or user_id in self._grace_timers:
+            return
+        self._grace_timers[user_id] = asyncio.get_running_loop().call_later(delay, self._grace_expired, user_id)
+
+    def _grace_expired(self, user_id: int) -> None:
+        self._grace_timers.pop(user_id, None)
+        self._mark_dirty(user_id)
 
     def _prune_offline(self, user_id: int) -> None:
         if self._announced.get(user_id) is False and user_id not in self._dirty:
@@ -285,7 +322,9 @@ class Hub:
                 self._dirty.discard(user_id)  # thay doi moi trong luc phat se danh dau lai
                 self._announcing = user_id
                 try:
-                    await asyncio.wait_for(self._announce_user(user_id), self._announce_timeout)
+                    delay = await asyncio.wait_for(self._announce_user(user_id), self._announce_timeout)
+                    if delay is not None:
+                        self._defer(user_id, delay)
                 except Exception:  # ke ca TimeoutError
                     log.warning("presence announce failed; will retry on next sweep", exc_info=True)
                     self._dirty.add(user_id)
@@ -305,6 +344,7 @@ class Hub:
     async def on_connected(self, conn: Connection) -> None:
         if self.presence is None:
             return
+        self._offline_since.pop(conn.user_id, None)  # ket noi lai: an han offline bat dau lai tu dau
         try:
             await asyncio.wait_for(self.presence.touch(conn.user_id, conn.conn_id), PRESENCE_OP_TIMEOUT_SECONDS)
         except Exception:
@@ -321,6 +361,10 @@ class Hub:
         """Gia han ket noi khi client ping (mot ZADD, co gioi han thoi gian); loi Redis khong anh huong ket noi."""
         if self.presence is None:
             return
+        now = time.monotonic()
+        if conn.presence_refreshed_at is not None and now - conn.presence_refreshed_at < PRESENCE_REFRESH_MIN_INTERVAL_SECONDS:
+            return  # ping dày: khong ghi Redis moi lan
+        conn.presence_refreshed_at = now
         try:
             await asyncio.wait_for(self.presence.touch(conn.user_id, conn.conn_id), PRESENCE_OP_TIMEOUT_SECONDS)
         except Exception:
@@ -375,6 +419,9 @@ class Hub:
 
     async def close_all(self, code: int = 1001) -> None:
         self._closing = True
+        for handle in self._grace_timers.values():
+            handle.cancel()
+        self._grace_timers.clear()
         announcer, self._announcer = self._announcer, None
         if announcer is not None:
             announcer.cancel()

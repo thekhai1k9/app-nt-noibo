@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     presence_ttl_seconds: float = Field(45.0, gt=0)
     presence_sweep_seconds: float = Field(15.0, gt=0)
     presence_announce_timeout_seconds: float = Field(10.0, gt=0)
+    presence_offline_grace_seconds: float = Field(5.0, ge=0)
     room_archive_retention_days: int = Field(3, gt=0)
     room_purge_interval_seconds: float = Field(3600, gt=0)
     bus_channel_prefix: str = "kn"
@@ -33,8 +34,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _ttl_exceeds_sweep(self):
-        if self.presence_ttl_seconds <= self.presence_sweep_seconds:
-            raise ValueError("PRESENCE_TTL_SECONDS must be greater than PRESENCE_SWEEP_SECONDS")
+        if self.presence_ttl_seconds < 2 * self.presence_sweep_seconds:
+            raise ValueError("PRESENCE_TTL_SECONDS must be at least 2 x PRESENCE_SWEEP_SECONDS")
         return self
 
 

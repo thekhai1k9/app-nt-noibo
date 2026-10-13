@@ -285,7 +285,7 @@ async def test_publish_skips_archived_rooms_and_non_members():
 async def test_out_of_order_announcements_end_in_real_state():
     a, _, _ = await _setup_pair()
     bus = DelayBus(delays=[0.4])  # lan phat online dau tien bi tre
-    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100))
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), offline_grace=0)
     conn = Connection(a)
     hub.register(conn)
     await hub.on_connected(conn)
@@ -439,7 +439,9 @@ def test_config_requires_ttl_greater_than_sweep():
 
     with pytest.raises(ValidationError, match="PRESENCE_TTL_SECONDS"):
         Settings(presence_ttl_seconds=5, presence_sweep_seconds=5)
-    Settings(presence_ttl_seconds=6, presence_sweep_seconds=5)
+    with pytest.raises(ValidationError, match="PRESENCE_TTL_SECONDS"):
+        Settings(presence_ttl_seconds=9, presence_sweep_seconds=5)
+    Settings(presence_ttl_seconds=10, presence_sweep_seconds=5)
 
 
 async def test_get_presence_returns_503_when_redis_is_down(client, monkeypatch):
@@ -539,7 +541,7 @@ async def test_outage_bounds_announce_attempts_across_connect_events():
     await asyncio.sleep(0.3)
     # khong co cooldown: moi su kien chay lai moi user dirty (hang chuc lan); co cooldown: toi da mot luot ~ 5 user
     assert 1 <= bus.attempts <= 5
-    assert hub._dirty == set(ids) or hub._dirty <= set(ids)
+    assert hub._dirty and hub._dirty <= set(ids)  # con user cho thu lai o luot sau
     await hub.close_all()
     await get_redis().delete(_key())
 
@@ -563,5 +565,95 @@ async def test_offline_entries_are_pruned_and_transitions_still_announced():
     await hub.sweep_presence()  # khong phat lai offline
     await asyncio.sleep(0.1)
     assert len(_events(bus)) == 4
+    await hub.close_all()
+    await get_redis().delete(_key())
+
+
+async def _connected(hub, user_id):
+    c = Connection(user_id)
+    hub.register(c)
+    await hub.on_connected(c)
+    return c
+
+
+async def _disconnected(hub, c):
+    hub.unregister(c)
+    await hub.on_disconnected(c)
+
+
+async def test_short_reconnect_within_grace_emits_no_events():
+    a, _, _ = await _setup_pair()
+    bus = InMemoryBus()
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), offline_grace=0.6)
+    c = await _connected(hub, a)
+    await _until(lambda: len(_events(bus)) == 1)
+    await _disconnected(hub, c)
+    await asyncio.sleep(0.2)
+    c2 = await _connected(hub, a)  # nhanh hon an han
+    await asyncio.sleep(1.0)  # qua het an han
+    assert [e["online"] for e in _events(bus)] == [True]
+    await _disconnected(hub, c2)
+    await hub.close_all()
+    await get_redis().delete(_key())
+
+
+async def test_offline_is_announced_after_grace():
+    a, _, _ = await _setup_pair()
+    bus = InMemoryBus()
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), offline_grace=0.5)
+    c = await _connected(hub, a)
+    await _until(lambda: len(_events(bus)) == 1)
+    await _disconnected(hub, c)
+    await asyncio.sleep(0.2)
+    assert len(_events(bus)) == 1  # chua phat offline
+    await _until(lambda: len(_events(bus)) == 2, timeout=3)
+    assert _events(bus)[-1]["online"] is False
+    await hub.close_all()
+    await get_redis().delete(_key())
+
+
+async def test_user_in_grace_does_not_delay_other_users():
+    a, b, _ = await _setup_pair()
+    bus = InMemoryBus()
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), offline_grace=1.5)
+    ca = await _connected(hub, a)
+    await _until(lambda: len(_events(bus, a)) == 1)
+    await _disconnected(hub, ca)
+    await _connected(hub, b)
+    await _until(lambda: len(_events(bus, b)) == 1, timeout=1.0)  # b duoc bao ngay, a van trong an han
+    assert len(_events(bus, a)) == 1
+    await _until(lambda: len(_events(bus, a)) == 2, timeout=4)
+    await hub.close_all()
+    await get_redis().delete(_key())
+
+
+async def test_close_all_cancels_grace_timers():
+    a, _, _ = await _setup_pair()
+    hub = Hub(InMemoryBus(), SessionLocal, presence=_presence(FakeClock(), 100), offline_grace=30)
+    c = await _connected(hub, a)
+    await _until(lambda: a in hub._announced)
+    await _disconnected(hub, c)
+    await _until(lambda: a in hub._grace_timers)
+    await hub.close_all()
+    assert not hub._grace_timers
+    await get_redis().delete(_key())
+
+
+async def test_ping_refresh_is_rate_limited_per_connection():
+    a, _, _ = await _setup_pair()
+    hub = Hub(InMemoryBus(), SessionLocal, presence=_presence(FakeClock(), 100))
+    calls = {"n": 0}
+    orig = hub.presence.touch
+
+    async def counting(*args, **kwargs):
+        calls["n"] += 1
+        return await orig(*args, **kwargs)
+
+    hub.presence.touch = counting
+    c = Connection(a)
+    hub.register(c)
+    for _ in range(5):
+        await hub.refresh_presence(c)
+    assert calls["n"] == 1
     await hub.close_all()
     await get_redis().delete(_key())

@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI):
         SessionLocal,
         presence=presence,
         announce_timeout=settings.presence_announce_timeout_seconds,
+        offline_grace=settings.presence_offline_grace_seconds,
     )
     app.state.hub = hub
     runner = asyncio.create_task(hub.run())

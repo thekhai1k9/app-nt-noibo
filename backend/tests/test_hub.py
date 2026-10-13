@@ -355,3 +355,21 @@ async def test_disconnect_event_honours_an_allowed_close_code_and_defaults_to_44
         payload = {"type": "disconnect"} if code is None else {"type": "disconnect", "code": code}
         await hub._dispatch(BusEvent("user", n, payload))
     assert [c.close_code for c in conns.values()] == [4401, 4403, 4403, 4403, 4403]
+
+
+async def test_ephemeral_events_are_dropped_instead_of_closing_a_full_queue():
+    hub = Hub(InMemoryBus(), SessionLocal)
+    conn = Connection(1, [10], queue_size=10)
+    hub.register(conn)
+    for n in range(8):
+        await hub._dispatch(BusEvent("room", 10, {"type": "message", "n": n}))
+    for kind in ("read", "typing", "presence"):
+        await hub._dispatch(BusEvent("room", 10, {"type": kind, "user_id": 2}))
+    assert conn.close_code is None and conn.queue.qsize() == 8  # da bo, khong dong
+    await hub._dispatch(BusEvent("room", 10, {"type": "message", "n": 8}))
+    await hub._dispatch(BusEvent("room", 10, {"type": "message", "n": 9}))
+    assert conn.close_code is None and conn.queue.qsize() == 10
+    await hub._dispatch(BusEvent("room", 10, {"type": "read", "user_id": 2}))
+    assert conn.close_code is None
+    await hub._dispatch(BusEvent("room", 10, {"type": "message", "n": 10}))
+    assert conn.close_code == 4408  # tin that van dong ket noi khi tran
