@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { FakeWebSocket } from '../test/fakeWebSocket'
@@ -580,5 +580,59 @@ describe('new chat dialog: group tab', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(calls.filter((c) => c.path === '/api/rooms/group')).toHaveLength(1)
     expect(trigger).toHaveFocus()
+  })
+})
+
+describe('new chat dialog: group tab input rules', () => {
+  const noUsers = { 'GET /api/users/directory': { json: [] } }
+
+  async function groupDialog() {
+    await userEvent.click(await screen.findByRole('button', { name: 'Cuộc trò chuyện mới' }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('tab', { name: 'Tạo nhóm' }))
+    return dialog
+  }
+
+  it('does not submit on Enter during IME composition, but does on a plain Enter', async () => {
+    const { calls } = mockFetch(
+      routes({
+        ...noUsers,
+        'POST /api/rooms/group': { status: 201, json: makeRoom({ id: 2, name: 'Kho', my_role: 'owner' }) },
+        'GET /api/rooms/2/messages': { json: { items: [], has_more_before: false, has_more_after: false } },
+        'GET /api/rooms/2/members': { json: [] },
+      }),
+    )
+    renderApp('/')
+    const dialog = await groupDialog()
+    const box = within(dialog).getByLabelText('Tên nhóm')
+    await userEvent.type(box, 'Kho')
+    fireEvent.keyDown(box, { key: 'Enter', isComposing: true })
+    fireEvent.keyDown(box, { key: 'Enter', keyCode: 229 })
+    expect(calls.some((c) => c.path === '/api/rooms/group')).toBe(false)
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(calls.some((c) => c.path === '/api/rooms/group')).toBe(true))
+  })
+
+  it('keeps Tạo nhóm disabled for names made only of invisible characters', async () => {
+    mockFetch(routes(noUsers))
+    renderApp('/')
+    const dialog = await groupDialog()
+    const create = within(dialog).getByRole('button', { name: 'Tạo nhóm' })
+    fireEvent.change(within(dialog).getByLabelText('Tên nhóm'), { target: { value: '​​ \t' } })
+    expect(create).toBeDisabled()
+    fireEvent.change(within(dialog).getByLabelText('Tên nhóm'), { target: { value: '​A' } })
+    expect(create).toBeEnabled()
+  })
+
+  it('switches tabs with the arrow keys and links tabs to the panel', async () => {
+    mockFetch(routes(noUsers))
+    renderApp('/')
+    const dialog = await groupDialog()
+    const direct = within(dialog).getByRole('tab', { name: 'Nhắn riêng' })
+    expect(direct).toHaveAttribute('aria-controls', 'newchat-panel')
+    expect(within(dialog).getByRole('tabpanel')).toBeInTheDocument()
+    fireEvent.keyDown(within(dialog).getByRole('tab', { name: 'Tạo nhóm' }), { key: 'ArrowLeft' })
+    expect(direct).toHaveAttribute('aria-selected', 'true')
+    expect(direct).toHaveFocus()
   })
 })

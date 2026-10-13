@@ -125,6 +125,10 @@ export class ChatController {
   /** Phòng bị bỏ: huỷ hẹn giờ soạn tin, tải thành viên đang bay và dữ liệu đệm của phòng. */
   private forgetRooms(roomIds: number[]): void {
     for (const id of roomIds) {
+      // Tin đang chờ/lỗi của phòng bị bỏ: không bao giờ gửi lại, không để bong bóng lỗi nằm trong thread không còn truy cập được.
+      for (const [clientId, meta] of [...this.pendingMeta]) if (meta.roomId === id) this.confirm(clientId)
+      this.latestInFlight.delete(id)
+      this.catchUpAgain.delete(id)
       for (const [key, timer] of this.typingTimers) {
         if (key.startsWith(`${id}:`)) {
           clearTimeout(timer)
@@ -313,7 +317,7 @@ export class ChatController {
       case 'rooms_changed':
         void this.reloadRoomsCoalesced()
         void this.refreshPresence() // phòng chung mới có thể làm lộ thêm người online
-        if (this.activeRoom !== null) void this.loadMembers(this.activeRoom)
+        if (this.activeRoom !== null && this.isKnownRoom(this.activeRoom)) void this.loadMembers(this.activeRoom)
         break
       case 'typing':
         this.onTyping(event.room_id, event.user_id, event.user_name)
@@ -680,7 +684,7 @@ export class ChatController {
   }
 
   createGroup(name: string, memberIds: number[]): Promise<Room> {
-    return this.groupOp('create', async () => {
+    return this.groupOp(`create:${name}:${memberIds.join(',')}`, async () => {
       const room = await this.deps.api.createGroup(name, memberIds)
       // Bản chụp /rooms cũ đang bay (không có phòng này) sẽ bị bỏ; tải lại để có bản mới.
       void this.loadRooms()
@@ -692,7 +696,9 @@ export class ChatController {
   renameGroup(roomId: number, name: string): Promise<Room> {
     return this.groupOp(`rename:${roomId}`, async () => {
       const room = await this.deps.api.renameGroup(roomId, name)
-      this.deps.store.upsertRoom(room)
+      // Chỉ lấy tên/vai trò: bản trả về có thể cũ hơn xem trước/chưa đọc đã nhận qua WebSocket.
+      const current = this.deps.store.getState().rooms.find((r) => r.id === roomId)
+      this.deps.store.upsertRoom(current ? { ...current, name: room.name, my_role: room.my_role } : room)
       return room
     })
   }
@@ -734,10 +740,14 @@ export class ChatController {
     })
   }
 
-  /** Phòng không còn với mình: thôi coi là phòng đang xem để lần tải danh sách dọn thread/thành viên/đệm qua prune. */
+  /** Phòng không còn với mình: bỏ ngay khỏi store (idempotent, không phụ thuộc loadRooms); loadRooms chỉ để đối soát. */
   private async afterRoomGone(roomId: number): Promise<void> {
-    this.dropReadTimer(roomId) // đã rời: không đánh dấu đã đọc một phòng không còn là của mình
     if (this.activeRoom === roomId) this.activeRoom = null
+    this.lastMarked.delete(roomId)
+    this.syncedThrough.delete(roomId)
+    this.forgetRooms([roomId])
+    this.deps.store.removeRoom(roomId)
+    this.deps.store.removeThreads([roomId])
     await this.loadRooms()
   }
 

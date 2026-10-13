@@ -6,6 +6,10 @@ import type { DirectoryUser } from '../../lib/types'
 import { ErrorAlert } from '../ErrorAlert'
 
 const SEARCH_DELAY_MS = 250
+const TABS = [['direct', 'Nhắn riêng'], ['group', 'Tạo nhóm']] as const
+
+/** Giống quy tắc của server: sau khi cắt khoảng trắng phải còn ít nhất một ký tự nhìn thấy được (không chỉ Cc/Cf/Zs). */
+const hasVisibleChar = (text: string) => /[^\p{Cc}\p{Cf}\p{Zs}]/u.test(text.trim())
 
 export function NewChatDialog({ onClose }: { onClose: () => void }) {
   const controller = useChatController()
@@ -17,10 +21,18 @@ export function NewChatDialog({ onClose }: { onClose: () => void }) {
   const [selected, setSelected] = useState<Map<number, DirectoryUser>>(new Map())
   const term = mode === 'direct' ? directTerm : groupTerm
   const [users, setUsers] = useState<DirectoryUser[] | null>(null)
-  const [error, setError] = useState<unknown>(null)
+  const [searchError, setSearchError] = useState<unknown>(null)
+  const [actionError, setActionError] = useState<unknown>(null)
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const dialogRef = useRef<HTMLDivElement>(null)
+  const focusTabRef = useRef<string | null>(null)
+
+  // Điều hướng bằng phím mũi tên: giữ focus ở tab (ô nhập autoFocus của tab mới không được cướp focus).
+  useEffect(() => {
+    if (focusTabRef.current) document.getElementById(`newchat-tab-${focusTabRef.current}`)?.focus()
+    focusTabRef.current = null
+  }, [mode])
 
   // Đang mở chat thì bỏ qua đóng hộp thoại (tránh điều hướng bất ngờ sau khi người dùng đã đóng).
   const close = () => {
@@ -33,8 +45,8 @@ export function NewChatDialog({ onClose }: { onClose: () => void }) {
       () => {
         chatApi
           .directory(term.trim())
-          .then((result) => !cancelled && (setUsers(result), setError(null)))
-          .catch((err) => !cancelled && setError(err))
+          .then((result) => !cancelled && (setUsers(result), setSearchError(null)))
+          .catch((err) => !cancelled && setSearchError(err))
       },
       term ? SEARCH_DELAY_MS : 0,
     )
@@ -73,14 +85,14 @@ export function NewChatDialog({ onClose }: { onClose: () => void }) {
     if (busyRef.current) return
     busyRef.current = true
     setBusy(true)
-    setError(null)
+    setActionError(null)
     try {
       const room = await controller.openDirect(user.id)
       busyRef.current = false
       onClose()
       navigate(`/chat/${room.id}`)
     } catch (err) {
-      setError(err)
+      setActionError(err)
       busyRef.current = false
       setBusy(false)
     }
@@ -97,17 +109,17 @@ export function NewChatDialog({ onClose }: { onClose: () => void }) {
 
   async function createGroup() {
     const name = groupName.trim()
-    if (busyRef.current || !name) return
+    if (busyRef.current || !hasVisibleChar(name)) return
     busyRef.current = true
     setBusy(true)
-    setError(null)
+    setActionError(null)
     try {
       const room = await controller.createGroup(name, [...selected.keys()])
       busyRef.current = false
       onClose()
       navigate(`/chat/${room.id}`)
     } catch (err) {
-      setError(err)
+      setActionError(err)
       busyRef.current = false
       setBusy(false)
     }
@@ -117,7 +129,8 @@ export function NewChatDialog({ onClose }: { onClose: () => void }) {
     if (busyRef.current || next === mode) return
     setMode(next)
     setUsers(null)
-    setError(null)
+    setSearchError(null)
+    setActionError(null)
   }
 
   return (
@@ -130,12 +143,22 @@ export function NewChatDialog({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div className="row" role="tablist" aria-label="Loại cuộc trò chuyện" style={{ gap: 4 }}>
-          {([['direct', 'Nhắn riêng'], ['group', 'Tạo nhóm']] as const).map(([key, label]) => (
+          {TABS.map(([key, label]) => (
             <button
               key={key}
+              id={`newchat-tab-${key}`}
               type="button"
               role="tab"
               aria-selected={mode === key}
+              aria-controls="newchat-panel"
+              tabIndex={mode === key ? 0 : -1}
+              onKeyDown={(event) => {
+                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+                event.preventDefault()
+                const next = key === 'direct' ? 'group' : 'direct'
+                switchMode(next)
+                focusTabRef.current = next
+              }}
               className={`btn ${mode === key ? '' : 'btn-ghost'}`}
               disabled={busy}
               onClick={() => switchMode(key)}
@@ -144,6 +167,7 @@ export function NewChatDialog({ onClose }: { onClose: () => void }) {
             </button>
           ))}
         </div>
+        <div id="newchat-panel" role="tabpanel" aria-labelledby={`newchat-tab-${mode}`} className="stack">
         {mode === 'group' && (
           <>
             <input
@@ -156,7 +180,7 @@ export function NewChatDialog({ onClose }: { onClose: () => void }) {
               disabled={busy}
               onChange={(event) => setGroupName(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') {
+                if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.keyCode !== 229) {
                   event.preventDefault()
                   void createGroup()
                 }
@@ -183,9 +207,10 @@ export function NewChatDialog({ onClose }: { onClose: () => void }) {
           aria-label={mode === 'direct' ? 'Tìm người' : 'Tìm người để thêm'}
           placeholder="Tìm theo tên hoặc tên đăng nhập"
           value={term}
+          disabled={busy}
           onChange={(event) => (mode === 'direct' ? setDirectTerm : setGroupTerm)(event.target.value)}
         />
-        <ErrorAlert error={error} />
+        <ErrorAlert error={actionError ?? searchError} />
         <div className="stack" style={{ gap: 4 }}>
           {users === null && <div className="muted">Đang tải…</div>}
           {users?.length === 0 && <div className="muted">Không tìm thấy ai.</div>}
@@ -206,10 +231,11 @@ export function NewChatDialog({ onClose }: { onClose: () => void }) {
             ))}
         </div>
         {mode === 'group' && (
-          <button type="button" className="btn" disabled={busy || !groupName.trim()} onClick={() => void createGroup()}>
+          <button type="button" className="btn" disabled={busy || !hasVisibleChar(groupName)} onClick={() => void createGroup()}>
             {busy ? 'Đang tạo…' : 'Tạo nhóm'}
           </button>
         )}
+        </div>
       </div>
     </div>
   )

@@ -1243,4 +1243,79 @@ describe('ChatController: groups', () => {
     expect(store.getState().rooms.map((r) => r.id).sort()).toEqual([1, 2])
     expect(store.getState().threads[1]).toBeDefined()
   })
+
+  it.each(['leaveGroup', 'dissolveGroup'] as const)('%s removes the room locally even when the reconcile reload fails', async (method) => {
+    const { controller, api, store } = setup()
+    await controller.loadRooms()
+    await controller.openRoom(1)
+    controller.handleSocketEvent({ type: 'typing', room_id: 1, user_id: 2, user_name: 'Bob' })
+    controller.setActiveRoom(1)
+    api.rooms.mockRejectedValue(new Error('down'))
+    await expect(controller[method](1)).resolves.toBeUndefined()
+    const s = store.getState()
+    expect(s.rooms.map((r) => r.id)).toEqual([2])
+    expect(s.threads[1]).toBeUndefined()
+    expect(s.members[1]).toBeUndefined()
+    expect(s.typing[1]).toBeUndefined()
+  })
+
+  it('handles rooms_changed arriving before the HTTP response without loading members of the gone room', async () => {
+    const { controller, api, store } = setup()
+    await controller.loadRooms()
+    await controller.openRoom(1)
+    controller.setActiveRoom(1)
+    let resolve!: () => void
+    api.leaveGroup.mockImplementationOnce(() => new Promise<void>((r) => (resolve = r)))
+    api.rooms.mockResolvedValue([room(2)])
+    const p = controller.leaveGroup(1)
+    controller.handleSocketEvent({ type: 'rooms_changed' })
+    await vi.waitFor(() => expect(store.getState().rooms.map((r) => r.id)).toEqual([2]))
+    api.members.mockClear()
+    resolve()
+    await p
+    controller.handleSocketEvent({ type: 'rooms_changed' })
+    await Promise.resolve()
+    expect(api.members).not.toHaveBeenCalled()
+    expect(store.getState().rooms.map((r) => r.id)).toEqual([2])
+    expect(store.getState().threads[1]).toBeUndefined()
+  })
+
+  it('drops pending and failed messages of the left group and never resends them', async () => {
+    const { controller, api, store, socket } = setup()
+    await controller.loadRooms()
+    await controller.openRoom(1)
+    controller.send(1, 'chờ gửi')
+    api.rooms.mockResolvedValue([room(2)])
+    await controller.leaveGroup(1)
+    expect(store.getState().threads[1]).toBeUndefined()
+    socket.send.mockClear()
+    controller.handleSocketEvent({ type: 'ready', user_id: 1 })
+    vi.advanceTimersByTime(60_000)
+    expect(socket.send.mock.calls.filter(([p]) => p.room_id === 1)).toEqual([])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('renameGroup keeps a newer last_message and unread count received before the response', async () => {
+    const { controller, api, store } = setup()
+    await controller.loadRooms()
+    let resolve!: (r: Room) => void
+    api.renameGroup.mockImplementationOnce(() => new Promise<Room>((r) => (resolve = r)))
+    const p = controller.renameGroup(1, 'Tên mới')
+    controller.handleSocketEvent({ type: 'message', message: msg(50, { room_id: 1 }) })
+    resolve(room(1, { name: 'Tên mới', my_role: 'owner' }))
+    await p
+    const r = store.getState().rooms.find((x) => x.id === 1)!
+    expect(r.name).toBe('Tên mới')
+    expect(r.my_role).toBe('owner')
+    expect(r.last_message?.id).toBe(50)
+    expect(r.unread_count).toBe(1)
+  })
+
+  it('does not merge createGroup calls that have different arguments', async () => {
+    const { controller, api } = setup()
+    api.createGroup.mockResolvedValueOnce(owner(8)).mockResolvedValueOnce(owner(9))
+    const [a, b] = await Promise.all([controller.createGroup('A', [2]), controller.createGroup('B', [3])])
+    expect([a.id, b.id]).toEqual([8, 9])
+    expect(api.createGroup).toHaveBeenCalledTimes(2)
+  })
 })

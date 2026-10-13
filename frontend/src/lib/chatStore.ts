@@ -219,6 +219,11 @@ export class ChatStore {
     this.set({ rooms: this.state.rooms.map((r) => (r.id === roomId && r.unread_count !== 0 ? { ...r, unread_count: 0 } : r)) })
   }
 
+  removeRoom(roomId: number): void {
+    if (!this.state.rooms.some((r) => r.id === roomId)) return
+    this.set({ rooms: this.state.rooms.filter((r) => r.id !== roomId) })
+  }
+
   removeThreads(roomIds: number[]): void {
     const threads = { ...this.state.threads }
     const members = { ...this.state.members }
