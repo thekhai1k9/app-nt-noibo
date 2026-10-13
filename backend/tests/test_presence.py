@@ -214,7 +214,7 @@ async def test_sweeper_announces_expiry_and_survives_errors():
     clock = FakeClock()
     p = FlakyPresence(get_redis(), get_settings().bus_channel_prefix, 10.0, clock)
     bus = InMemoryBus()
-    hub = Hub(bus, SessionLocal, presence=p)
+    hub = Hub(bus, SessionLocal, presence=p, offline_grace=0)
     await p.touch(a, "x")
     await hub.sweep_presence()  # duong co so
     assert bus.published == []
@@ -238,7 +238,7 @@ async def test_sweeper_does_not_flap_for_own_live_connections():
     clock = FakeClock()
     p = _presence(clock)
     bus = InMemoryBus()
-    hub = Hub(bus, SessionLocal, presence=p)
+    hub = Hub(bus, SessionLocal, presence=p, offline_grace=0)
     conn = Connection(a)
     hub.register(conn)
     await hub.on_connected(conn)
@@ -257,7 +257,7 @@ async def test_sweeper_announces_user_online_via_other_worker():
     a, _, room = await _setup_pair()
     p = _presence(FakeClock())
     bus = InMemoryBus()
-    hub = Hub(bus, SessionLocal, presence=p)
+    hub = Hub(bus, SessionLocal, presence=p, offline_grace=0)
     await hub.sweep_presence()
     await p.touch(a, "other-worker")
     await hub.sweep_presence()
@@ -277,7 +277,7 @@ async def test_publish_skips_archived_rooms_and_non_members():
         await s.execute(text("UPDATE rooms SET archived_at = now() WHERE id = :i"), {"i": archived})
         await s.commit()
     bus = InMemoryBus()
-    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock()))
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock()), offline_grace=0)
     await hub._publish(a, True)
     assert [(r, e["user_id"]) for _, r, e in bus.published] == [(live_room, a)]
 
@@ -312,7 +312,7 @@ async def test_out_of_order_announcements_end_in_real_state():
 async def test_failed_publish_is_retried_by_next_sweep():
     a, _, room = await _setup_pair()
     bus = DelayBus(fail_first=1)
-    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), failure_cooldown=0.05)
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), failure_cooldown=0.05, offline_grace=0)
     conn = Connection(a)
     hub.register(conn)
     await hub.on_connected(conn)
@@ -337,7 +337,7 @@ async def test_db_error_during_announce_is_retried():
         return SessionLocal()
 
     bus = InMemoryBus()
-    hub = Hub(bus, flaky_session, presence=_presence(FakeClock(), 100), failure_cooldown=0.05)
+    hub = Hub(bus, flaky_session, presence=_presence(FakeClock(), 100), failure_cooldown=0.05, offline_grace=0)
     conn = Connection(a)
     hub.register(conn)
     await hub.on_connected(conn)
@@ -360,7 +360,7 @@ async def test_mass_expiry_with_slow_publish_is_not_lost(monkeypatch):
     clock = FakeClock()
     p = _presence(clock)
     bus = DelayBus(per_publish=0.05)  # tong ~1s > timeout 0.3s cua luot quet
-    hub = Hub(bus, SessionLocal, presence=p)
+    hub = Hub(bus, SessionLocal, presence=p, offline_grace=0)
     for uid in ids:
         await p.touch(uid, "x")
     await hub.sweep_presence()
@@ -380,7 +380,7 @@ async def test_close_all_cancels_announcer():
         async def publish_room(self, room_id, event):
             await gate.wait()
 
-    hub = Hub(BlockedBus(), SessionLocal, presence=_presence(FakeClock(), 100))
+    hub = Hub(BlockedBus(), SessionLocal, presence=_presence(FakeClock(), 100), offline_grace=0)
     conn = Connection(a)
     hub.register(conn)
     await hub.on_connected(conn)
@@ -396,7 +396,7 @@ async def test_close_all_cancels_announcer():
 async def test_disconnect_always_removes_even_if_connect_failed():
     a, _, _ = await _setup_pair()
     p = _presence(FakeClock(), 100)
-    hub = Hub(InMemoryBus(), SessionLocal, presence=p)
+    hub = Hub(InMemoryBus(), SessionLocal, presence=p, offline_grace=0)
     conn = Connection(a)
     await p.touch(a, conn.conn_id)  # vd. on_connected bi huy sau khi ZADD da toi Redis
     await hub.on_disconnected(conn)
@@ -415,7 +415,7 @@ async def test_inflight_sweep_touch_cannot_undo_disconnect_remove():
             await gate.wait()
 
     p = SlowTouchMany(get_redis(), get_settings().bus_channel_prefix, 100, FakeClock())
-    hub = Hub(InMemoryBus(), SessionLocal, presence=p)
+    hub = Hub(InMemoryBus(), SessionLocal, presence=p, offline_grace=0)
     conn = Connection(a)
     hub.register(conn)
     await hub.on_connected(conn)
@@ -513,7 +513,7 @@ async def test_slow_presence_does_not_stall_frame_processing(live_server, monkey
 async def test_announce_timeout_counts_as_failure_and_is_retried():
     a, _, room = await _setup_pair()
     bus = DelayBus(delays=[30])  # lan phat dau treo
-    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), announce_timeout=0.2, failure_cooldown=0.05)
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), announce_timeout=0.2, failure_cooldown=0.05, offline_grace=0)
     conn = Connection(a)
     hub.register(conn)
     await hub.on_connected(conn)
@@ -531,7 +531,7 @@ async def test_outage_bounds_announce_attempts_across_connect_events():
     ids = [await create_user(f"user{i}") for i in range(5)]
     await create_room(member_ids=ids)
     bus = DelayBus(fail_first=10_000)
-    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), failure_cooldown=1.5)
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), failure_cooldown=1.5, offline_grace=0)
     for _ in range(4):
         for uid in ids:
             c = Connection(uid)
@@ -549,7 +549,7 @@ async def test_outage_bounds_announce_attempts_across_connect_events():
 async def test_offline_entries_are_pruned_and_transitions_still_announced():
     a, _, room = await _setup_pair()
     bus = InMemoryBus()
-    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100))
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), offline_grace=0)
     for expected in (True, False, True, False):
         if expected:
             conn = Connection(a)
@@ -641,7 +641,7 @@ async def test_close_all_cancels_grace_timers():
 
 async def test_ping_refresh_is_rate_limited_per_connection():
     a, _, _ = await _setup_pair()
-    hub = Hub(InMemoryBus(), SessionLocal, presence=_presence(FakeClock(), 100))
+    hub = Hub(InMemoryBus(), SessionLocal, presence=_presence(FakeClock(), 100), offline_grace=0)
     calls = {"n": 0}
     orig = hub.presence.touch
 
@@ -655,5 +655,28 @@ async def test_ping_refresh_is_rate_limited_per_connection():
     for _ in range(5):
         await hub.refresh_presence(c)
     assert calls["n"] == 1
+    await hub.close_all()
+    await get_redis().delete(_key())
+
+
+async def test_reconnect_then_disconnect_again_restarts_the_grace():
+    import time
+
+    a, _, _ = await _setup_pair()
+    bus = InMemoryBus()
+    hub = Hub(bus, SessionLocal, presence=_presence(FakeClock(), 100), offline_grace=0.8)
+    c = await _connected(hub, a)
+    await _until(lambda: len(_events(bus)) == 1)
+    await _disconnected(hub, c)
+    await asyncio.sleep(0.4)
+    c2 = await _connected(hub, a)
+    await asyncio.sleep(0.05)
+    t_second = time.monotonic()
+    await _disconnected(hub, c2)
+    await asyncio.sleep(0.6)  # qua han cua lan ngat dau (0.8 tu luc dau) nhung chua het han moi
+    assert len(_events(bus)) == 1
+    await _until(lambda: len(_events(bus)) == 2, timeout=4)
+    assert time.monotonic() - t_second >= 0.75  # offline chi sau khi het an han tinh tu lan ngat thu hai
+    assert _events(bus)[-1]["online"] is False
     await hub.close_all()
     await get_redis().delete(_key())
