@@ -1645,7 +1645,7 @@ await step('29. Bật thông báo (Notification/AudioContext giả lập, đã c
   await dialog.getByRole('button', { name: 'Gửi thử' }).click()
   await expectNotification(bob, before, { title: 'Kết Nối', body: 'Đây là thông báo thử.', tag: 'kn-test' }, '"Gửi thử"')
   await closeNotifySettings(dialog)
-  const saved = await bob.evaluate(() => JSON.parse(localStorage.getItem('kn.notify.v1')))
+  const saved = await bob.evaluate(() => { const k = Object.keys(localStorage).filter((x) => x.startsWith('kn.notify.v1.')); return k.length === 1 ? JSON.parse(localStorage.getItem(k[0])) : { keys: k } })
   if (!saved?.enabled || !saved.sound || !saved.showPreview || saved.allGroupMessages) throw new Error('cài đặt đã lưu: ' + JSON.stringify(saved))
 })
 
