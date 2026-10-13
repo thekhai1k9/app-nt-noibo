@@ -53,7 +53,8 @@ export class ChatController {
   private roomsAgain = false
   /** Đánh dấu đã đọc: gửi ngay lần đầu, các lần trong 1 giây sau gộp thành một lần cuối với id mới nhất. */
   private readonly readTimers = new Map<number, ReturnType<typeof setTimeout>>()
-  private readonly readPending = new Set<number>()
+  /** Id đã thực sự nhìn thấy lúc yêu cầu đánh dấu; không bao giờ gửi id vượt quá phần đã xem. */
+  private readonly readPending = new Map<number, number>()
   private presenceSeq = 0
   private readonly presenceLiveAt = new Map<number, number>()
 
@@ -594,28 +595,36 @@ export class ChatController {
 
   private markReadIfViewing(roomId: number): void {
     if (!this.isViewing(roomId)) return
+    const last = this.lastRealId(roomId)
+    if (last === null) return
     if (this.readTimers.has(roomId)) {
-      this.readPending.add(roomId) // đang trong khoảng gộp: gửi id mới nhất khi hết hạn / rời phòng
+      this.readPending.set(roomId, last) // đang trong khoảng gộp: gửi đúng id này khi hết hạn / rời phòng
       this.deps.store.clearUnread(roomId)
       return
     }
-    this.sendRead(roomId, true)
+    this.readPending.delete(roomId)
+    this.sendRead(roomId, last, true)
   }
 
-  private sendRead(roomId: number, startTimer: boolean): void {
-    const last = this.lastRealId(roomId)
-    if (last === null || (this.lastMarked.get(roomId) ?? 0) >= last) return
-    this.lastMarked.set(roomId, last)
-    this.deps.store.clearUnread(roomId)
-    this.deps.api.markRead(roomId, last).catch(() => {
-      this.lastMarked.delete(roomId)
+  private sendRead(roomId: number, id: number, startTimer: boolean): void {
+    if ((this.lastMarked.get(roomId) ?? 0) >= id) return
+    this.lastMarked.set(roomId, id)
+    // Chỉ xoá huy hiệu khi đã đọc tới tin mới nhất; tin đến lúc tab ẩn vẫn phải còn chưa đọc.
+    if (id >= (this.lastRealId(roomId) ?? 0)) this.deps.store.clearUnread(roomId)
+    this.deps.api.markRead(roomId, id).catch(() => {
+      if (this.lastMarked.get(roomId) === id) this.lastMarked.delete(roomId) // lỗi muộn của lần cũ không xoá mốc mới hơn
     })
     if (!startTimer || this.disposed) return
     this.readTimers.set(
       roomId,
       setTimeout(() => {
         this.readTimers.delete(roomId)
-        if (this.readPending.delete(roomId)) this.sendRead(roomId, true)
+        const pending = this.readPending.get(roomId)
+        // Tab đang ẩn / không còn xem phòng: giữ lại, sẽ gửi khi hiện lại hoặc rời phòng.
+        if (pending !== undefined && this.isViewing(roomId)) {
+          this.readPending.delete(roomId)
+          this.sendRead(roomId, pending, true)
+        }
       }, READ_DEBOUNCE_MS),
     )
   }
@@ -625,7 +634,9 @@ export class ChatController {
     const timer = this.readTimers.get(roomId)
     if (timer) clearTimeout(timer)
     this.readTimers.delete(roomId)
-    if (this.readPending.delete(roomId)) this.sendRead(roomId, false)
+    const pending = this.readPending.get(roomId)
+    this.readPending.delete(roomId)
+    if (pending !== undefined) this.sendRead(roomId, pending, false)
   }
 
   private dropReadTimer(roomId: number): void {
@@ -662,6 +673,13 @@ export class ChatController {
     this.membersInFlight.clear()
     this.pendingReads.clear()
     this.membersAgain.clear()
+    // Chỉ gửi nốt phần đã gộp nếu lúc này vẫn đang xem phòng và tab đang hiện; lỗi bị nuốt.
+    for (const [roomId, id] of this.readPending) {
+      if (this.isViewing(roomId) && (this.lastMarked.get(roomId) ?? 0) < id) {
+        this.lastMarked.set(roomId, id)
+        void this.deps.api.markRead(roomId, id).catch(() => undefined)
+      }
+    }
     this.readTimers.forEach((timer) => clearTimeout(timer))
     this.readTimers.clear()
     this.readPending.clear()

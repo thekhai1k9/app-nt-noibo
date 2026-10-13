@@ -1077,4 +1077,70 @@ describe('ChatController: review follow-ups', () => {
     controller.handleSocketEvent({ type: 'read', room_id: 1, user_id: 9, message_id: 4 })
     expect((controller as unknown as { pendingReads: Map<number, unknown> }).pendingReads.has(1)).toBe(false)
   })
+
+  function hiddenSetup() {
+    let visible = true
+    const store = new ChatStore()
+    const api = { rooms: vi.fn().mockResolvedValue([room(1)]), messages: vi.fn().mockResolvedValue(page([1, 2, 3])), markRead: vi.fn().mockResolvedValue(undefined), openDirect: vi.fn(), editMessage: vi.fn(), deleteMessage: vi.fn(), directory: vi.fn(), members: vi.fn().mockResolvedValue([]), presence: vi.fn().mockResolvedValue({ online_user_ids: [] }) }
+    const controller = new ChatController({ store, api, socket: { send: vi.fn(() => true) }, meId: 1, meName: 'Tôi', isVisible: () => visible })
+    return { store, api, controller, setVisible: (v: boolean) => { visible = v } }
+  }
+
+  it('the trailing mark-read never covers messages that arrived while the tab was hidden', async () => {
+    const { store, api, controller, setVisible } = hiddenSetup()
+    await controller.loadRooms()
+    controller.setActiveRoom(1)
+    await controller.openRoom(1)
+    vi.advanceTimersByTime(1000)
+    api.markRead.mockClear()
+    controller.handleSocketEvent({ type: 'message', message: msg(10) }) // gui ngay
+    vi.advanceTimersByTime(200)
+    controller.handleSocketEvent({ type: 'message', message: msg(11) }) // dang gop
+    vi.advanceTimersByTime(300)
+    setVisible(false)
+    vi.advanceTimersByTime(500)
+    controller.handleSocketEvent({ type: 'message', message: msg(12) }) // an: chua doc
+    expect(store.getState().rooms.find((r) => r.id === 1)!.unread_count).toBe(1)
+    vi.advanceTimersByTime(1000)
+    expect(api.markRead.mock.calls).toEqual([[1, 10]]) // hen gio khi tab an: khong gui gi them
+    expect(store.getState().rooms.find((r) => r.id === 1)!.unread_count).toBe(1)
+    setVisible(true)
+    controller.onVisible()
+    expect(api.markRead.mock.calls).toEqual([[1, 10], [1, 11], [1, 12]])
+    expect(store.getState().rooms.find((r) => r.id === 1)!.unread_count).toBe(0)
+  })
+
+  it('a late failure of an older mark-read does not wipe a newer mark', async () => {
+    const { controller, api } = setup()
+    await controller.loadRooms()
+    controller.setActiveRoom(1)
+    let fail!: (e: Error) => void
+    api.markRead.mockImplementationOnce(() => new Promise((_, rej) => (fail = rej)))
+    await controller.openRoom(1) // POST(1,3) dang bay
+    vi.advanceTimersByTime(1000)
+    controller.handleSocketEvent({ type: 'message', message: msg(10) }) // POST(1,10)
+    fail(new Error('late'))
+    await flush()
+    vi.advanceTimersByTime(1000)
+    controller.handleSocketEvent({ type: 'message', message: msg(10, { id: 10 }) })
+    expect(api.markRead.mock.calls.filter((c) => c[1] === 10)).toHaveLength(1) // mốc 10 con nguyen, khong gui lai
+  })
+
+  it('dispose flushes a pending coalesced read only when still viewing and visible', async () => {
+    for (const visibleAtDispose of [true, false]) {
+      const { api, controller, setVisible } = hiddenSetup()
+      await controller.loadRooms()
+      controller.setActiveRoom(1)
+      await controller.openRoom(1)
+      vi.advanceTimersByTime(1000)
+      api.markRead.mockClear()
+      controller.handleSocketEvent({ type: 'message', message: msg(10) })
+      controller.handleSocketEvent({ type: 'message', message: msg(11) })
+      setVisible(visibleAtDispose)
+      api.markRead.mockRejectedValue(new Error('x'))
+      controller.dispose()
+      await flush()
+      expect(api.markRead.mock.calls).toEqual(visibleAtDispose ? [[1, 10], [1, 11]] : [[1, 10]])
+    }
+  })
 })
