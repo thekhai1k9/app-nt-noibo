@@ -25,12 +25,22 @@ interface Props {
 }
 
 function renderBody(message: ChatMessage) {
-  if (message.mentions.length === 0 && !message.mention_all) return linkify(message.body)
-  return splitMentions(message.body, message.mentions, message.mention_all).map((part, index) =>
-    part.mention ? (
-      <span key={index} className={`mention${part.mention === 'all' ? ' mention-all' : ''}`}>{part.text}</span>
+  const nodes = linkify(message.body)
+  if (message.mentions.length === 0 && !message.mention_all) return nodes
+  // Liên kết trước, rồi mới tách mention trong phần chữ thường: https://x.com/@Bob/p vẫn là một liên kết.
+  return nodes.map((node, index) =>
+    typeof node !== 'string' ? (
+      node
     ) : (
-      <Fragment key={index}>{linkify(part.text)}</Fragment>
+      <Fragment key={`t${index}`}>
+        {splitMentions(node, message.mentions, message.mention_all).map((part, i) =>
+          part.mention ? (
+            <span key={i} className={`mention${part.mention === 'all' ? ' mention-all' : ''}`}>{part.text}</span>
+          ) : (
+            part.text
+          ),
+        )}
+      </Fragment>
     ),
   )
 }
@@ -87,6 +97,7 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onR
       )}
       <div className="msg-col">
         {showSender && !mine && <div className="msg-sender">{message.sender_name}</div>}
+        <div className="bubble-wrap">
         <div className={`bubble${message.pending === 'failed' ? ' bubble-failed' : ''}${editing ? ' bubble-editing' : ''}${mentionsMe ? ' msg-mentions-me' : ''}`}>
           {reply && !editing && <QuoteBlock reply={reply} onJump={onJumpToReply ? () => onJumpToReply(reply.id) : undefined} />}
           {message.deleted ? (
@@ -115,6 +126,12 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onR
             renderBody(message)
           )}
         </div>
+        {canReply && !editing && (
+          <button type="button" className="msg-reply" aria-label="Trả lời" onClick={() => onReply(message)}>
+            <span aria-hidden="true">↩</span>
+          </button>
+        )}
+        </div>
         <div className="msg-foot">
           <span>{formatTime(message.created_at)}</span>
           {message.edited_at && !message.deleted && <span>(đã sửa)</span>}
@@ -138,11 +155,6 @@ export function MessageItem({ message, mine, showSender, onRetry, onDiscard, onR
                 </button>
               )}
             </>
-          )}
-          {canReply && !editing && (
-            <button type="button" className="btn btn-ghost msg-reply" aria-label="Trả lời" onClick={() => onReply(message)}>
-              Trả lời
-            </button>
           )}
           {canAct && !editing && (
             <>

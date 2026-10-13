@@ -119,6 +119,54 @@ describe('Composer', () => {
       expect(screen.getAllByRole('option')).toHaveLength(2)
     })
 
+    it('re-picking a same-named member after clearing sends the newest id', async () => {
+      const onSend = vi.fn()
+      const dup = [mem(1, 'Tôi'), mem(5, 'Trần An'), mem(6, 'Trần An')]
+      render(<Composer onSend={onSend} members={dup} meId={1} />)
+      await userEvent.type(box(), '@tran{Enter}')
+      await userEvent.clear(box())
+      await userEvent.type(box(), '@tran{ArrowDown}{Enter}x{Enter}')
+      expect(onSend).toHaveBeenCalledWith('@Trần An x', { replyTo: undefined, mentions: [{ user_id: 6, full_name: 'Trần An' }], mentionAll: false })
+    })
+
+    it('keeps both ids, in order, when two same-named members are picked without clearing', async () => {
+      const onSend = vi.fn()
+      const dup = [mem(1, 'Tôi'), mem(5, 'Trần An'), mem(6, 'Trần An')]
+      render(<Composer onSend={onSend} members={dup} meId={1} />)
+      await userEvent.type(box(), '@tran{Enter}@tran{ArrowDown}{Enter}{Enter}')
+      expect(onSend).toHaveBeenCalledWith('@Trần An @Trần An', { replyTo: undefined, mentions: [{ user_id: 5, full_name: 'Trần An' }, { user_id: 6, full_name: 'Trần An' }], mentionAll: false })
+    })
+
+    it('does not open the picker for an @ inside an email address', async () => {
+      render(<Composer onSend={vi.fn()} members={members} meId={1} />)
+      await userEvent.type(box(), 'gửi a@th')
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    })
+
+    it('inserts at the caret mid-text and replaces the rest of the current @word', async () => {
+      render(<Composer onSend={vi.fn()} members={members} meId={1} />)
+      await userEvent.type(box(), 'xin  chào')
+      await userEvent.type(box(), '@Th', { initialSelectionStart: 4, initialSelectionEnd: 4 })
+      await userEvent.keyboard('{Enter}')
+      expect(box()).toHaveValue('xin @Lê Thu Hà chào')
+    })
+
+    it('shows a limit hint and keeps the picker open when the mention does not fit', async () => {
+      render(<Composer onSend={vi.fn()} members={members} meId={1} />)
+      box().focus()
+      fireEvent.change(box(), { target: { value: `${'a'.repeat(3990)} @Th` } })
+      await userEvent.keyboard('{Enter}')
+      expect(await screen.findByText('Tin nhắn đã đạt giới hạn ký tự')).toBeInTheDocument()
+      expect(screen.getByRole('listbox')).toBeInTheDocument()
+    })
+
+    it('exposes the textarea as a combobox only when suggestions apply', () => {
+      const { rerender } = render(<Composer onSend={vi.fn()} />)
+      expect(screen.getByRole('textbox')).toBeInTheDocument()
+      rerender(<Composer onSend={vi.fn()} members={members} meId={1} />)
+      expect(screen.getByRole('combobox')).toHaveAttribute('aria-expanded', 'false')
+    })
+
     it('does not open without members', async () => {
       render(<Composer onSend={vi.fn()} />)
       await userEvent.type(box(), '@a')

@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type SyntheticEvent } from 'react'
-import { detectMention, liveMentions, mentionOptions, MENTION_ALL_RE, type MentionOption } from '../../lib/mentions'
+import { detectMention, liveMentions, mentionOptions, hasStandaloneAll, type MentionOption } from '../../lib/mentions'
 import type { Mention, Message, RoomMember } from '../../lib/types'
 import { MentionPicker, optionId } from './MentionPicker'
 import { ReplyBar } from './ReplyBar'
@@ -34,6 +34,7 @@ export function Composer({ onSend, onTyping, disabled = false, reply = null, onC
   const [mentionAll, setMentionAll] = useState(false)
   const [activeIndex, setActiveIndex] = useState(0)
   const [dismissedAt, setDismissedAt] = useState<number | null>(null)
+  const [limitHint, setLimitHint] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const pendingCaret = useRef<number | null>(null)
   const listId = useId()
@@ -65,23 +66,44 @@ export function Composer({ onSend, onTyping, disabled = false, reply = null, onC
     onSend(body, {
       replyTo: reply ?? undefined,
       mentions: liveMentions(body, mentions),
-      mentionAll: isGroup && mentionAll && MENTION_ALL_RE.test(body),
+      mentionAll: isGroup && mentionAll && hasStandaloneAll(body),
     })
     setText('')
     setCaret(0)
     setMentions([])
     setMentionAll(false)
     setDismissedAt(null)
+    setLimitHint(false)
   }
 
   function pick(option: MentionOption) {
-    if (!trigger) return
-    const insert = option.kind === 'all' ? '@all ' : `@${option.member.full_name} `
-    const next = text.slice(0, trigger.start) + insert + text.slice(caret)
-    if (next.length > MAX_MESSAGE_LENGTH) return
-    setText(next)
+    const el = inputRef.current
+    if (!trigger || !el) return
+    // Thay cả "từ" @ hiện tại, kể cả phần sau con trỏ đến khoảng trắng kế tiếp.
+    let end = caret
+    while (end < text.length && !/\s/.test(text[end])) end++
+    const name = option.kind === 'all' ? '@all' : `@${option.member.full_name}`
+    const insert = end < text.length && /\s/.test(text[end]) ? name : `${name} `
+    const next = text.slice(0, trigger.start) + insert + text.slice(end)
+    if (next.length > MAX_MESSAGE_LENGTH) {
+      setLimitHint(true)
+      return
+    }
+    setLimitHint(false)
+    el.focus()
+    el.setSelectionRange(trigger.start, end)
+    // execCommand giữ lịch sử hoàn tác gốc của trình duyệt; không có thì ghi thẳng vào state.
+    let native = false
+    try {
+      native = typeof document.execCommand === 'function' && document.execCommand('insertText', false, insert)
+    } catch {
+      native = false
+    }
     const position = trigger.start + insert.length
-    setCaret(position)
+    if (!native || el.value !== next) {
+      setText(next)
+      setCaret(position)
+    }
     pendingCaret.current = position
     setActiveIndex(0)
     if (option.kind === 'all') setMentionAll(true)
@@ -89,7 +111,6 @@ export function Composer({ onSend, onTyping, disabled = false, reply = null, onC
       const { user_id, full_name } = option.member
       setMentions((list) => [...list, { user_id, full_name }])
     }
-    inputRef.current?.focus()
   }
 
   function cancelReply() {
@@ -134,7 +155,7 @@ export function Composer({ onSend, onTyping, disabled = false, reply = null, onC
   return (
     <div className="composer">
       {open && <MentionPicker id={listId} options={options} activeIndex={active} onPick={pick} />}
-      {reply && <ReplyBar reply={reply} onCancel={cancelReply} />}
+      <ReplyBar reply={reply} onCancel={cancelReply} />
       <div className="composer-box">
         <textarea
           ref={inputRef}
@@ -145,12 +166,16 @@ export function Composer({ onSend, onTyping, disabled = false, reply = null, onC
           maxLength={MAX_MESSAGE_LENGTH}
           value={text}
           disabled={disabled}
+          role={members.length > 0 ? 'combobox' : undefined}
+          aria-expanded={members.length > 0 ? open : undefined}
           aria-autocomplete={members.length > 0 ? 'list' : undefined}
           aria-controls={open ? listId : undefined}
           aria-activedescendant={open ? optionId(listId, active) : undefined}
           onChange={(event) => {
             setText(event.target.value)
             sync(event)
+            setLimitHint(false)
+            setMentions((list) => liveMentions(event.target.value, list))
             // Esc chỉ đóng gợi ý của đúng cụm `@` đó; xoá cụm đó hoặc gõ `@` khác thì được mở lại.
             const next = detectMention(event.target.value, event.target.selectionStart ?? event.target.value.length)
             if (next?.start !== dismissedAt) setDismissedAt(null)
@@ -172,6 +197,7 @@ export function Composer({ onSend, onTyping, disabled = false, reply = null, onC
           Gửi
         </button>
       </div>
+      {limitHint && <div className="muted composer-counter" role="alert">Tin nhắn đã đạt giới hạn ký tự</div>}
       {text.length >= COUNTER_FROM && <div className="muted composer-counter">{`${text.length}/${MAX_MESSAGE_LENGTH}`}</div>}
     </div>
   )

@@ -1,7 +1,7 @@
 import type { ChatApi } from './chatApi'
 import { EMPTY_THREAD, type ChatMessage, type ChatStore } from './chatStore'
 import { makeSnippet } from './format'
-import { MENTION_ALL_RE } from './mentions'
+import { hasStandaloneAll } from './mentions'
 import type { Mention, Message, Room, RoomMember, ServerEvent } from './types'
 
 export interface ChatControllerDeps {
@@ -267,7 +267,7 @@ export class ChatController {
       return true
     })
     const isGroup = this.deps.store.getState().rooms.find((r) => r.id === roomId)?.type === 'group'
-    const mentionAll = opts.mentionAll === true && isGroup && MENTION_ALL_RE.test(body)
+    const mentionAll = opts.mentionAll === true && isGroup && hasStandaloneAll(body)
     const message: ChatMessage = {
       id: this.nextLocalId--,
       room_id: roomId,

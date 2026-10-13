@@ -196,6 +196,19 @@ describe('MessageItem', () => {
       expect(container.querySelector('.msg-mentions-me')).toBeNull()
     })
 
+    it('puts Trả lời outside the footer and the flow so it reserves no row', () => {
+      render(<MessageItem {...props} onReply={vi.fn()} message={base} mine={false} />)
+      const button = screen.getByRole('button', { name: 'Trả lời' })
+      expect(button.closest('.msg-foot')).toBeNull()
+      expect(button.parentElement).toHaveClass('bubble-wrap')
+    })
+
+    it('keeps a URL containing @name one link and still highlights real mentions', () => {
+      render(<MessageItem {...props} message={{ ...base, body: 'xem https://x.com/@Bob/p nhé @Bob', mentions: [{ user_id: 5, full_name: 'Bob' }] }} mine={false} />)
+      expect(screen.getByRole('link')).toHaveTextContent('https://x.com/@Bob/p')
+      expect(Array.from(document.querySelectorAll('.mention')).map((e) => e.textContent)).toEqual(['@Bob'])
+    })
+
     it('replaces Thử lại with Gửi không kèm trả lời for an invalid_reply failure', async () => {
       const onResend = vi.fn()
       const failed = { ...base, sender_id: 1, client_id: 'c1', pending: 'failed' as const, errorCode: 'invalid_reply' }

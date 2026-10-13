@@ -393,19 +393,19 @@ describe('realtime status UI', () => {
     renderApp('/chat/1')
     await screen.findByText('chào cả nhà')
     const ws = await connect()
-    expect(screen.getByRole('status')).toBeEmptyDOMElement()
+    expect(document.querySelector('.typing-indicator')!).toBeEmptyDOMElement()
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       await act(async () => ws.receive({ type: 'typing', room_id: 1, user_id: 2, user_name: 'Lê Thu Hà' }))
-      expect(screen.getByRole('status')).toHaveTextContent('Lê Thu Hà đang soạn tin…')
+      expect(document.querySelector('.typing-indicator')!).toHaveTextContent('Lê Thu Hà đang soạn tin…')
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5100)
       })
-      expect(screen.getByRole('status')).toBeEmptyDOMElement()
+      expect(document.querySelector('.typing-indicator')!).toBeEmptyDOMElement()
       await act(async () => ws.receive({ type: 'typing', room_id: 1, user_id: 2, user_name: 'Lê Thu Hà' }))
-      expect(screen.getByRole('status')).toHaveTextContent('đang soạn tin')
+      expect(document.querySelector('.typing-indicator')!).toHaveTextContent('đang soạn tin')
       await act(async () => ws.receive({ type: 'message', message: makeMessage({ id: 8, sender_id: 2, body: 'xong' }) }))
-      expect(screen.getByRole('status')).toBeEmptyDOMElement()
+      expect(document.querySelector('.typing-indicator')!).toBeEmptyDOMElement()
     } finally {
       vi.useRealTimers()
     }

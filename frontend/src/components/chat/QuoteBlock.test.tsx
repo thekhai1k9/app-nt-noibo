@@ -45,6 +45,15 @@ describe('ReplyBar', () => {
     expect(onCancel).toHaveBeenCalledOnce()
   })
 
+  it('keeps the live region mounted but empty without a reply', () => {
+    const { rerender } = render(<ReplyBar reply={null} onCancel={vi.fn()} />)
+    const live = screen.getByRole('status')
+    expect(live).toBeEmptyDOMElement()
+    rerender(<ReplyBar reply={source} onCancel={vi.fn()} />)
+    expect(screen.getByRole('status')).toBe(live)
+    expect(live).toHaveTextContent('Đang trả lời')
+  })
+
   it('shows the deleted placeholder', () => {
     render(<ReplyBar reply={{ ...source, deleted: true }} onCancel={vi.fn()} />)
     expect(screen.getByRole('status')).toHaveTextContent('Tin nhắn đã bị xoá')

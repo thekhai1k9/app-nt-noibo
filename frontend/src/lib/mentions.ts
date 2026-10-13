@@ -1,7 +1,29 @@
 import type { Mention, RoomMember } from './types'
 
-/** `@all` đứng riêng: không dính vào từ hoặc `@` khác. Phải khớp đúng luật của máy chủ/controller. */
-export const MENTION_ALL_RE = /(?<![\w@])@all(?!\w)/i
+const WORD_CHAR = /[\p{L}\p{N}_]/u
+
+/** Ký tự "chữ" theo nghĩa Unicode (giống `\w` của Python bên máy chủ, vốn là Unicode). */
+function isWordChar(ch: string | undefined): boolean {
+  return ch !== undefined && ch !== '' && WORD_CHAR.test(ch)
+}
+
+function lastChar(text: string, end: number): string {
+  return Array.from(text.slice(Math.max(0, end - 2), end)).at(-1) ?? ''
+}
+
+/** `@all` (không phân biệt hoa thường) bắt đầu tại `i`, đứng riêng: trước không phải chữ/`@`, sau không phải chữ. Không dùng lookbehind (Safari < 16.4). */
+export function isStandaloneAllAt(body: string, i: number): boolean {
+  if (body[i] !== '@' || body.slice(i, i + 4).toLowerCase() !== '@all') return false
+  const prev = lastChar(body, i)
+  if (prev === '@' || isWordChar(prev)) return false
+  const next = i + 4 < body.length ? String.fromCodePoint(body.codePointAt(i + 4)!) : ''
+  return !isWordChar(next)
+}
+
+export function hasStandaloneAll(body: string): boolean {
+  for (let i = body.indexOf('@'); i !== -1; i = body.indexOf('@', i + 1)) if (isStandaloneAllAt(body, i)) return true
+  return false
+}
 
 export const MAX_SUGGESTIONS = 6
 
@@ -45,21 +67,25 @@ function countOccurrences(text: string, needle: string): number {
   return n
 }
 
-/** Mention còn hiệu lực khi gửi: bỏ trùng id, bỏ cái mà chữ `@Tên` đã bị xoá (trùng tên: tối đa bằng số lần chữ còn xuất hiện). */
+/**
+ * Giữ các mention đã nhớ khớp với chữ `@Tên` còn trong nội dung. Duyệt từ mới đến cũ: lượt chọn MỚI thắng khi nhiều người trùng tên
+ * và số lần `@Tên` xuất hiện ít hơn số người đã nhớ; mỗi id chỉ giữ một lần; thứ tự chèn được giữ nguyên.
+ */
 export function liveMentions(body: string, remembered: Mention[]): Mention[] {
   const seen = new Set<number>()
   const used = new Map<string, number>()
-  const out: Mention[] = []
-  for (const m of remembered) {
+  const kept: Mention[] = []
+  for (let i = remembered.length - 1; i >= 0; i--) {
+    const m = remembered[i]
     if (seen.has(m.user_id)) continue
     const needle = `@${m.full_name}`
     const taken = used.get(needle) ?? 0
     if (taken >= countOccurrences(body, needle)) continue
     used.set(needle, taken + 1)
     seen.add(m.user_id)
-    out.push(m)
+    kept.push(m)
   }
-  return out
+  return kept.reverse()
 }
 
 export type BodyPart = { text: string; mention: 'name' | 'all' | null }
@@ -75,7 +101,7 @@ export function splitMentions(body: string, mentions: Mention[], mentionAll: boo
     let hit: BodyPart | null = null
     if (body[i] === '@') {
       const name = needles.find((n) => body.startsWith(n, i))
-      const all = mentionAll && body.slice(i, i + 4).toLowerCase() === '@all' && !/[\w@]/.test(body[i - 1] ?? '') && !/\w/.test(body[i + 4] ?? '')
+      const all = mentionAll && isStandaloneAllAt(body, i)
       if (name && !(all && name.length < 4)) hit = { text: name, mention: 'name' }
       else if (all) hit = { text: body.slice(i, i + 4), mention: 'all' }
     }

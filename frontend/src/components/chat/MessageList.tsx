@@ -114,6 +114,18 @@ export function MessageList(props: Props) {
     const target = listRef.current?.querySelector(`[data-message-id="${id}"]`)
     if (!target) return
     target.scrollIntoView?.({ block: 'center' })
+    // Người dùng vừa chủ động rời đáy: không để ResizeObserver/tin mới kéo họ về lại.
+    const el = listRef.current
+    if (el) {
+      snapshot.current.atBottom = nearBottom(el)
+      snapshot.current.scrollHeight = el.scrollHeight
+    }
+    if (flashId === id && target instanceof HTMLElement) {
+      // Bấm lại đúng tin đang nháy: khởi động lại animation.
+      target.classList.remove('msg-flash')
+      void target.offsetWidth
+      target.classList.add('msg-flash')
+    }
     setFlashId(id)
     if (flashTimer.current) clearTimeout(flashTimer.current)
     flashTimer.current = setTimeout(() => setFlashId(null), FLASH_MS)

@@ -1,4 +1,4 @@
-import { detectMention, fold, liveMentions, mentionOptions, splitMentions } from './mentions'
+import { detectMention, fold, hasStandaloneAll, liveMentions, mentionOptions, splitMentions } from './mentions'
 import type { RoomMember } from './types'
 
 const member = (id: number, name: string): RoomMember => ({ user_id: id, full_name: name, last_read_message_id: null, role: 'member' })
@@ -40,8 +40,13 @@ describe('mentions helpers', () => {
     expect(liveMentions('chào @Bob', [a, a])).toEqual([a])
     expect(liveMentions('chào Bob', [a])).toEqual([])
     const b = { user_id: 3, full_name: 'Bob' }
-    expect(liveMentions('@Bob', [a, b])).toEqual([a])
-    expect(liveMentions('@Bob @Bob', [a, b])).toEqual([a, b])
+    expect(liveMentions('@Bob', [a, b])).toEqual([b]) // trùng tên: lượt chọn mới thắng
+    expect(liveMentions('@Bob @Bob', [a, b])).toEqual([a, b]) // giữ thứ tự chèn
+  })
+
+  it('detects a standalone @all with Unicode word boundaries and no lookbehind', () => {
+    for (const ok of ['@all', 'hi @all!', '(@all)', '@ALL ơi', 'x' + String.fromCharCode(10) + '@all']) expect(hasStandaloneAll(ok), ok).toBe(true)
+    for (const bad of ['x@all', 'email@all.com', '@allé', 'Hà@all', '@all2', 'a@@all', '@al', '@all_x']) expect(hasStandaloneAll(bad), bad).toBe(false)
   })
 
   it('splits by names longest first without regexes, and by a standalone @all', () => {

@@ -231,20 +231,39 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
   border: 0; border-left: 3px solid var(--accent); border-radius: 6px; background: rgba(16, 24, 40, 0.06);
   color: inherit; font: inherit; font-size: 13px; text-align: left; white-space: normal;
 }
-.quote-button { cursor: pointer; width: 100%; }
+.quote-button { cursor: pointer; width: 100%; min-height: 44px; justify-content: center; }
 .quote-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .quote-name { font-weight: 700; }
 .quote-text {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-  overflow-wrap: anywhere; opacity: 0.85;
+  overflow-wrap: anywhere; color: #344054;
 }
+.msg.mine .bubble:not(.bubble-editing) .quote-text { color: #fff; }
 .msg.mine .bubble:not(.bubble-editing) .quote { background: rgba(255, 255, 255, 0.18); border-left-color: #fff; }
 .mention { font-weight: 700; color: var(--accent); }
-.msg.mine .bubble:not(.bubble-editing) .mention { color: #fff; background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
+.msg.mine .bubble:not(.bubble-editing) .mention { color: #fff; text-decoration: underline; background: rgba(255, 255, 255, 0.12); border-radius: 4px; }
 .msg-mentions-me { background: var(--accent-soft); border-color: var(--accent); }
-.msg-reply { opacity: 0; transition: opacity 0.12s; min-width: 44px; }
+.bubble-wrap { position: relative; max-width: 100%; display: flex; flex-direction: column; }
+.msg.mine .bubble-wrap { align-items: flex-end; }
+/* Nút Trả lời nằm ngoài luồng (không chiếm chỗ trong dòng chân tin): cạnh bong bóng, vùng bấm 44px. */
+.msg-reply {
+  position: absolute; top: 50%; left: 100%; transform: translateY(-50%); width: 44px; height: 44px; padding: 0;
+  border: 0; background: transparent; color: var(--muted); font-size: 18px; cursor: pointer; border-radius: 22px;
+  opacity: 0; transition: opacity 0.12s;
+}
+.msg.mine .msg-reply { left: auto; right: 100%; }
 .msg:hover .msg-reply, .msg:focus-within .msg-reply, .msg-reply:focus-visible { opacity: 1; }
-@media (hover: none) { .msg-reply { opacity: 1; } }
+.msg-reply:hover { color: var(--accent); }
+.msg-reply:focus-visible { outline: 2px solid var(--accent); }
+/* Màn hình cảm ứng: luôn hiện, thu gọn thành nút tròn nhỏ đè lên góc bong bóng (vùng bấm 44px bằng ::after) và không thêm chiều cao. */
+@media (pointer: coarse) {
+  .msg-reply, .msg.mine .msg-reply {
+    opacity: 1; top: -8px; left: auto; right: -6px; transform: none; width: 26px; height: 26px; font-size: 14px;
+    background: var(--surface); border: 1px solid var(--line); box-shadow: 0 1px 3px rgba(16, 24, 40, 0.15);
+  }
+  .msg.mine .msg-reply { right: auto; left: -6px; }
+  .msg-reply::after { content: ''; position: absolute; inset: -9px; }
+}
 .msg-flash .bubble { animation: msg-flash 1.5s ease-out; }
 @keyframes msg-flash { 0%, 60% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 3px transparent; } }
 @media (prefers-reduced-motion: reduce) {
@@ -266,3 +285,6 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
 .mention-option.active, .mention-option:hover { background: var(--accent-soft); }
 .room-badges { display: inline-flex; flex: none; gap: 4px; align-items: center; }
 .mention-badge { background: var(--accent); padding: 0; width: 20px; }
+
+/* Tên do người dùng đặt có thể chứa ký tự đổi chiều chữ: cô lập để không lan ra chữ xung quanh. */
+.mention, .quote-name, .msg-sender, .reply-bar strong, .mention-option .ellipsis, .room-item strong, .member-name { unicode-bidi: isolate; }
