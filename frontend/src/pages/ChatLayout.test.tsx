@@ -636,3 +636,84 @@ describe('new chat dialog: group tab input rules', () => {
     expect(direct).toHaveFocus()
   })
 })
+
+describe('group info panel', () => {
+  const ownerRoom = { ...rooms[0], my_role: 'owner' as const }
+  const mem = (id: number, name: string, role: 'owner' | 'member') => ({ user_id: id, full_name: name, last_read_message_id: null, role })
+  const long = mem(1, 'Phạm Đức Long', 'owner')
+  const ha = mem(2, 'Lê Thu Hà', 'member')
+  const huy = mem(3, 'Trần Quốc Huy', 'member')
+  const person = { id: 3, username: 'huy', full_name: 'Trần Quốc Huy', branch_id: 2, branch_name: 'TP.HCM' }
+
+  it('shows the button for group rooms only', async () => {
+    mockFetch(routes({ 'GET /api/rooms/2/messages': { json: { items: [], has_more_before: false, has_more_after: false } } }))
+    renderApp('/chat/2')
+    await screen.findByRole('heading', { name: 'Trần Quốc Huy' })
+    expect(screen.queryByRole('button', { name: 'Thông tin nhóm' })).not.toBeInTheDocument()
+  })
+
+  it('opens the panel, adds a member and shows the updated list, then returns focus on close', async () => {
+    let list = [long, ha]
+    let current = [ownerRoom, rooms[1]]
+    const { calls } = mockFetch(
+      routes({
+        'GET /api/rooms': () => ({ json: current }),
+        'GET /api/rooms/1/members': () => ({ json: list }),
+        'GET /api/users/directory': { json: [person] },
+        'POST /api/rooms/1/members': () => {
+          list = [long, ha, huy]
+          current = [{ ...ownerRoom, member_count: 4 }, rooms[1]]
+          return { json: list }
+        },
+      }),
+    )
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const opener = screen.getByRole('button', { name: 'Thông tin nhóm' })
+    await userEvent.click(opener)
+    const dialog = await screen.findByRole('dialog', { name: 'Thông tin nhóm' })
+    await userEvent.click(await within(dialog).findByRole('button', { name: /Trần Quốc Huy/ }))
+    expect(await within(dialog).findByRole('button', { name: 'Gỡ Trần Quốc Huy khỏi nhóm' })).toBeInTheDocument()
+    expect(calls.find((c) => c.method === 'POST' && c.path === '/api/rooms/1/members')!.body).toEqual({ user_id: 3 })
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(opener).toHaveFocus()
+  })
+
+  it('closes the panel and shows the not-found view when the room disappears from rooms_changed', async () => {
+    let current = [ownerRoom, rooms[1]]
+    mockFetch(routes({ 'GET /api/rooms': () => ({ json: current }), 'GET /api/users/directory': { json: [] } }))
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    const ws = await connect()
+    await userEvent.click(screen.getByRole('button', { name: 'Thông tin nhóm' }))
+    await screen.findByRole('dialog')
+    current = [rooms[1]]
+    await act(async () => ws.receive({ type: 'rooms_changed' }))
+    expect(await screen.findByText('Cuộc trò chuyện không tồn tại hoặc bạn không còn trong đó.')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('dissolves the group: navigates home and removes it from the sidebar', async () => {
+    let current = [ownerRoom, rooms[1]]
+    const { calls } = mockFetch(
+      routes({
+        'GET /api/rooms': () => ({ json: current }),
+        'GET /api/rooms/1/members': { json: [long, ha] },
+        'GET /api/users/directory': { json: [] },
+        'DELETE /api/rooms/1': () => ((current = [rooms[1]]), { status: 204 }),
+      }),
+    )
+    renderApp('/chat/1')
+    await screen.findByText('chào cả nhà')
+    await userEvent.click(screen.getByRole('button', { name: 'Thông tin nhóm' }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.type(within(dialog).getByLabelText('Gõ tên nhóm để xác nhận giải tán'), 'Dự án kho')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Giải tán nhóm' }))
+    await waitFor(() => expect(screen.queryByRole('link', { name: /Dự án kho/ })).not.toBeInTheDocument())
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByText('Cuộc trò chuyện không tồn tại hoặc bạn không còn trong đó.')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Trần Quốc Huy/ })).toBeInTheDocument()
+  })
+})

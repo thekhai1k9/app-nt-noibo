@@ -1,9 +1,10 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useAuth } from '../../lib/auth'
 import { useChatController, useMembers, useOnline, useRooms, useThread, useTyping } from '../../lib/ChatProvider'
 import { Composer } from './Composer'
 import { ConnectionBanner } from './ConnectionBanner'
+import { GroupPanel } from './GroupPanel'
 import { MessageList } from './MessageList'
 import { PresenceDot } from './PresenceDot'
 import { SeenLabel } from './SeenLabel'
@@ -41,6 +42,19 @@ function Conversation({ roomId }: { roomId: number }) {
   const peerOnline = useOnline(room?.type === 'direct' ? room.peer_id : null)
   const meId = user?.id ?? 0
   const isGroup = room?.type === 'group'
+  const [panelOpen, setPanelOpen] = useState(false)
+  const infoRef = useRef<HTMLButtonElement>(null)
+  const wasOpen = useRef(false)
+  const showPanel = panelOpen && isGroup
+
+  // Phòng biến mất (bị gỡ, giải tán, rời) thì đóng bảng; đóng xong trả focus về nút mở nếu còn.
+  useEffect(() => {
+    if (loaded && !room) setPanelOpen(false)
+  }, [loaded, room])
+  useEffect(() => {
+    if (wasOpen.current && !showPanel) infoRef.current?.focus()
+    wasOpen.current = showPanel
+  }, [showPanel])
 
   const seenFor = useMemo(() => {
     if (!thread.loaded) return null
@@ -79,7 +93,13 @@ function Conversation({ roomId }: { roomId: number }) {
             </div>
           )}
         </div>
+        {isGroup && (
+          <button ref={infoRef} type="button" className="btn btn-ghost chat-info" aria-label="Thông tin nhóm" onClick={() => setPanelOpen(true)}>
+            ⓘ
+          </button>
+        )}
       </header>
+      {showPanel && room && <GroupPanel room={room} onClose={() => setPanelOpen(false)} />}
       <ConnectionBanner />
       <MessageList
         items={thread.items}

@@ -218,3 +218,7 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
 .chip-remove { min-width: 44px; min-height: 44px; border: 0; background: transparent; font-size: 18px; cursor: pointer; border-radius: 22px; }
 .pick-row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 8px; cursor: pointer; border-radius: 8px; }
 .pick-row input { width: 20px; height: 20px; flex: none; }
+.member-list { list-style: none; margin: 0; padding: 0; }
+.member-row { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+.danger-zone { border-top: 1px solid var(--line); padding-top: 12px; }
+.chat-info { margin-left: auto; min-width: 44px; padding: 0 10px; font-size: 18px; }
